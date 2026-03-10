@@ -1,2 +1,3 @@
-# zeitblick-releases
-Releases von Zeitblick in der Testphase
+# ZeitBlick Releases
+
+Offizielle Releases für ZeitBlick — die Stundenzettel-App für Film & TV.
