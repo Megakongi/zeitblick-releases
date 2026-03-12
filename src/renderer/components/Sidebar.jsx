@@ -1,8 +1,15 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 
 const PERSON_COLORS = ['#4a7dff', '#8b5cf6', '#10b981', '#f59e0b', '#ef4444', '#ec4899', '#06b6d4', '#14b8a6', '#6366f1', '#f97316'];
 
 export default function Sidebar({ currentView, onNavigate, onImport, onImportFolder, onCreate, onSearch, timesheetCount, theme, onToggleTheme }) {
+  const [appVersion, setAppVersion] = useState('');
+
+  useEffect(() => {
+    if (window.electronAPI?.getAppVersion) {
+      window.electronAPI.getAppVersion().then(v => setAppVersion(v));
+    }
+  }, []);
 
   const navItems = [
     { id: 'dashboard', label: 'Übersicht', icon: '📊' },
@@ -54,7 +61,7 @@ export default function Sidebar({ currentView, onNavigate, onImport, onImportFol
           <span className="theme-icon" aria-hidden="true">{theme === 'dark' ? '☀️' : '🌙'}</span>
           <span>{theme === 'dark' ? 'Light Mode' : 'Dark Mode'}</span>
         </button>
-        <div className="sidebar-version">v1.3</div>
+        <div className="sidebar-version">v{appVersion || '...'}</div>
       </div>
     </aside>
   );

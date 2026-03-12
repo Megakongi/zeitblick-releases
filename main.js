@@ -6,12 +6,10 @@ const { loadData, saveData, createBackup, restoreBackup, listBackups, exportData
 
 // Auto-updater
 let autoUpdater = null;
-let pendingUpdateInfo = null;   // Stores info from 'update-available' for custom DMG download
-let downloadedDmgPath = null;   // Path to downloaded DMG on macOS
 try {
   autoUpdater = require('electron-updater').autoUpdater;
   autoUpdater.autoDownload = false;      // Don't download automatically — ask user first
-  autoUpdater.autoInstallOnAppQuit = process.platform !== 'darwin'; // Only on Windows
+  autoUpdater.autoInstallOnAppQuit = true; // Auto-install when app quits
   autoUpdater.allowPrerelease = false;
   // Skip code signature verification on macOS (no Apple Developer cert needed)
   if (process.platform === 'darwin') {
@@ -80,7 +78,7 @@ function createWindow() {
   }
 
   mainWindow = new BrowserWindow({
-    title: 'ZeitBlick v1.3',
+    title: `ZeitBlick v${app.getVersion()}`,
     width: 1400,
     height: 900,
     minWidth: 1000,
@@ -128,7 +126,6 @@ function setupAutoUpdater() {
   });
 
   autoUpdater.on('update-available', (info) => {
-    pendingUpdateInfo = info;  // Store for custom DMG download on macOS
     sendUpdateStatus('update-status', {
       status: 'available',
       version: info.version,
@@ -144,7 +141,6 @@ function setupAutoUpdater() {
     });
   });
 
-  // These events are only used on Windows (macOS uses custom DMG download)
   autoUpdater.on('download-progress', (progress) => {
     sendUpdateStatus('update-status', {
       status: 'downloading',
@@ -165,8 +161,6 @@ function setupAutoUpdater() {
   });
 
   autoUpdater.on('error', (err) => {
-    // On macOS with custom download, Squirrel errors don't matter — ignore them
-    if (process.platform === 'darwin' && downloadedDmgPath) return;
     sendUpdateStatus('update-status', {
       status: 'error',
       message: err.message || 'Unbekannter Fehler',
@@ -192,44 +186,6 @@ ipcMain.handle('check-for-updates', async () => {
 
 // IPC: Start downloading the update
 ipcMain.handle('download-update', async () => {
-  // macOS: Custom DMG download (bypasses Squirrel.Mac code signature check)
-  if (process.platform === 'darwin' && pendingUpdateInfo) {
-    const version = pendingUpdateInfo.version;
-    const dmgUrl = `https://github.com/Megakongi/zeitblick-releases/releases/download/v${version}/ZeitBlick-${version}-universal.dmg`;
-    const tmpPath = path.join(app.getPath('temp'), `ZeitBlick-${version}-universal.dmg`);
-    
-    try {
-      // Delete old download if exists
-      if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath);
-      
-      await downloadFile(dmgUrl, tmpPath, (progress) => {
-        sendUpdateStatus('update-status', {
-          status: 'downloading',
-          percent: Math.round(progress.percent),
-          transferred: progress.transferred,
-          total: progress.total,
-        });
-      });
-      
-      downloadedDmgPath = tmpPath;
-      sendUpdateStatus('update-status', {
-        status: 'downloaded',
-        version: version,
-        releaseNotes: pendingUpdateInfo.releaseNotes || '',
-        releaseDate: pendingUpdateInfo.releaseDate || '',
-        manualInstall: true, // Signal to renderer that this is a manual install
-      });
-      return { success: true };
-    } catch (err) {
-      sendUpdateStatus('update-status', {
-        status: 'error',
-        message: `Download fehlgeschlagen: ${err.message}`,
-      });
-      return { success: false, error: err.message };
-    }
-  }
-  
-  // Windows: Standard electron-updater download
   if (!autoUpdater) return { success: false, error: 'Auto-Updater nicht verfügbar' };
   try {
     await autoUpdater.downloadUpdate();
@@ -248,75 +204,14 @@ ipcMain.handle('install-update', async () => {
     console.error('Pre-update backup failed:', e.message);
   }
   
-  // macOS: Automatically mount DMG, copy app, and relaunch
-  if (process.platform === 'darwin' && downloadedDmgPath) {
-    const { execSync } = require('child_process');
-    try {
-      sendUpdateStatus('update-status', { status: 'installing', message: 'Update wird installiert...' });
-      
-      // 1. Mount the DMG silently
-      const mountOutput = execSync(`hdiutil attach "${downloadedDmgPath}" -nobrowse -noverify -noautoopen`, { encoding: 'utf-8' });
-      // Parse mount point from hdiutil output (last line, last column)
-      const mountLines = mountOutput.trim().split('\n');
-      const lastLine = mountLines[mountLines.length - 1];
-      const mountPoint = lastLine.split('\t').pop().trim();
-      
-      if (!mountPoint || !fs.existsSync(mountPoint)) {
-        throw new Error('DMG konnte nicht gemountet werden');
-      }
-      
-      // 2. Find the .app in the mounted volume
-      const volumeContents = fs.readdirSync(mountPoint);
-      const appName = volumeContents.find(f => f.endsWith('.app'));
-      if (!appName) {
-        execSync(`hdiutil detach "${mountPoint}" -force`);
-        throw new Error('Keine .app im DMG gefunden');
-      }
-      
-      const sourceApp = path.join(mountPoint, appName);
-      const destApp = path.join('/Applications', appName);
-      
-      // 3. Remove old app and copy new one
-      if (fs.existsSync(destApp)) {
-        execSync(`rm -rf "${destApp}"`);
-      }
-      execSync(`cp -R "${sourceApp}" "${destApp}"`);
-      
-      // 4. Unmount DMG
-      try {
-        execSync(`hdiutil detach "${mountPoint}" -force`);
-      } catch (e) {
-        // Non-critical if unmount fails
-      }
-      
-      // 5. Clean up downloaded DMG
-      try {
-        fs.unlinkSync(downloadedDmgPath);
-      } catch (e) {}
-      
-      // 6. Relaunch the app from /Applications
-      const { spawn } = require('child_process');
-      spawn('open', ['-n', destApp], { detached: true, stdio: 'ignore' }).unref();
-      
-      // Quit current instance after short delay to let new one start
-      setTimeout(() => { app.quit(); }, 500);
-      
-      return { success: true, autoInstall: true };
-    } catch (err) {
-      sendUpdateStatus('update-status', {
-        status: 'error',
-        message: `Installation fehlgeschlagen: ${err.message}`,
-      });
-      // Fallback: open DMG for manual install
-      shell.openPath(downloadedDmgPath);
-      return { success: true, manual: true };
-    }
-  }
-  
-  // Windows: Standard quit-and-install
+  // quitAndInstall works on all platforms (macOS zip + Windows nsis)
   if (!autoUpdater) return { success: false };
-  autoUpdater.quitAndInstall(false, true);
-  return { success: true };
+  sendUpdateStatus('update-status', { status: 'installing', message: 'Update wird installiert...' });
+  // Short delay so the renderer can show the installing state
+  setTimeout(() => {
+    autoUpdater.quitAndInstall(false, true);
+  }, 500);
+  return { success: true, autoInstall: true };
 });
 
 // IPC: Get platform

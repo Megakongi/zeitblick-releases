@@ -25,18 +25,6 @@ export default function UpdateOverlay() {
   const [dismissed, setDismissed] = useState(false);
   const [downloading, setDownloading] = useState(false);
   const [installing, setInstalling] = useState(false);
-  const [dmgOpened, setDmgOpened] = useState(false); // macOS: DMG was opened for manual install
-  const [isMac, setIsMac] = useState(false);
-
-  // Detect macOS for manual install flow
-  useEffect(() => {
-    (async () => {
-      if (window.electronAPI?.getPlatform) {
-        const platform = await window.electronAPI.getPlatform();
-        setIsMac(platform === 'darwin');
-      }
-    })();
-  }, []);
 
   // Listen for update events from main process
   useEffect(() => {
@@ -101,15 +89,10 @@ export default function UpdateOverlay() {
     setInstalling(true);
     try {
       const result = await window.electronAPI.installUpdate();
-      // macOS auto-install: app will restart automatically
+      // autoInstall: app will quit and restart automatically
       if (result?.autoInstall) {
         // App is restarting — keep the "installing" state
         return;
-      }
-      // macOS fallback: DMG was opened for manual installation
-      if (result?.manual) {
-        setDmgOpened(true);
-        setInstalling(false);
       }
     } catch (e) {
       setInstalling(false);
@@ -197,8 +180,8 @@ export default function UpdateOverlay() {
     );
   }
 
-  // ===== Installing — Auto-install in progress (macOS) =====
-  if ((installing || updateState?.status === 'installing') && !dmgOpened) {
+  // ===== Installing — Auto-install in progress =====
+  if ((installing || updateState?.status === 'installing') && !dismissed) {
     return (
       <div className="update-overlay-backdrop" onClick={() => {}}>
         <div className="update-overlay-modal" onClick={e => e.stopPropagation()}>
@@ -214,44 +197,6 @@ export default function UpdateOverlay() {
             <p className="update-data-safe">
               🔒 Deine Daten sind sicher gespeichert.
             </p>
-          </div>
-        </div>
-      </div>
-    );
-  }
-
-  // ===== macOS: DMG opened — show instructions to drag & relaunch =====
-  if (dmgOpened && !dismissed) {
-    return (
-      <div className="update-overlay-backdrop" onClick={() => {}}>
-        <div className="update-overlay-modal" onClick={e => e.stopPropagation()}>
-          <div className="update-modal-header">
-            <div className="update-modal-icon">📦</div>
-            <h2>Fast geschafft!</h2>
-            <p className="update-version-badge">Version {updateState?.version}</p>
-          </div>
-          
-          <div className="update-modal-body">
-            <div className="manual-install-steps">
-              <p><strong>Die Update-Datei wurde geöffnet.</strong></p>
-              <ol style={{ textAlign: 'left', lineHeight: '1.8', margin: '12px 0', paddingLeft: '20px', color: 'var(--text-secondary)' }}>
-                <li>Ziehe <strong>ZeitBlick</strong> in den <strong>Programme</strong>-Ordner</li>
-                <li>Bestätige das Ersetzen der alten Version</li>
-                <li>Schließe diese App und starte ZeitBlick neu</li>
-              </ol>
-            </div>
-            <p className="update-data-safe">
-              🔒 Deine Daten wurden gesichert und bleiben erhalten.
-            </p>
-          </div>
-
-          <div className="update-modal-actions">
-            <button className="update-btn update-btn-secondary" onClick={handleDismissBanner}>
-              Später
-            </button>
-            <button className="update-btn update-btn-primary" onClick={handleQuitApp}>
-              🚪 App beenden
-            </button>
           </div>
         </div>
       </div>
@@ -278,15 +223,9 @@ export default function UpdateOverlay() {
                 }} />
               </>
             )}
-            {isMac ? (
-              <p className="update-data-safe">
-                🔒 Klicke auf "Installieren" — die App wird automatisch aktualisiert und neu gestartet.
-              </p>
-            ) : (
-              <p className="update-data-safe">
-                🔒 Vor der Installation wird automatisch ein Backup deiner Daten erstellt.
-              </p>
-            )}
+            <p className="update-data-safe">
+              🔒 Vor der Installation wird automatisch ein Backup erstellt. Die App startet danach automatisch neu.
+            </p>
           </div>
 
           <div className="update-modal-actions">
