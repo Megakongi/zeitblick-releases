@@ -1,0 +1,5 @@
+owner: Megakongi
+repo: zeitblick-releases
+provider: github
+releaseType: release
+updaterCacheDirName: zeitblick-updater
