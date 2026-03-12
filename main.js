@@ -6,10 +6,12 @@ const { loadData, saveData, createBackup, restoreBackup, listBackups, exportData
 
 // Auto-updater
 let autoUpdater = null;
+let pendingUpdateInfo = null; // Stores update info for macOS DMG flow
+let downloadedDmgPath = null; // Path to downloaded DMG on macOS
 try {
   autoUpdater = require('electron-updater').autoUpdater;
   autoUpdater.autoDownload = false;      // Don't download automatically — ask user first
-  autoUpdater.autoInstallOnAppQuit = true; // Auto-install when app quits
+  autoUpdater.autoInstallOnAppQuit = false; // We handle install ourselves on macOS
   autoUpdater.allowPrerelease = false;
   // Skip code signature verification on macOS (no Apple Developer cert needed)
   if (process.platform === 'darwin') {
@@ -126,6 +128,7 @@ function setupAutoUpdater() {
   });
 
   autoUpdater.on('update-available', (info) => {
+    pendingUpdateInfo = info;
     sendUpdateStatus('update-status', {
       status: 'available',
       version: info.version,
@@ -187,6 +190,43 @@ ipcMain.handle('check-for-updates', async () => {
 // IPC: Start downloading the update
 ipcMain.handle('download-update', async () => {
   if (!autoUpdater) return { success: false, error: 'Auto-Updater nicht verfügbar' };
+
+  // On macOS: download DMG directly (bypasses Squirrel.Mac/ShipIt signature check)
+  if (process.platform === 'darwin' && pendingUpdateInfo) {
+    try {
+      const version = pendingUpdateInfo.version;
+      // Construct DMG download URL from GitHub Releases
+      const dmgFileName = `ZeitBlick-${version}-universal.dmg`;
+      const dmgUrl = `https://github.com/Megakongi/zeitblick-releases/releases/download/v${version}/${encodeURIComponent(dmgFileName)}`;
+      const dest = path.join(app.getPath('temp'), dmgFileName);
+
+      console.log(`[updater] macOS: downloading DMG from ${dmgUrl}`);
+      sendUpdateStatus('update-status', { status: 'downloading', percent: 0 });
+
+      await downloadFile(dmgUrl, dest, (progress) => {
+        sendUpdateStatus('update-status', {
+          status: 'downloading',
+          percent: Math.round(progress.percent),
+          transferred: progress.transferred,
+          total: progress.total,
+        });
+      });
+
+      downloadedDmgPath = dest;
+      sendUpdateStatus('update-status', {
+        status: 'downloaded',
+        version,
+        releaseNotes: pendingUpdateInfo.releaseNotes || '',
+        releaseDate: pendingUpdateInfo.releaseDate || '',
+      });
+      return { success: true };
+    } catch (err) {
+      console.error('[updater] macOS DMG download failed:', err.message);
+      return { success: false, error: err.message };
+    }
+  }
+
+  // On Windows: use native electron-updater (NSIS installer works fine)
   try {
     await autoUpdater.downloadUpdate();
     return { success: true };
@@ -203,11 +243,64 @@ ipcMain.handle('install-update', async () => {
   } catch (e) {
     console.error('Pre-update backup failed:', e.message);
   }
-  
-  // quitAndInstall works on all platforms (macOS zip + Windows nsis)
+
   if (!autoUpdater) return { success: false };
+
+  // On macOS: mount DMG, copy .app, relaunch (bypasses Squirrel/ShipIt)
+  if (process.platform === 'darwin' && downloadedDmgPath) {
+    const { execSync } = require('child_process');
+    sendUpdateStatus('update-status', { status: 'installing', message: 'Update wird installiert...' });
+
+    try {
+      // Mount the DMG
+      console.log(`[updater] Mounting DMG: ${downloadedDmgPath}`);
+      const mountOutput = execSync(`hdiutil attach "${downloadedDmgPath}" -nobrowse -noverify -noautoopen 2>&1`, { encoding: 'utf8' });
+      
+      // Find the mount point
+      const mountMatch = mountOutput.match(/\/Volumes\/[^\n]+/);
+      if (!mountMatch) throw new Error('Konnte DMG nicht mounten');
+      const mountPoint = mountMatch[0].trim();
+      console.log(`[updater] Mounted at: ${mountPoint}`);
+
+      // Find the .app in the mounted volume
+      const appInDmg = path.join(mountPoint, 'ZeitBlick.app');
+      if (!fs.existsSync(appInDmg)) throw new Error('ZeitBlick.app nicht im DMG gefunden');
+
+      // Determine current app location
+      const currentAppPath = path.dirname(path.dirname(app.getAppPath())); // .app/Contents/Resources → .app
+      console.log(`[updater] Replacing: ${currentAppPath}`);
+
+      // Copy new app over old one
+      execSync(`rm -rf "${currentAppPath}"`, { encoding: 'utf8' });
+      execSync(`cp -R "${appInDmg}" "${currentAppPath}"`, { encoding: 'utf8' });
+      console.log('[updater] App copied successfully');
+
+      // Unmount DMG
+      execSync(`hdiutil detach "${mountPoint}" -force 2>&1 || true`, { encoding: 'utf8' });
+      
+      // Clean up downloaded DMG
+      try { fs.unlinkSync(downloadedDmgPath); } catch {}
+      downloadedDmgPath = null;
+
+      // Relaunch the app
+      console.log('[updater] Relaunching...');
+      setTimeout(() => {
+        app.relaunch();
+        app.exit(0);
+      }, 500);
+
+      return { success: true, autoInstall: true };
+    } catch (err) {
+      console.error('[updater] macOS install failed:', err.message);
+      // Try to unmount on error
+      try { execSync('hdiutil detach /Volumes/ZeitBlick* -force 2>/dev/null || true', { encoding: 'utf8' }); } catch {}
+      sendUpdateStatus('update-status', { status: 'error', message: `Installation fehlgeschlagen: ${err.message}` });
+      return { success: false, error: err.message };
+    }
+  }
+
+  // On Windows: use native quitAndInstall (NSIS installer)
   sendUpdateStatus('update-status', { status: 'installing', message: 'Update wird installiert...' });
-  // Short delay so the renderer can show the installing state
   setTimeout(() => {
     autoUpdater.quitAndInstall(false, true);
   }, 500);
