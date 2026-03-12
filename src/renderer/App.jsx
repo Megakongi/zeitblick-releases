@@ -370,7 +370,7 @@ export default function App() {
   const renderView = () => {
     switch (view) {
       case 'dashboard':
-        return <Dashboard timesheets={filteredTimesheets} calculations={calculations} settings={settings} effectiveSettings={effectiveSettings} onSettings={setSettings} onViewDetail={handleViewDetail} onUpdateTimesheets={setTimesheets} projects={filteredProjects} projectFilter={projectFilter} onProjectFilter={setProjectFilter} personFilter={personFilter} onPersonFilter={handlePersonFilter} allTimesheets={timesheets} getPersonSettings={getPersonSettings} resolveName={resolveName} />;
+        return <Dashboard timesheets={filteredTimesheets} calculations={calculations} settings={settings} effectiveSettings={effectiveSettings} onSettings={setSettings} onViewDetail={handleViewDetail} onUpdateTimesheets={setTimesheets} projects={filteredProjects} projectFilter={projectFilter} onProjectFilter={setProjectFilter} personFilter={personFilter} onPersonFilter={handlePersonFilter} allTimesheets={timesheets} personFilteredTimesheets={personFiltered} getPersonSettings={getPersonSettings} resolveName={resolveName} />;
       case 'timesheets':
         return <TimesheetList timesheets={timesheets} onViewDetail={handleViewDetail} onDelete={handleDelete} onBulkDelete={handleBulkDelete} personFilter={personFilter} resolveName={resolveName} />;
       case 'detail':
@@ -388,7 +388,7 @@ export default function App() {
       case 'settings':
         return <Settings settings={settings} onSave={setSettings} timesheets={timesheets} setTimesheets={setTimesheets} />;
       default:
-        return <Dashboard timesheets={filteredTimesheets} calculations={calculations} settings={settings} effectiveSettings={effectiveSettings} onSettings={setSettings} onViewDetail={handleViewDetail} onUpdateTimesheets={setTimesheets} projects={filteredProjects} projectFilter={projectFilter} onProjectFilter={setProjectFilter} personFilter={personFilter} onPersonFilter={handlePersonFilter} allTimesheets={timesheets} getPersonSettings={getPersonSettings} resolveName={resolveName} />;
+        return <Dashboard timesheets={filteredTimesheets} calculations={calculations} settings={settings} effectiveSettings={effectiveSettings} onSettings={setSettings} onViewDetail={handleViewDetail} onUpdateTimesheets={setTimesheets} projects={filteredProjects} projectFilter={projectFilter} onProjectFilter={setProjectFilter} personFilter={personFilter} onPersonFilter={handlePersonFilter} allTimesheets={timesheets} personFilteredTimesheets={personFiltered} getPersonSettings={getPersonSettings} resolveName={resolveName} />;
     }
   };
 

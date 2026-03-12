@@ -296,7 +296,7 @@ function generateCSV(timesheets, c, settings, personFilter) {
   return lines.join('\n');
 }
 
-export default function Dashboard({ timesheets, calculations, settings, effectiveSettings, onSettings, onViewDetail, onUpdateTimesheets, projects, projectFilter, onProjectFilter, personFilter, onPersonFilter, allTimesheets, getPersonSettings, resolveName }) {
+export default function Dashboard({ timesheets, calculations, settings, effectiveSettings, onSettings, onViewDetail, onUpdateTimesheets, projects, projectFilter, onProjectFilter, personFilter, onPersonFilter, allTimesheets, personFilteredTimesheets, getPersonSettings, resolveName }) {
   const c = calculations;
   const hasData = timesheets.length > 0;
   const es = effectiveSettings || settings;
@@ -454,7 +454,14 @@ export default function Dashboard({ timesheets, calculations, settings, effectiv
 
   // === Per-person stats (for "Alle Personen" overview) ===
   const isAllPersons = personFilter === 'all';
-  const tsForCrew = allTimesheets || timesheets;
+  // When project filter is active, filter allTimesheets by project for crew stats
+  const tsForCrew = useMemo(() => {
+    const base = allTimesheets || timesheets;
+    if (projectFilter && projectFilter !== 'all') {
+      return base.filter(t => (t.projekt || 'Sonstiges') === projectFilter);
+    }
+    return base;
+  }, [allTimesheets, timesheets, projectFilter]);
   const personStats = useMemo(() => {
     if (!isAllPersons || tsForCrew.length === 0) return [];
 
@@ -593,11 +600,13 @@ export default function Dashboard({ timesheets, calculations, settings, effectiv
     };
   }, [isAllPersons, personStats, hiddenZusatzPersonen]);
 
-  // === Per-project breakdown (for individual person or filtered view) ===
+  // === Per-project breakdown — always use unfiltered-by-project data ===
   const projectStats = useMemo(() => {
-    if (timesheets.length === 0) return [];
+    // Use personFilteredTimesheets (person-filtered but NOT project-filtered) to always show all projects
+    const baseTS = isAllPersons ? (allTimesheets || timesheets) : (personFilteredTimesheets || timesheets);
+    if (baseTS.length === 0) return [];
     const byProject = {};
-    for (const ts of timesheets) {
+    for (const ts of baseTS) {
       const proj = ts.projekt || 'Sonstiges';
       if (!byProject[proj]) byProject[proj] = [];
       byProject[proj].push(ts);
@@ -621,10 +630,17 @@ export default function Dashboard({ timesheets, calculations, settings, effectiv
         verdienst: pc.gesamtVerdienst,
       };
     }).sort((a, b) => b.stunden - a.stunden);
-  }, [timesheets, effectiveSettings, settings]);
+  }, [timesheets, allTimesheets, personFilteredTimesheets, isAllPersons, effectiveSettings, settings]);
 
-  // Build chart data: hours per week
-  const chartData = timesheets.map(sheet => {
+  // Build chart data: hours per week, sorted by date
+  const sortedTimesheets = useMemo(() => {
+    return [...timesheets].sort((a, b) => {
+      const dA = a.days.find(d => d.datum)?.datum || '';
+      const dB = b.days.find(d => d.datum)?.datum || '';
+      return parseDateDE(dA) - parseDateDE(dB);
+    });
+  }, [timesheets]);
+  const chartData = sortedTimesheets.map(sheet => {
     const sc = calculateSheetTVFFS(sheet, settings);
     const firstDate = sheet.days.find(d => d.datum)?.datum || '';
     const lastDate = [...sheet.days].reverse().find(d => d.datum)?.datum || '';
@@ -1264,7 +1280,7 @@ export default function Dashboard({ timesheets, calculations, settings, effectiv
       <div className="stats-section">
         <h3 className="section-title">Letzte Einträge</h3>
         <div className="recent-sheets">
-          {timesheets.slice(-5).reverse().map(sheet => (
+          {sortedTimesheets.slice(-5).reverse().map(sheet => (
             <button key={sheet.id} className="recent-sheet-card" onClick={() => onViewDetail(sheet)}>
               <div className="sheet-info">
                 <span className="sheet-project">{sheet.projekt || 'Unbekannt'}</span>
