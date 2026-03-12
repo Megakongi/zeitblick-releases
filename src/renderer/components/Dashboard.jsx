@@ -296,12 +296,13 @@ function generateCSV(timesheets, c, settings, personFilter) {
   return lines.join('\n');
 }
 
-export default function Dashboard({ timesheets, calculations, settings, effectiveSettings, onSettings, onViewDetail, onUpdateTimesheets, projects, projectFilter, onProjectFilter, personFilter, onPersonFilter, allTimesheets, personFilteredTimesheets, getPersonSettings, resolveName }) {
+export default function Dashboard({ timesheets, calculations, settings, effectiveSettings, onSettings, onViewDetail, onUpdateTimesheets, projects, projectFilter, onProjectFilter, personFilter, onPersonFilter, allTimesheets, personFilteredTimesheets, getPersonSettings, resolveName, getBaseProject }) {
   const c = calculations;
   const hasData = timesheets.length > 0;
   const es = effectiveSettings || settings;
   const hasGage = es.tagesgage > 0;
   const resolve = resolveName || ((n) => n);
+  const baseProject = getBaseProject || ((p) => p || 'Sonstiges');
 
   const [gageInput, setGageInput] = useState(es.tagesgage || '');
   const [gageType, setGageType] = useState(es.gageType || 'tag');
@@ -458,10 +459,10 @@ export default function Dashboard({ timesheets, calculations, settings, effectiv
   const tsForCrew = useMemo(() => {
     const base = allTimesheets || timesheets;
     if (projectFilter && projectFilter !== 'all') {
-      return base.filter(t => (t.projekt || 'Sonstiges') === projectFilter);
+      return base.filter(t => baseProject(t.projekt) === projectFilter);
     }
     return base;
-  }, [allTimesheets, timesheets, projectFilter]);
+  }, [allTimesheets, timesheets, projectFilter, baseProject]);
   const personStats = useMemo(() => {
     if (!isAllPersons || tsForCrew.length === 0) return [];
 
@@ -607,7 +608,7 @@ export default function Dashboard({ timesheets, calculations, settings, effectiv
     if (baseTS.length === 0) return [];
     const byProject = {};
     for (const ts of baseTS) {
-      const proj = ts.projekt || 'Sonstiges';
+      const proj = baseProject(ts.projekt);
       if (!byProject[proj]) byProject[proj] = [];
       byProject[proj].push(ts);
     }
@@ -630,7 +631,7 @@ export default function Dashboard({ timesheets, calculations, settings, effectiv
         verdienst: pc.gesamtVerdienst,
       };
     }).sort((a, b) => b.stunden - a.stunden);
-  }, [timesheets, allTimesheets, personFilteredTimesheets, isAllPersons, effectiveSettings, settings]);
+  }, [timesheets, allTimesheets, personFilteredTimesheets, isAllPersons, effectiveSettings, settings, baseProject]);
 
   // Build chart data: hours per week, sorted by date
   const sortedTimesheets = useMemo(() => {

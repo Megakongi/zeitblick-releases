@@ -246,9 +246,17 @@ function extractHeader(rows, headerRowY) {
       
       for (const labelDef of HEADER_LABELS) {
         if (labelDef.patterns.some(p => p.test(text + ':'))) {
-          // Value is the next item(s) on the same row
-          const valueItems = row.items.slice(i + 1);
-          const value = valueItems.map(vi => vi.text.trim()).filter(Boolean).join(' ');
+          // Value is the next item(s) on the same row — but stop at the next recognized label
+          const valueItems = [];
+          for (let j = i + 1; j < row.items.length; j++) {
+            const itemText = row.items[j].text.trim();
+            const itemTextClean = itemText.replace(/:$/, '');
+            // Check if this item is another known header label
+            const isNextLabel = HEADER_LABELS.some(ld => ld.patterns.some(p => p.test(itemTextClean + ':')));
+            if (isNextLabel) break; // Stop — this is a new label
+            valueItems.push(itemText);
+          }
+          const value = valueItems.filter(Boolean).join(' ');
           
           if (labelDef.key === 'pause') {
             header.pause = parseFloat(value.replace(',', '.')) || 0;

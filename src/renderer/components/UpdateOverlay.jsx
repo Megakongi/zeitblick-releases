@@ -101,7 +101,12 @@ export default function UpdateOverlay() {
     setInstalling(true);
     try {
       const result = await window.electronAPI.installUpdate();
-      // macOS: DMG was opened for manual installation
+      // macOS auto-install: app will restart automatically
+      if (result?.autoInstall) {
+        // App is restarting — keep the "installing" state
+        return;
+      }
+      // macOS fallback: DMG was opened for manual installation
       if (result?.manual) {
         setDmgOpened(true);
         setInstalling(false);
@@ -192,6 +197,29 @@ export default function UpdateOverlay() {
     );
   }
 
+  // ===== Installing — Auto-install in progress (macOS) =====
+  if ((installing || updateState?.status === 'installing') && !dmgOpened) {
+    return (
+      <div className="update-overlay-backdrop" onClick={() => {}}>
+        <div className="update-overlay-modal" onClick={e => e.stopPropagation()}>
+          <div className="update-modal-header">
+            <div className="update-modal-icon">⏳</div>
+            <h2>Update wird installiert...</h2>
+            <p className="update-version-badge">Version {updateState?.version}</p>
+          </div>
+          <div className="update-modal-body">
+            <p style={{ color: 'var(--text-secondary)', textAlign: 'center', padding: '12px 0' }}>
+              Die App wird automatisch neu gestartet.
+            </p>
+            <p className="update-data-safe">
+              🔒 Deine Daten sind sicher gespeichert.
+            </p>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   // ===== macOS: DMG opened — show instructions to drag & relaunch =====
   if (dmgOpened && !dismissed) {
     return (
@@ -252,7 +280,7 @@ export default function UpdateOverlay() {
             )}
             {isMac ? (
               <p className="update-data-safe">
-                🔒 Klicke auf "Installieren" um die Update-Datei zu öffnen. Ziehe dann ZeitBlick in den Programme-Ordner.
+                🔒 Klicke auf "Installieren" — die App wird automatisch aktualisiert und neu gestartet.
               </p>
             ) : (
               <p className="update-data-safe">
@@ -266,7 +294,7 @@ export default function UpdateOverlay() {
               Später
             </button>
             <button className="update-btn update-btn-primary" onClick={handleInstall} disabled={installing}>
-              {installing ? '⏳ Wird vorbereitet...' : (isMac ? '📦 Update-Datei öffnen' : '🔄 Jetzt neu starten & installieren')}
+              {installing ? '⏳ Wird installiert...' : '🔄 Jetzt installieren & neu starten'}
             </button>
           </div>
         </div>

@@ -11,6 +11,17 @@ import UpdateOverlay from './components/UpdateOverlay';
 import { calculateTVFFS } from './utils/tvffsCalculator';
 import { getTimesheetKW } from './utils/calendarWeek';
 
+/**
+ * Extract the base project name by stripping appended person info.
+ * E.g. "Frier & 50 Name: Fabian Zenker" → "Frier & 50"
+ */
+function getBaseProject(projekt) {
+  if (!projekt) return 'Sonstiges';
+  // Strip " Name: ..." suffix (common in parsed PDFs where project and name share a row)
+  const cleaned = projekt.replace(/\s+Name:\s+.*$/i, '').trim();
+  return cleaned || 'Sonstiges';
+}
+
 export default function App() {
   const [view, setView] = useState('dashboard');
   const [timesheets, setTimesheets] = useState([]);
@@ -318,7 +329,7 @@ export default function App() {
     setSearchQuery('');
   }, []);
 
-  const projects = [...new Set(timesheets.map(t => t.projekt || 'Sonstiges'))];
+  const projects = [...new Set(timesheets.map(t => getBaseProject(t.projekt)))].sort();
   const persons = [...new Set(timesheets.map(t => resolveName(t.name || 'Unbekannt')))].sort();
   
   // Filter timesheets by person first (using resolved names), then by project
@@ -328,10 +339,10 @@ export default function App() {
   
   const filteredTimesheets = projectFilter === 'all'
     ? personFiltered
-    : personFiltered.filter(t => (t.projekt || 'Sonstiges') === projectFilter);
+    : personFiltered.filter(t => getBaseProject(t.projekt) === projectFilter);
 
   // Filtered projects (only projects available for selected person)
-  const filteredProjects = [...new Set(personFiltered.map(t => t.projekt || 'Sonstiges'))];
+  const filteredProjects = [...new Set(personFiltered.map(t => getBaseProject(t.projekt)))].sort();
 
   // Helper: get settings with per-person gage override (via position-based gagen)
   const getPersonSettings = useCallback((personName) => {
@@ -370,7 +381,7 @@ export default function App() {
   const renderView = () => {
     switch (view) {
       case 'dashboard':
-        return <Dashboard timesheets={filteredTimesheets} calculations={calculations} settings={settings} effectiveSettings={effectiveSettings} onSettings={setSettings} onViewDetail={handleViewDetail} onUpdateTimesheets={setTimesheets} projects={filteredProjects} projectFilter={projectFilter} onProjectFilter={setProjectFilter} personFilter={personFilter} onPersonFilter={handlePersonFilter} allTimesheets={timesheets} personFilteredTimesheets={personFiltered} getPersonSettings={getPersonSettings} resolveName={resolveName} />;
+        return <Dashboard timesheets={filteredTimesheets} calculations={calculations} settings={settings} effectiveSettings={effectiveSettings} onSettings={setSettings} onViewDetail={handleViewDetail} onUpdateTimesheets={setTimesheets} projects={filteredProjects} projectFilter={projectFilter} onProjectFilter={setProjectFilter} personFilter={personFilter} onPersonFilter={handlePersonFilter} allTimesheets={timesheets} personFilteredTimesheets={personFiltered} getPersonSettings={getPersonSettings} resolveName={resolveName} getBaseProject={getBaseProject} />;
       case 'timesheets':
         return <TimesheetList timesheets={timesheets} onViewDetail={handleViewDetail} onDelete={handleDelete} onBulkDelete={handleBulkDelete} personFilter={personFilter} resolveName={resolveName} />;
       case 'detail':
@@ -388,7 +399,7 @@ export default function App() {
       case 'settings':
         return <Settings settings={settings} onSave={setSettings} timesheets={timesheets} setTimesheets={setTimesheets} />;
       default:
-        return <Dashboard timesheets={filteredTimesheets} calculations={calculations} settings={settings} effectiveSettings={effectiveSettings} onSettings={setSettings} onViewDetail={handleViewDetail} onUpdateTimesheets={setTimesheets} projects={filteredProjects} projectFilter={projectFilter} onProjectFilter={setProjectFilter} personFilter={personFilter} onPersonFilter={handlePersonFilter} allTimesheets={timesheets} personFilteredTimesheets={personFiltered} getPersonSettings={getPersonSettings} resolveName={resolveName} />;
+        return <Dashboard timesheets={filteredTimesheets} calculations={calculations} settings={settings} effectiveSettings={effectiveSettings} onSettings={setSettings} onViewDetail={handleViewDetail} onUpdateTimesheets={setTimesheets} projects={filteredProjects} projectFilter={projectFilter} onProjectFilter={setProjectFilter} personFilter={personFilter} onPersonFilter={handlePersonFilter} allTimesheets={timesheets} personFilteredTimesheets={personFiltered} getPersonSettings={getPersonSettings} resolveName={resolveName} getBaseProject={getBaseProject} />;
     }
   };
 

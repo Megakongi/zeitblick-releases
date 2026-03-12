@@ -80,7 +80,7 @@ function createWindow() {
   }
 
   mainWindow = new BrowserWindow({
-    title: 'ZeitBlick v1.2',
+    title: 'ZeitBlick v1.3',
     width: 1400,
     height: 900,
     minWidth: 1000,
@@ -240,7 +240,7 @@ ipcMain.handle('download-update', async () => {
 });
 
 // IPC: Install update
-ipcMain.handle('install-update', () => {
+ipcMain.handle('install-update', async () => {
   // Create a backup before updating
   try {
     createBackup();
@@ -248,10 +248,69 @@ ipcMain.handle('install-update', () => {
     console.error('Pre-update backup failed:', e.message);
   }
   
-  // macOS: Open the downloaded DMG for manual installation
+  // macOS: Automatically mount DMG, copy app, and relaunch
   if (process.platform === 'darwin' && downloadedDmgPath) {
-    shell.openPath(downloadedDmgPath);
-    return { success: true, manual: true };
+    const { execSync } = require('child_process');
+    try {
+      sendUpdateStatus('update-status', { status: 'installing', message: 'Update wird installiert...' });
+      
+      // 1. Mount the DMG silently
+      const mountOutput = execSync(`hdiutil attach "${downloadedDmgPath}" -nobrowse -noverify -noautoopen`, { encoding: 'utf-8' });
+      // Parse mount point from hdiutil output (last line, last column)
+      const mountLines = mountOutput.trim().split('\n');
+      const lastLine = mountLines[mountLines.length - 1];
+      const mountPoint = lastLine.split('\t').pop().trim();
+      
+      if (!mountPoint || !fs.existsSync(mountPoint)) {
+        throw new Error('DMG konnte nicht gemountet werden');
+      }
+      
+      // 2. Find the .app in the mounted volume
+      const volumeContents = fs.readdirSync(mountPoint);
+      const appName = volumeContents.find(f => f.endsWith('.app'));
+      if (!appName) {
+        execSync(`hdiutil detach "${mountPoint}" -force`);
+        throw new Error('Keine .app im DMG gefunden');
+      }
+      
+      const sourceApp = path.join(mountPoint, appName);
+      const destApp = path.join('/Applications', appName);
+      
+      // 3. Remove old app and copy new one
+      if (fs.existsSync(destApp)) {
+        execSync(`rm -rf "${destApp}"`);
+      }
+      execSync(`cp -R "${sourceApp}" "${destApp}"`);
+      
+      // 4. Unmount DMG
+      try {
+        execSync(`hdiutil detach "${mountPoint}" -force`);
+      } catch (e) {
+        // Non-critical if unmount fails
+      }
+      
+      // 5. Clean up downloaded DMG
+      try {
+        fs.unlinkSync(downloadedDmgPath);
+      } catch (e) {}
+      
+      // 6. Relaunch the app from /Applications
+      const { spawn } = require('child_process');
+      spawn('open', ['-n', destApp], { detached: true, stdio: 'ignore' }).unref();
+      
+      // Quit current instance after short delay to let new one start
+      setTimeout(() => { app.quit(); }, 500);
+      
+      return { success: true, autoInstall: true };
+    } catch (err) {
+      sendUpdateStatus('update-status', {
+        status: 'error',
+        message: `Installation fehlgeschlagen: ${err.message}`,
+      });
+      // Fallback: open DMG for manual install
+      shell.openPath(downloadedDmgPath);
+      return { success: true, manual: true };
+    }
   }
   
   // Windows: Standard quit-and-install
