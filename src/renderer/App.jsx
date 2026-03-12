@@ -45,7 +45,49 @@ export default function App() {
   useEffect(() => {
     async function load() {
       const data = await window.electronAPI.loadData();
-      if (data.timesheets) setTimesheets(data.timesheets);
+      if (data.timesheets) {
+        // Migrate stored timesheets: fix totals and project names
+        let migrated = false;
+        const ts = data.timesheets.map(sheet => {
+          let changed = false;
+          const s = { ...sheet };
+
+          // Fix project name: strip " Name: ..." suffix
+          if (s.projekt && /\s+Name:\s+/i.test(s.projekt)) {
+            s.projekt = s.projekt.replace(/\s+Name:\s+.*$/i, '').trim() || 'Sonstiges';
+            changed = true;
+          }
+
+          // Fix produktionsfirma: strip stray "fi rma:" prefix
+          if (s.produktionsfirma && /^(ﬁ|fi)\s*rma:\s*/i.test(s.produktionsfirma)) {
+            s.produktionsfirma = s.produktionsfirma.replace(/^(ﬁ|fi)\s*rma:\s*/i, '').trim();
+            changed = true;
+          }
+
+          // Recompute totals from days if totals are zero but days have data
+          if (s.days && s.days.length > 0) {
+            const daySum = s.days.reduce((sum, d) => sum + (Number(d.stundenTotal) || 0), 0);
+            if ((!s.totals || s.totals.stundenTotal === 0) && daySum > 0) {
+              s.totals = {
+                stundenTotal: Math.round(daySum * 100) / 100,
+                ueberstunden25: Math.round(s.days.reduce((sum, d) => sum + (Number(d.ueberstunden25) || 0), 0) * 100) / 100,
+                ueberstunden50: Math.round(s.days.reduce((sum, d) => sum + (Number(d.ueberstunden50) || 0), 0) * 100) / 100,
+                ueberstunden100: Math.round(s.days.reduce((sum, d) => sum + (Number(d.ueberstunden100) || 0), 0) * 100) / 100,
+                nacht25: Math.round(s.days.reduce((sum, d) => sum + (Number(d.nacht25) || 0), 0) * 100) / 100,
+                fahrzeit: Math.round(s.days.reduce((sum, d) => sum + (Number(d.fahrzeit) || 0), 0) * 100) / 100,
+              };
+              changed = true;
+            }
+          }
+
+          if (changed) migrated = true;
+          return changed ? s : sheet;
+        });
+        setTimesheets(ts);
+        if (migrated) {
+          console.log('[ZeitBlick] Migrated stored timesheet data (totals + project names)');
+        }
+      }
       if (data.settings) setSettings(data.settings);
       if (data._loadError) {
         setImportMessage('⚠ Fehler beim Laden: ' + data._loadError);
@@ -383,7 +425,7 @@ export default function App() {
       case 'dashboard':
         return <Dashboard timesheets={filteredTimesheets} calculations={calculations} settings={settings} effectiveSettings={effectiveSettings} onSettings={setSettings} onViewDetail={handleViewDetail} onUpdateTimesheets={setTimesheets} projects={filteredProjects} projectFilter={projectFilter} onProjectFilter={setProjectFilter} personFilter={personFilter} onPersonFilter={handlePersonFilter} allTimesheets={timesheets} personFilteredTimesheets={personFiltered} getPersonSettings={getPersonSettings} resolveName={resolveName} getBaseProject={getBaseProject} />;
       case 'timesheets':
-        return <TimesheetList timesheets={timesheets} onViewDetail={handleViewDetail} onDelete={handleDelete} onBulkDelete={handleBulkDelete} personFilter={personFilter} resolveName={resolveName} />;
+        return <TimesheetList timesheets={timesheets} onViewDetail={handleViewDetail} onDelete={handleDelete} onBulkDelete={handleBulkDelete} personFilter={personFilter} resolveName={resolveName} getBaseProject={getBaseProject} />;
       case 'detail':
         return selectedSheet ? <TimesheetDetail sheet={selectedSheet} settings={getPersonSettings(selectedSheet.name)} onBack={() => setView('timesheets')} onEdit={handleEditSheet} allTimesheets={timesheets} onSelectSheet={(s) => { setSelectedSheet(s); }} /> : null;
       case 'create':

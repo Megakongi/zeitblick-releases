@@ -221,6 +221,51 @@ function detectColumns(rows) {
 
   // Sort columns by x-position and compute boundaries
   bestMatch.columns.sort((a, b) => a.x - b.x);
+
+  // Post-process: resolve duplicate column keys using group headers from the row above.
+  // E.g. Row above has "Überstunden" at x=26, "Nacht" at x=32, "Fahrzeit" at x=35
+  // Row below has "25%" "50%" "100%" "25%" — the second "25" should be nacht25, not ueberstunden25
+  const headerRowIdx = rows.findIndex(r => Math.abs(r.y - bestMatch.headerRowY) < 0.3);
+  if (headerRowIdx > 0) {
+    const rowAbove = rows[headerRowIdx - 1];
+    // Find group headers in the row above
+    const groupHeaders = [];
+    for (const item of rowAbove.items) {
+      const text = item.text.trim().toLowerCase();
+      if (/nacht/i.test(text)) groupHeaders.push({ key: 'nacht', x: item.x });
+      if (/fahr/i.test(text) || /^fz$/i.test(text) || /^reise/i.test(text) || /^travel/i.test(text)) groupHeaders.push({ key: 'fahrzeit', x: item.x });
+      if (/überstunden/i.test(text) || /ueberstunden/i.test(text)) groupHeaders.push({ key: 'ueberstunden', x: item.x });
+    }
+
+    if (groupHeaders.length > 0) {
+      // Resolve duplicate keys
+      const seen = {};
+      for (const col of bestMatch.columns) {
+        if (seen[col.key]) {
+          // Duplicate! Find the closest group header from the row above
+          const closest = groupHeaders.reduce((best, gh) =>
+            Math.abs(gh.x - col.x) < Math.abs(best.x - col.x) ? gh : best
+          , groupHeaders[0]);
+          if (closest.key === 'nacht' && col.key.startsWith('ueberstunden')) {
+            col.key = 'nacht' + col.key.replace('ueberstunden', '');
+            // nacht25 → nacht25, which is correct for our schema
+            if (col.key === 'nacht50' || col.key === 'nacht100') col.key = 'nacht25'; // normalize
+          }
+        }
+        seen[col.key] = true;
+      }
+
+      // Add missing columns from group headers (e.g. Fahrzeit with no sub-header)
+      const existingKeys = new Set(bestMatch.columns.map(c => c.key));
+      for (const gh of groupHeaders) {
+        if (gh.key === 'fahrzeit' && !existingKeys.has('fahrzeit')) {
+          bestMatch.columns.push({ key: 'fahrzeit', x: gh.x, text: 'Fahrzeit' });
+          bestMatch.columns.sort((a, b) => a.x - b.x);
+        }
+      }
+    }
+  }
+
   return bestMatch;
 }
 
@@ -247,9 +292,14 @@ function extractHeader(rows, headerRowY) {
       for (const labelDef of HEADER_LABELS) {
         if (labelDef.patterns.some(p => p.test(text + ':'))) {
           // Value is the next item(s) on the same row — but stop at the next recognized label
+          // Also skip items at the same x-position (they are fragments of the label itself,
+          // e.g. "Produkitons" + "ﬁ" + "rma:" all at x=15.3)
+          const labelX = row.items[i].x;
           const valueItems = [];
           for (let j = i + 1; j < row.items.length; j++) {
             const itemText = row.items[j].text.trim();
+            // Skip items at the same x-position as the label (fragments of split text)
+            if (Math.abs(row.items[j].x - labelX) < 0.5) continue;
             const itemTextClean = itemText.replace(/:$/, '');
             // Check if this item is another known header label
             const isNextLabel = HEADER_LABELS.some(ld => ld.patterns.some(p => p.test(itemTextClean + ':')));

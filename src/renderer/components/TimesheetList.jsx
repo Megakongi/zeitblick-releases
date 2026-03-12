@@ -3,7 +3,24 @@ import { getTimesheetKW, getTimesheetYear, formatKW } from '../utils/calendarWee
 import { generateTimesheetHTML } from '../utils/pdfExport';
 import { getInitials } from '../utils/helpers';
 
-export default function TimesheetList({ timesheets, onViewDetail, onDelete, onBulkDelete, personFilter, resolveName }) {
+function getSheetHours(sheet) {
+  // Use totals if available, else compute from individual days
+  if (sheet.totals?.stundenTotal > 0) return sheet.totals.stundenTotal;
+  return sheet.days ? sheet.days.reduce((sum, d) => sum + (Number(d.stundenTotal) || 0), 0) : 0;
+}
+function getSheetOvertime(sheet) {
+  const t = sheet.totals || {};
+  const fromTotals = (t.ueberstunden25 || 0) + (t.ueberstunden50 || 0) + (t.ueberstunden100 || 0);
+  if (fromTotals > 0) return fromTotals;
+  if (!sheet.days) return 0;
+  return sheet.days.reduce((sum, d) => sum + (Number(d.ueberstunden25) || 0) + (Number(d.ueberstunden50) || 0) + (Number(d.ueberstunden100) || 0), 0);
+}
+function getSheetNacht(sheet) {
+  if (sheet.totals?.nacht25 > 0) return sheet.totals.nacht25;
+  return sheet.days ? sheet.days.reduce((sum, d) => sum + (Number(d.nacht25) || 0), 0) : 0;
+}
+
+export default function TimesheetList({ timesheets, onViewDetail, onDelete, onBulkDelete, personFilter, resolveName, getBaseProject }) {
   const [confirmId, setConfirmId] = useState(null);
   const [bulkConfirm, setBulkConfirm] = useState(null);
   const [collapsedPersons, setCollapsedPersons] = useState({});
@@ -211,7 +228,7 @@ export default function TimesheetList({ timesheets, onViewDetail, onDelete, onBu
   for (const sheet of sortedTimesheets) {
     const person = resolve(sheet.name || 'Unbekannt');
     if (!byPerson[person]) byPerson[person] = {};
-    const project = sheet.projekt || 'Sonstiges';
+    const project = getBaseProject ? getBaseProject(sheet.projekt) : (sheet.projekt || 'Sonstiges');
     if (!byPerson[person][project]) byPerson[person][project] = [];
     byPerson[person][project].push(sheet);
   }
@@ -351,7 +368,7 @@ export default function TimesheetList({ timesheets, onViewDetail, onDelete, onBu
         const projectNames = Object.keys(projects).sort();
         const isCollapsed = collapsedPersons[person];
         const sheetCount = Object.values(projects).reduce((sum, arr) => sum + arr.length, 0);
-        const totalHours = Object.values(projects).flat().reduce((sum, s) => sum + (s.totals?.stundenTotal || 0), 0);
+        const totalHours = Object.values(projects).flat().reduce((sum, s) => sum + getSheetHours(s), 0);
 
         return (
           <div key={person} className="person-group">
@@ -400,7 +417,7 @@ export default function TimesheetList({ timesheets, onViewDetail, onDelete, onBu
                       </div>
                       <div className="sheet-card-stats">
                         <div className="mini-stat">
-                          <span className="mini-stat-value">{Number(sheet.totals?.stundenTotal || 0).toFixed(2)}</span>
+                          <span className="mini-stat-value">{getSheetHours(sheet).toFixed(2)}</span>
                           <span className="mini-stat-label">Stunden</span>
                         </div>
                         <div className="mini-stat">
@@ -408,13 +425,11 @@ export default function TimesheetList({ timesheets, onViewDetail, onDelete, onBu
                           <span className="mini-stat-label">Tage</span>
                         </div>
                         <div className="mini-stat">
-                          <span className="mini-stat-value">
-                            {((sheet.totals?.ueberstunden25 || 0) + (sheet.totals?.ueberstunden50 || 0) + (sheet.totals?.ueberstunden100 || 0)).toFixed(2)}
-                          </span>
+                          <span className="mini-stat-value">{getSheetOvertime(sheet).toFixed(2)}</span>
                           <span className="mini-stat-label">Überstunden</span>
                         </div>
                         <div className="mini-stat">
-                          <span className="mini-stat-value">{Number(sheet.totals?.nacht25 || 0).toFixed(2)}</span>
+                          <span className="mini-stat-value">{getSheetNacht(sheet).toFixed(2)}</span>
                           <span className="mini-stat-label">Nacht</span>
                         </div>
                       </div>
