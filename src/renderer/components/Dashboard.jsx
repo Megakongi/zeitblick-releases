@@ -310,6 +310,8 @@ export default function Dashboard({ timesheets, calculations, settings, effectiv
   const [showExport, setShowExport] = useState(false);
   const [spesenInput, setSpesenInput] = useState({ datum: '', beschreibung: '', betrag: '', kategorie: 'Fahrt' });
   const [spesenCollapsed, setSpesenCollapsed] = useState(true);
+  const [draggedPerson, setDraggedPerson] = useState(null);
+  const [dropTarget, setDropTarget] = useState(null); // 'stammteam' or 'weitere'
   const hiddenZusatzPersonen = settings.hiddenZusatzPersonen || [];
   const setHiddenZusatzPersonen = (val) => {
     const newVal = typeof val === 'function' ? val(hiddenZusatzPersonen) : val;
@@ -519,41 +521,20 @@ export default function Dashboard({ timesheets, calculations, settings, effectiv
       };
     });
 
-    // Collect all crew member names (resolved) and positions for Stammteam detection
-    const crewMemberNames = new Set();
-    const crewMemberPositions = {};
-    const crews = settings.crews || {};
-    for (const crew of Object.values(crews)) {
-      for (const m of (crew.members || [])) {
-        const resolved = resolve(m.name);
-        crewMemberNames.add(resolved);
-        if (m.position) crewMemberPositions[resolved] = m.position;
-      }
+    // Collect positions from timesheets
+    const personPositions = {};
+    for (const ts of tsForCrew) {
+      const name = resolve(ts.name || 'Unbekannt');
+      if (ts.position && !personPositions[name]) personPositions[name] = ts.position;
     }
-
-    // Position hierarchy for sorting
-    const positionRank = { 'oberbeleuchter': 0, 'best-boy': 1, 'best boy': 1, 'beleuchter': 2, 'lichtassistent': 3 };
-    const getPositionRank = (name) => {
-      const pos = (crewMemberPositions[name] || '').toLowerCase().trim();
-      return pos in positionRank ? positionRank[pos] : 99;
-    };
 
     // Attach position to each stat entry
     for (const s of stats) {
-      s.position = crewMemberPositions[s.name] || '';
+      s.position = personPositions[s.name] || '';
     }
 
-    // Sort: Stammteam first (by position rank), then others (by arbeitstage desc)
-    stats.sort((a, b) => {
-      const aIsCrewMember = crewMemberNames.has(a.name) ? 1 : 0;
-      const bIsCrewMember = crewMemberNames.has(b.name) ? 1 : 0;
-      if (aIsCrewMember !== bIsCrewMember) return bIsCrewMember - aIsCrewMember;
-      if (aIsCrewMember && bIsCrewMember) {
-        const rankDiff = getPositionRank(a.name) - getPositionRank(b.name);
-        if (rankDiff !== 0) return rankDiff;
-      }
-      return b.arbeitstage - a.arbeitstage;
-    });
+    // Sort by arbeitstage desc
+    stats.sort((a, b) => b.arbeitstage - a.arbeitstage);
     return stats;
   }, [isAllPersons, tsForCrew, settings, getPersonSettings, resolve]);
 
@@ -572,12 +553,12 @@ export default function Dashboard({ timesheets, calculations, settings, effectiv
     const maxDays = personStats[0]?.arbeitstage || 0;
 
     // Zusatztage: persons who worked fewer days than the total unique days
-    // Auto-exclude: Stammteam (crew members), Vertretung, krank
+    // Auto-exclude: Stammteam (project crew members), Vertretung, krank
     const crewNames = new Set();
-    const crs = settings.crews || {};
-    for (const crew of Object.values(crs)) {
-      for (const m of (crew.members || [])) {
-        crewNames.add(resolve(m.name));
+    const projectCrews = settings.projectCrews || {};
+    for (const members of Object.values(projectCrews)) {
+      for (const name of (members || [])) {
+        crewNames.add(resolve(name));
       }
     }
     const zusatzPersonen = personStats
@@ -613,17 +594,34 @@ export default function Dashboard({ timesheets, calculations, settings, effectiv
       byProject[proj].push(ts);
     }
     return Object.entries(byProject).map(([projektName, sheets]) => {
+      const uniquePersons = new Set(sheets.map(s => resolve(s.name || 'Unbekannt')));
+      return {
+        projekt: projektName,
+        sheets: sheets.length,
+        personen: uniquePersons.size,
+      };
+    }).sort((a, b) => b.sheets - a.sheets);
+  }, [timesheets, allTimesheets, personFilteredTimesheets, isAllPersons, settings, baseProject, resolve]);
+
+  // === Full per-project stats for individual person view (with TVFFS calculations) ===
+  const personProjectStats = useMemo(() => {
+    if (isAllPersons) return [];
+    const baseTS = personFilteredTimesheets || timesheets;
+    if (baseTS.length === 0) return [];
+    const byProject = {};
+    for (const ts of baseTS) {
+      const proj = baseProject(ts.projekt);
+      if (!byProject[proj]) byProject[proj] = [];
+      byProject[proj].push(ts);
+    }
+    return Object.entries(byProject).map(([projektName, sheets]) => {
       const pc = calcTVFFS(sheets, effectiveSettings || settings);
       return {
         projekt: projektName,
         sheets: sheets.length,
         arbeitstage: pc.totalArbeitstage,
-        bezahlteTage: pc.totalBezahlteTage,
         stunden: pc.totalStunden,
         ueberstunden: pc.totalUeberstunden,
-        ueberstunden25: pc.totalUeberstunden25,
-        ueberstunden50: pc.totalUeberstunden50,
-        ueberstunden100: pc.totalUeberstunden100,
         nacht: pc.totalNacht,
         fahrzeit: pc.totalFahrzeit,
         samstage: pc.totalSamstagstage,
@@ -631,7 +629,7 @@ export default function Dashboard({ timesheets, calculations, settings, effectiv
         verdienst: pc.gesamtVerdienst,
       };
     }).sort((a, b) => b.stunden - a.stunden);
-  }, [timesheets, allTimesheets, personFilteredTimesheets, isAllPersons, effectiveSettings, settings, baseProject]);
+  }, [timesheets, personFilteredTimesheets, isAllPersons, effectiveSettings, settings, baseProject]);
 
   // Build chart data: hours per week, sorted by date
   const sortedTimesheets = useMemo(() => {
@@ -713,36 +711,11 @@ export default function Dashboard({ timesheets, calculations, settings, effectiv
               {projectStats.map(ps => (
                 <button
                   key={ps.projekt}
-                  className={`project-breakdown-card ${projectFilter === ps.projekt ? 'project-breakdown-card-active' : ''}`}
+                  className={`project-breakdown-card project-breakdown-card-compact ${projectFilter === ps.projekt ? 'project-breakdown-card-active' : ''}`}
                   onClick={() => onProjectFilter && onProjectFilter(projectFilter === ps.projekt ? 'all' : ps.projekt)}
                 >
-                  <div className="project-breakdown-header">
-                    <span className="project-breakdown-name">{ps.projekt}</span>
-                    <span className="project-breakdown-meta">{ps.sheets} Zettel · {ps.arbeitstage} Tage</span>
-                  </div>
-                  <div className="project-breakdown-stats">
-                    <div className="project-breakdown-stat">
-                      <span className="project-breakdown-stat-value">{ps.stunden.toLocaleString('de-DE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
-                      <span className="project-breakdown-stat-label">Stunden</span>
-                    </div>
-                    <div className="project-breakdown-stat">
-                      <span className="project-breakdown-stat-value">{ps.ueberstunden.toLocaleString('de-DE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
-                      <span className="project-breakdown-stat-label">Überstd.</span>
-                    </div>
-                    <div className="project-breakdown-stat">
-                      <span className="project-breakdown-stat-value">{ps.nacht.toLocaleString('de-DE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
-                      <span className="project-breakdown-stat-label">Nacht</span>
-                    </div>
-                    <div className="project-breakdown-stat">
-                      <span className="project-breakdown-stat-value">{ps.fahrzeit.toLocaleString('de-DE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
-                      <span className="project-breakdown-stat-label">Fahrzeit</span>
-                    </div>
-                  </div>
-                  <div className="project-breakdown-badges">
-                    {ps.samstage > 0 && <span className="crew-badge crew-badge-sa">Sa × {ps.samstage}</span>}
-                    {ps.sonntage > 0 && <span className="crew-badge crew-badge-so">So × {ps.sonntage}</span>}
-                    {hasGage && ps.verdienst > 0 && <span className="crew-badge project-badge-earnings">{formatCurrency(ps.verdienst)}</span>}
-                  </div>
+                  <span className="project-breakdown-name">{ps.projekt}</span>
+                  <span className="project-breakdown-meta">{ps.sheets} Zettel · {ps.personen} {ps.personen === 1 ? 'Person' : 'Personen'}</span>
                 </button>
               ))}
             </div>
@@ -754,25 +727,61 @@ export default function Dashboard({ timesheets, calculations, settings, effectiv
           </div>
         )}
 
-        {/* Person cards */}
+        {/* Person cards with per-project Stammteam (drag & drop) */}
         {(() => {
-          const crewMemberNames = new Set();
-          const crews = settings.crews || {};
-          for (const crew of Object.values(crews)) {
-            for (const m of (crew.members || [])) {
-              crewMemberNames.add(resolve(m.name));
-            }
-          }
-          const stammteam = personStats.filter(ps => crewMemberNames.has(ps.name));
-          const weitere = personStats.filter(ps => !crewMemberNames.has(ps.name));
+          // Determine which project to show Stammteam for
+          const activeProject = projectFilter !== 'all' ? projectFilter : null;
+          const projectCrews = settings.projectCrews || {};
 
-          const renderCard = (ps) => (
-            <button
+          // Drag & drop handlers
+          const handleDragStart = (e, personName) => {
+            setDraggedPerson(personName);
+            e.dataTransfer.effectAllowed = 'move';
+            e.dataTransfer.setData('text/plain', personName);
+            // Add a slight delay so the dragging class applies
+            setTimeout(() => e.target.closest('.crew-card')?.classList.add('crew-card-dragging'), 0);
+          };
+          const handleDragEnd = (e) => {
+            setDraggedPerson(null);
+            setDropTarget(null);
+            e.target.closest('.crew-card')?.classList.remove('crew-card-dragging');
+          };
+          const handleDragOver = (e, zone) => {
+            e.preventDefault();
+            e.dataTransfer.dropEffect = 'move';
+            setDropTarget(zone);
+          };
+          const handleDragLeave = (e, zone) => {
+            // Only clear if actually leaving the zone
+            if (!e.currentTarget.contains(e.relatedTarget)) {
+              setDropTarget(null);
+            }
+          };
+          const handleDrop = (e, zone, projekt) => {
+            e.preventDefault();
+            const name = e.dataTransfer.getData('text/plain');
+            setDraggedPerson(null);
+            setDropTarget(null);
+            if (!name || !projekt) return;
+            const current = [...(projectCrews[projekt] || [])];
+            if (zone === 'stammteam' && !current.includes(name)) {
+              // Add to Stammteam
+              onSettings({ ...settings, projectCrews: { ...projectCrews, [projekt]: [...current, name] } });
+            } else if (zone === 'weitere' && current.includes(name)) {
+              // Remove from Stammteam
+              onSettings({ ...settings, projectCrews: { ...projectCrews, [projekt]: current.filter(n => n !== name) } });
+            }
+          };
+
+          const renderCard = (ps, isDraggable, projekt) => (
+            <div
               key={ps.name}
-              className="crew-card crew-card-clickable"
-              onClick={() => onPersonFilter && onPersonFilter(ps.name)}
+              className={`crew-card crew-card-clickable ${draggedPerson === ps.name ? 'crew-card-dragging' : ''}`}
+              draggable={isDraggable}
+              onDragStart={isDraggable ? (e) => handleDragStart(e, ps.name) : undefined}
+              onDragEnd={isDraggable ? handleDragEnd : undefined}
             >
-              <div className="crew-card-header">
+              <div className="crew-card-header" onClick={() => onPersonFilter && onPersonFilter(ps.name)}>
                 <div className="crew-avatar">{ps.name.charAt(0).toUpperCase()}</div>
                 <div className="crew-name-block">
                   <span className="crew-name">{ps.name}</span>
@@ -801,26 +810,83 @@ export default function Dashboard({ timesheets, calculations, settings, effectiv
                 {ps.kranktage > 0 && <span className="crew-badge crew-badge-krank">🤒 {ps.kranktage} krank</span>}
                 {ps.urlaubstageGenommen > 0 && <span className="crew-badge">🏖 {ps.urlaubstageGenommen} Urlaub</span>}
               </div>
-            </button>
+            </div>
           );
+
+          // Render crew sections for a specific project
+          const renderProjectCrew = (projekt) => {
+            const stammNames = new Set((projectCrews[projekt] || []).map(n => resolve(n)));
+            // Filter personStats to people who have timesheets in this project
+            const baseTS = allTimesheets || timesheets;
+            const projectPersons = new Set(
+              baseTS.filter(t => baseProject(t.projekt) === projekt).map(t => resolve(t.name || 'Unbekannt'))
+            );
+            const relevantStats = personStats.filter(ps => projectPersons.has(ps.name));
+            const stammteam = relevantStats.filter(ps => stammNames.has(ps.name));
+            const weitere = relevantStats.filter(ps => !stammNames.has(ps.name));
+
+            return (
+              <div key={projekt}>
+                {/* Stammteam drop zone */}
+                <div
+                  className={`crew-drop-zone ${dropTarget === 'stammteam' && draggedPerson ? 'crew-drop-zone-active' : ''}`}
+                  onDragOver={(e) => handleDragOver(e, 'stammteam')}
+                  onDragLeave={(e) => handleDragLeave(e, 'stammteam')}
+                  onDrop={(e) => handleDrop(e, 'stammteam', projekt)}
+                >
+                  <div className="crew-section-label">
+                    Stammteam{stammteam.length > 0 ? ` (${stammteam.length})` : ''}
+                    {draggedPerson && !stammNames.has(draggedPerson) && <span className="crew-drop-hint">↓ Hierher ziehen</span>}
+                  </div>
+                  {stammteam.length > 0 ? (
+                    <div className="crew-grid">
+                      {stammteam.map(ps => renderCard(ps, true, projekt))}
+                    </div>
+                  ) : (
+                    <div className="crew-drop-empty">
+                      Personen hierher ziehen, um das Stammteam für <strong>{projekt}</strong> festzulegen
+                    </div>
+                  )}
+                </div>
+
+                {/* Weitere drop zone */}
+                <div
+                  className={`crew-drop-zone ${dropTarget === 'weitere' && draggedPerson ? 'crew-drop-zone-active' : ''}`}
+                  onDragOver={(e) => handleDragOver(e, 'weitere')}
+                  onDragLeave={(e) => handleDragLeave(e, 'weitere')}
+                  onDrop={(e) => handleDrop(e, 'weitere', projekt)}
+                >
+                  {weitere.length > 0 && (
+                    <>
+                      <div className="crew-section-label">
+                        Weitere{weitere.length > 0 ? ` (${weitere.length})` : ''}
+                        {draggedPerson && stammNames.has(draggedPerson) && <span className="crew-drop-hint">↓ Hierher ziehen</span>}
+                      </div>
+                      <div className="crew-grid">
+                        {weitere.map(ps => renderCard(ps, true, projekt))}
+                      </div>
+                    </>
+                  )}
+                </div>
+              </div>
+            );
+          };
+
+          // If a project filter is active, show Stammteam/Weitere for that project
+          if (activeProject) {
+            return renderProjectCrew(activeProject);
+          }
+
+          // No project filter — show all persons without Stammteam split
+          // (user must select a project to manage Stammteam)
           return (
             <>
-              {stammteam.length > 0 && weitere.length > 0 && (
-                <div className="crew-section-label">Stammteam</div>
-              )}
-              <div className="crew-grid">
-                {stammteam.map(renderCard)}
+              <div className="crew-section-hint">
+                Wähle ein Projekt aus, um das Stammteam per Drag & Drop zu verwalten
               </div>
-              {weitere.length > 0 && (
-                <>
-                  {stammteam.length > 0 && (
-                    <div className="crew-section-label">Weitere</div>
-                  )}
-                  <div className="crew-grid">
-                    {weitere.map(renderCard)}
-                  </div>
-                </>
-              )}
+              <div className="crew-grid">
+                {personStats.map(ps => renderCard(ps, false, null))}
+              </div>
             </>
           );
         })()}
@@ -1023,11 +1089,11 @@ export default function Dashboard({ timesheets, calculations, settings, effectiv
       )}
 
       {/* === Projektübersicht === */}
-      {projectStats.length > 1 && (
+      {personProjectStats.length > 1 && (
         <div className="stats-section">
           <h3 className="section-title">Projektübersicht</h3>
           <div className="project-breakdown-grid">
-            {projectStats.map(ps => (
+            {personProjectStats.map(ps => (
               <button
                 key={ps.projekt}
                 className={`project-breakdown-card ${projectFilter === ps.projekt ? 'project-breakdown-card-active' : ''}`}

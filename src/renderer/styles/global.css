@@ -1688,6 +1688,68 @@ body {
   margin-top: 0;
 }
 
+.crew-section-label .crew-drop-hint {
+  float: right;
+  font-weight: 400;
+  font-size: 11px;
+  color: var(--accent-blue);
+  opacity: 0.8;
+  animation: dropHintPulse 1.5s ease-in-out infinite;
+}
+
+@keyframes dropHintPulse {
+  0%, 100% { opacity: 0.5; }
+  50% { opacity: 1; }
+}
+
+/* --- Drag & Drop zones --- */
+
+.crew-drop-zone {
+  border-radius: var(--radius-lg);
+  border: 2px dashed transparent;
+  padding: 4px;
+  transition: border-color 0.2s, background 0.2s;
+  margin-bottom: 8px;
+}
+
+.crew-drop-zone-active {
+  border-color: var(--accent-blue);
+  background: rgba(74, 125, 255, 0.04);
+}
+
+.crew-drop-empty {
+  padding: 24px 16px;
+  text-align: center;
+  font-size: 13px;
+  color: var(--text-secondary);
+  border: 1px dashed var(--border-color);
+  border-radius: var(--radius-md);
+  margin-bottom: 12px;
+}
+
+.crew-card-dragging {
+  opacity: 0.4;
+  transform: scale(0.97);
+}
+
+.crew-card[draggable="true"] {
+  cursor: grab;
+}
+
+.crew-card[draggable="true"]:active {
+  cursor: grabbing;
+}
+
+.crew-section-hint {
+  font-size: 13px;
+  color: var(--text-secondary);
+  margin-bottom: 12px;
+  padding: 8px 12px;
+  background: rgba(74, 125, 255, 0.06);
+  border-radius: var(--radius-md);
+  border: 1px solid rgba(74, 125, 255, 0.15);
+}
+
 .crew-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
@@ -1873,6 +1935,21 @@ body {
   transform: translateY(0);
 }
 
+.project-breakdown-card-compact {
+  padding: 12px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.project-breakdown-card-compact .project-breakdown-name {
+  font-size: 14px;
+}
+
+.project-breakdown-card-compact .project-breakdown-meta {
+  font-size: 12px;
+}
+
 .project-breakdown-card-active {
   border-color: var(--accent-blue);
   box-shadow: 0 0 0 2px rgba(74, 125, 255, 0.25);
@@ -1972,6 +2049,19 @@ body {
 
 [data-theme="light"] .project-breakdown-card-active {
   background: rgba(74, 125, 255, 0.03);
+}
+
+[data-theme="light"] .crew-drop-zone-active {
+  background: rgba(74, 125, 255, 0.03);
+}
+
+[data-theme="light"] .crew-drop-empty {
+  border-color: #d0d0d0;
+}
+
+[data-theme="light"] .crew-section-hint {
+  background: rgba(74, 125, 255, 0.04);
+  border-color: rgba(74, 125, 255, 0.12);
 }
 
 /* --- Zusatztage --- */

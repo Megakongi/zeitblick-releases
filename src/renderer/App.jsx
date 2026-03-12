@@ -26,7 +26,7 @@ export default function App() {
   const [view, setView] = useState('dashboard');
   const [timesheets, setTimesheets] = useState([]);
   const [selectedSheet, setSelectedSheet] = useState(null);
-  const [settings, setSettings] = useState({ tagesgage: 0, gageType: 'tag', zeitkonto: false, theme: 'dark', spesen: [], personGagen: {}, positionGagen: {}, nameAliases: {}, crews: {} });
+  const [settings, setSettings] = useState({ tagesgage: 0, gageType: 'tag', zeitkonto: false, theme: 'dark', spesen: [], personGagen: {}, positionGagen: {}, nameAliases: {}, crews: {}, projectCrews: {} });
   const [isImporting, setIsImporting] = useState(false);
   const [isDragOver, setIsDragOver] = useState(false);
   const [importMessage, setImportMessage] = useState(null);
