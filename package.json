@@ -6,9 +6,10 @@
   "main": "main.js",
   "scripts": {
     "dev": "concurrently \"vite\" \"wait-on http://localhost:5173 && electron .\"",
-    "build": "vite build && electron-builder --mac --win",
-    "build:mac": "vite build && electron-builder --mac",
-    "build:win": "vite build && electron-builder --win",
+    "clean:release": "node -e \"const fs=require('fs'),p=require('path'),d=p.join(__dirname,'release');if(fs.existsSync(d)){fs.readdirSync(d).filter(f=>/\\.(dmg|exe|zip|blockmap)$/.test(f)).forEach(f=>{fs.unlinkSync(p.join(d,f));console.log('Deleted:',f)})}\"",
+    "build": "npm run clean:release && vite build && electron-builder --mac --win",
+    "build:mac": "npm run clean:release && vite build && electron-builder --mac",
+    "build:win": "npm run clean:release && vite build && electron-builder --win",
     "vite": "vite",
     "electron": "electron ."
   },
