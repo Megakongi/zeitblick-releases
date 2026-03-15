@@ -332,11 +332,9 @@ ipcMain.handle('install-update', async () => {
     console.error('Pre-update backup failed:', e.message);
   }
 
-  if (!autoUpdater) return { success: false };
-
   // On macOS: mount DMG, copy .app, relaunch (bypasses Squirrel/ShipIt)
   if (process.platform === 'darwin' && downloadedDmgPath) {
-    const { exec } = require('child_process');
+    const { spawn } = require('child_process');
     sendUpdateStatus('update-status', { status: 'installing', message: 'Update wird installiert...' });
 
     try {
@@ -353,45 +351,50 @@ ipcMain.handle('install-update', async () => {
 
       // Write a shell script that waits for the app to quit, then mounts DMG, copies, and relaunches
       const scriptPath = path.join(app.getPath('temp'), 'zeitblick-update.sh');
-      const scriptContent = `#!/bin/bash
-# Wait for the app to quit
-sleep 2
-
-# Mount the DMG
-MOUNT_OUTPUT=$(hdiutil attach "${downloadedDmgPath}" -nobrowse -noverify -noautoopen 2>&1)
-MOUNT_POINT=$(echo "$MOUNT_OUTPUT" | grep -o '/Volumes/[^\\n]*' | head -1 | sed 's/[[:space:]]*$//')
-
-if [ -z "$MOUNT_POINT" ]; then
-  echo "Failed to mount DMG"
-  exit 1
-fi
-
-APP_IN_DMG="$MOUNT_POINT/ZeitBlick.app"
-if [ ! -d "$APP_IN_DMG" ]; then
-  hdiutil detach "$MOUNT_POINT" -force 2>/dev/null
-  echo "ZeitBlick.app not found in DMG"
-  exit 1
-fi
-
-# Remove old app and copy new one
-rm -rf "${currentAppPath}"
-cp -R "$APP_IN_DMG" "${currentAppPath}"
-
-# Unmount DMG
-hdiutil detach "$MOUNT_POINT" -force 2>/dev/null
-
-# Clean up
-rm -f "${downloadedDmgPath}"
-rm -f "${scriptPath}"
-
-# Relaunch
-open "${currentAppPath}"
-`;
+      const dmgPath = downloadedDmgPath;
+      const scriptContent = [
+        '#!/bin/bash',
+        '# Wait for the app to quit',
+        'sleep 2',
+        '',
+        '# Mount the DMG',
+        `MOUNT_OUTPUT=$(hdiutil attach "${dmgPath}" -nobrowse -noverify -noautoopen 2>&1)`,
+        'MOUNT_POINT=$(echo "$MOUNT_OUTPUT" | grep -o "/Volumes/[^"]*" | head -1)',
+        '',
+        'if [ -z "$MOUNT_POINT" ]; then',
+        '  echo "Failed to mount DMG"',
+        '  exit 1',
+        'fi',
+        '',
+        'APP_IN_DMG="$MOUNT_POINT/ZeitBlick.app"',
+        'if [ ! -d "$APP_IN_DMG" ]; then',
+        '  hdiutil detach "$MOUNT_POINT" -force 2>/dev/null',
+        '  echo "ZeitBlick.app not found in DMG"',
+        '  exit 1',
+        'fi',
+        '',
+        '# Remove old app and copy new one',
+        `rm -rf "${currentAppPath}"`,
+        `cp -R "$APP_IN_DMG" "${currentAppPath}"`,
+        '',
+        '# Unmount DMG',
+        'hdiutil detach "$MOUNT_POINT" -force 2>/dev/null',
+        '',
+        '# Clean up',
+        `rm -f "${dmgPath}"`,
+        `rm -f "${scriptPath}"`,
+        '',
+        '# Relaunch',
+        `open "${currentAppPath}"`,
+      ].join('\n');
       fs.writeFileSync(scriptPath, scriptContent, { mode: 0o755 });
       console.log(`[updater] Update script written to: ${scriptPath}`);
 
       // Launch the update script detached from this process
-      const child = exec(`bash "${scriptPath}"`, { detached: true, stdio: 'ignore' });
+      const child = spawn('bash', [scriptPath], {
+        detached: true,
+        stdio: 'ignore',
+      });
       child.unref();
 
       // Quit the app so the script can replace it
@@ -407,6 +410,8 @@ open "${currentAppPath}"
       return { success: false, error: err.message };
     }
   }
+
+  if (!autoUpdater) return { success: false };
 
   // On Windows: use native quitAndInstall (NSIS installer)
   sendUpdateStatus('update-status', { status: 'installing', message: 'Update wird installiert...' });
