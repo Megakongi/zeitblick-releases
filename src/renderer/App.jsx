@@ -190,9 +190,11 @@ export default function App() {
   }, [timesheets]);
 
   // Drag & Drop handlers — use counter to prevent flicker from child elements
+  // Only show overlay for external file drags, not internal card drags
   const handleDragEnter = useCallback((e) => {
     e.preventDefault();
     e.stopPropagation();
+    if (!e.dataTransfer.types.includes('Files')) return;
     dragCounter.current++;
     if (dragCounter.current === 1) {
       setIsDragOver(true);
@@ -207,6 +209,7 @@ export default function App() {
   const handleDragLeave = useCallback((e) => {
     e.preventDefault();
     e.stopPropagation();
+    if (!e.dataTransfer.types.includes('Files')) return;
     dragCounter.current--;
     if (dragCounter.current <= 0) {
       dragCounter.current = 0;

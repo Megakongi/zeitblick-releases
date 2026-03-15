@@ -3,7 +3,7 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 const TOUR_STEPS = [
   {
     target: null,
-    title: 'Willkommen bei ZeitBlick 1.1!',
+    title: 'Willkommen bei ZeitBlick!',
     description: 'Deine App für Arbeitszeitverwaltung nach TV-FFS — Stundenzettel erstellen, importieren, auswerten und exportieren. Lass uns eine kurze Tour machen!',
     icon: '👋',
     position: 'center',
@@ -11,36 +11,43 @@ const TOUR_STEPS = [
   {
     target: '.sidebar',
     title: 'Navigation',
-    description: 'Über die Seitenleiste navigierst du zwischen Übersicht, Einträgen, Erstellen und Einstellungen.',
+    description: 'Über die Seitenleiste navigierst du zwischen Übersicht, Einträgen, Erstellen und Einstellungen. Ganz unten findest du den PDF-Import und den Dark/Light-Mode.',
     icon: '🧭',
     position: 'right',
   },
   {
     target: '.nav-item:nth-child(1)',
     title: 'Übersicht / Dashboard',
-    description: 'Deine Gesamtauswertung: Arbeitstage, AZV-Tage, Überstunden, Nacht-/Wochenend-/Feiertagszuschläge und Verdienst auf einen Blick.',
+    description: 'Deine Gesamtauswertung: Arbeitstage, Überstunden, Zuschläge und Verdienst auf einen Blick. Verwalte das Stammteam per Drag & Drop und sieh Zusatztage ein.',
     icon: '📊',
     position: 'right',
   },
   {
     target: '.nav-item:nth-child(2)',
-    title: 'Einträge-Liste',
-    description: 'Alle Stundenzettel sortierbar nach Name, KW, Projekt oder Datum. Wähle einzelne oder ganze Kalenderwochen aus und exportiere sie als PDF.',
+    title: 'Einträge',
+    description: 'Alle Stundenzettel sortierbar nach Name, KW, Projekt oder Datum. Exportiere einzelne Wochen oder ganze Projekte als PDF.',
     icon: '📋',
     position: 'right',
   },
   {
     target: '.nav-item:nth-child(3)',
     title: 'Stundenzettel erstellen',
-    description: 'Erstelle Stundenzettel direkt in der App — einzeln oder im Batch-Modus für ganze Crews. Überstunden, Nachtarbeit und Pausen werden automatisch berechnet.',
+    description: 'Erstelle Stundenzettel einzeln oder im Batch-Modus für ganze Crews. Überstunden, Nachtarbeit und Pausen werden automatisch nach TV-FFS berechnet.',
     icon: '✏️',
     position: 'right',
   },
   {
     target: '.nav-item:nth-child(4)',
-    title: 'Einstellungen & Crews',
-    description: 'Verwalte deine Gagen (Tages-, Wochen- und Positionsgagen), Name-Aliase und Crews. Crews lassen sich umbenennen und Mitglieder hinzufügen, bearbeiten oder entfernen.',
+    title: 'Einstellungen',
+    description: 'Verwalte Projekte, Crews, Gagen und Name-Aliase. Lege Projekte mit Produktionsfirma, Crew und Drehstartdatum an — Drehtage werden automatisch gezählt.',
     icon: '⚙️',
+    position: 'right',
+  },
+  {
+    target: '.search-trigger-btn',
+    title: 'Schnellsuche',
+    description: 'Mit ⌘K (oder Klick) öffnest du die Suche — finde Personen, Projekte oder Kalenderwochen in Sekunden.',
+    icon: '🔍',
     position: 'right',
   },
   {
@@ -56,13 +63,6 @@ const TOUR_STEPS = [
     description: 'Wechsle zwischen Dark- und Light-Mode — ganz nach deinem Geschmack.',
     icon: '🎨',
     position: 'right',
-  },
-  {
-    target: null,
-    title: 'Neu in Version 1.1',
-    description: 'Stundenzettel erstellen & als PDF exportieren, Crew-Verwaltung mit Batch-Modus, automatische Berechnung nach TV-FFS, KW-basierter Export und AZV-Tage-Erkennung.',
-    icon: '✨',
-    position: 'center',
   },
   {
     target: null,

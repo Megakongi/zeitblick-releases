@@ -1771,8 +1771,11 @@ body {
 }
 
 .crew-card-dragging {
-  opacity: 0.4;
+  opacity: 0.25;
   transform: scale(0.97);
+  border: 2px dashed var(--border-color);
+  background: transparent;
+  box-shadow: none;
 }
 
 .crew-card[draggable="true"] {

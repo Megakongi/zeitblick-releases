@@ -730,7 +730,10 @@ export default function Dashboard({ timesheets, calculations, settings, effectiv
         {/* Person cards with per-project Stammteam (drag & drop) */}
         {(() => {
           // Determine which project to show Stammteam for
-          const activeProject = projectFilter !== 'all' ? projectFilter : null;
+          // Auto-select if only one project exists
+          const activeProject = projectFilter !== 'all' ? projectFilter
+            : projectStats.length === 1 ? projectStats[0].projekt
+            : null;
           const projectCrews = settings.projectCrews || {};
 
           // Drag & drop handlers
@@ -738,8 +741,28 @@ export default function Dashboard({ timesheets, calculations, settings, effectiv
             setDraggedPerson(personName);
             e.dataTransfer.effectAllowed = 'move';
             e.dataTransfer.setData('text/plain', personName);
+
+            // Create ghost drag image
+            const card = e.target.closest('.crew-card');
+            if (card) {
+              const ghost = card.cloneNode(true);
+              ghost.style.position = 'absolute';
+              ghost.style.top = '-9999px';
+              ghost.style.left = '-9999px';
+              ghost.style.width = card.offsetWidth + 'px';
+              ghost.style.opacity = '0.85';
+              ghost.style.transform = 'rotate(-2deg) scale(0.95)';
+              ghost.style.boxShadow = '0 8px 32px rgba(0,0,0,0.25)';
+              ghost.style.borderRadius = 'var(--radius-lg)';
+              ghost.style.pointerEvents = 'none';
+              document.body.appendChild(ghost);
+              e.dataTransfer.setDragImage(ghost, card.offsetWidth / 2, 20);
+              // Clean up ghost after drag starts
+              setTimeout(() => ghost.remove(), 0);
+            }
+
             // Add a slight delay so the dragging class applies
-            setTimeout(() => e.target.closest('.crew-card')?.classList.add('crew-card-dragging'), 0);
+            setTimeout(() => card?.classList.add('crew-card-dragging'), 0);
           };
           const handleDragEnd = (e) => {
             setDraggedPerson(null);
@@ -877,7 +900,7 @@ export default function Dashboard({ timesheets, calculations, settings, effectiv
             return renderProjectCrew(activeProject);
           }
 
-          // No project filter — show all persons without Stammteam split
+          // No project filter and multiple projects — show all persons without Stammteam split
           // (user must select a project to manage Stammteam)
           return (
             <>
