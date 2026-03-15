@@ -1161,6 +1161,49 @@ body {
   margin-bottom: 32px;
 }
 
+.project-group-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 16px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border);
+}
+
+.project-group-header .project-title {
+  margin-bottom: 0;
+  padding-bottom: 0;
+  border-bottom: none;
+}
+
+.project-group-count {
+  font-size: 0.78rem;
+  color: var(--text-secondary, #8b95a5);
+  opacity: 0.7;
+}
+
+.project-delete-btn {
+  margin-left: auto;
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 0.82rem;
+  padding: 3px 8px;
+  opacity: 0;
+  transition: opacity 0.15s, background 0.15s;
+}
+
+.project-group-header:hover .project-delete-btn {
+  opacity: 0.6;
+}
+
+.project-delete-btn:hover {
+  opacity: 1 !important;
+  background: rgba(231, 76, 60, 0.1);
+  border-color: rgba(231, 76, 60, 0.3);
+}
+
 .project-title {
   font-size: 16px;
   font-weight: 600;
@@ -5453,5 +5496,164 @@ a:focus-visible {
 
 [data-theme="light"] .search-result-item:hover {
   background: rgba(74, 125, 255, 0.06);
+}
+
+/* ===== Project Management (Settings) ===== */
+.project-fields-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.project-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.project-field label {
+  font-size: 0.78rem;
+  color: var(--text-secondary, #8b95a5);
+  font-weight: 500;
+}
+
+.project-field input,
+.project-field select {
+  padding: 8px 10px;
+  background: var(--bg-primary, #0f1117);
+  border: 1px solid var(--border-color, #2a2e3a);
+  border-radius: 6px;
+  color: var(--text-primary, #e4e8f0);
+  font-size: 0.88rem;
+}
+
+.project-field input:focus,
+.project-field select:focus {
+  border-color: var(--accent-blue, #4a7dff);
+  outline: none;
+}
+
+.project-field-hint {
+  font-size: 0.72rem;
+  color: var(--text-secondary, #8b95a5);
+  opacity: 0.7;
+}
+
+.project-crew-select {
+  padding: 8px 10px;
+  background: var(--bg-primary, #0f1117);
+  border: 1px solid var(--border-color, #2a2e3a);
+  border-radius: 6px;
+  color: var(--text-primary, #e4e8f0);
+  font-size: 0.88rem;
+  cursor: pointer;
+}
+
+.project-crew-preview {
+  margin-top: 8px;
+  padding: 8px 12px;
+  background: rgba(74, 125, 255, 0.06);
+  border-radius: 6px;
+  border: 1px solid rgba(74, 125, 255, 0.15);
+}
+
+.project-crew-preview-label {
+  font-size: 0.78rem;
+  color: var(--text-secondary, #8b95a5);
+  margin-bottom: 6px;
+  display: block;
+}
+
+/* ===== Project Selector (TimesheetCreate) ===== */
+.project-select-section {
+  background: linear-gradient(135deg, rgba(74, 125, 255, 0.08), rgba(139, 92, 246, 0.06));
+  border: 1px solid rgba(74, 125, 255, 0.2);
+  border-radius: 10px;
+  padding: 14px 18px;
+}
+
+.project-select-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.project-select-label {
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--text-primary, #e4e8f0);
+  white-space: nowrap;
+}
+
+.project-select-dropdown {
+  flex: 1;
+  padding: 8px 12px;
+  background: var(--bg-primary, #0f1117);
+  border: 1px solid var(--border-color, #2a2e3a);
+  border-radius: 8px;
+  color: var(--text-primary, #e4e8f0);
+  font-size: 0.88rem;
+  cursor: pointer;
+}
+
+.project-select-dropdown:focus {
+  border-color: var(--accent-blue, #4a7dff);
+  outline: none;
+}
+
+.project-drehtag-hint {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 10px;
+  padding: 8px 12px;
+  background: rgba(245, 158, 11, 0.08);
+  border: 1px solid rgba(245, 158, 11, 0.2);
+  border-radius: 6px;
+  font-size: 0.82rem;
+  color: var(--text-secondary, #8b95a5);
+}
+
+.drehtag-fill-btn {
+  padding: 5px 14px;
+  background: rgba(245, 158, 11, 0.15);
+  border: 1px solid rgba(245, 158, 11, 0.3);
+  border-radius: 6px;
+  color: #f59e0b;
+  font-size: 0.8rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.drehtag-fill-btn:hover {
+  background: rgba(245, 158, 11, 0.25);
+  border-color: rgba(245, 158, 11, 0.5);
+}
+
+/* Light theme overrides for project features */
+[data-theme="light"] .project-select-section {
+  background: linear-gradient(135deg, rgba(74, 125, 255, 0.06), rgba(139, 92, 246, 0.04));
+  border-color: rgba(74, 125, 255, 0.15);
+}
+
+[data-theme="light"] .project-select-dropdown,
+[data-theme="light"] .project-field input,
+[data-theme="light"] .project-field select,
+[data-theme="light"] .project-crew-select {
+  background: #fff;
+  border-color: rgba(0, 0, 0, 0.12);
+  color: #1a1a2e;
+}
+
+[data-theme="light"] .project-drehtag-hint {
+  background: rgba(245, 158, 11, 0.06);
+  border-color: rgba(245, 158, 11, 0.15);
+}
+
+[data-theme="light"] .project-crew-preview {
+  background: rgba(74, 125, 255, 0.04);
+  border-color: rgba(74, 125, 255, 0.1);
 }
 

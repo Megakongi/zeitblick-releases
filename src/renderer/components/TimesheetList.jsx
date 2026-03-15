@@ -64,6 +64,18 @@ export default function TimesheetList({ timesheets, onViewDetail, onDelete, onBu
     setBulkConfirm({ type: 'person', person, ids, label: `Alle ${ids.length} Einträge von ${person}` });
   };
 
+  const handleBulkDeleteProject = (person, project) => {
+    const ids = timesheets.filter(ts => {
+      const p = resolve(ts.name || 'Unbekannt');
+      const proj = getBaseProject ? getBaseProject(ts.projekt) : (ts.projekt || 'Sonstiges');
+      return p === person && proj === project;
+    }).map(ts => ts.id);
+    const label = person && personFilter !== 'all'
+      ? `Alle ${ids.length} Einträge von „${project}"`
+      : `Alle ${ids.length} Einträge von ${person} · „${project}"`;
+    setBulkConfirm({ type: 'project', person, project, ids, label });
+  };
+
   const confirmBulkDelete = () => {
     if (bulkConfirm && onBulkDelete) {
       onBulkDelete(bulkConfirm.ids);
@@ -393,7 +405,13 @@ export default function TimesheetList({ timesheets, onViewDetail, onDelete, onBu
 
             {!isCollapsed && projectNames.map(project => (
               <div key={project} className="project-group">
-                <h3 className="project-title">{project}</h3>
+                <div className="project-group-header">
+                  <h3 className="project-title">{project}</h3>
+                  <span className="project-group-count">{projects[project].length} Zettel</span>
+                  <button className="project-delete-btn" onClick={() => handleBulkDeleteProject(person, project)} title={`Alle Zettel von „${project}" löschen`}>
+                    🗑
+                  </button>
+                </div>
                 <div className="sheets-grid">
                   {projects[project].map(sheet => (
                     <div key={sheet.id} className={`sheet-card ${selectedIds.has(sheet.id) ? 'sheet-card-selected' : ''}`}>

@@ -5,6 +5,12 @@ export default function Settings({ settings, onSave, timesheets, setTimesheets }
   const [newPosition, setNewPosition] = useState('');
   const [newPositionGage, setNewPositionGage] = useState('');
 
+  // Project management state
+  const [newProjectName, setNewProjectName] = useState('');
+  const [editingProject, setEditingProject] = useState(null);
+  const [renamingProject, setRenamingProject] = useState(null);
+  const [renameProjectValue, setRenameProjectValue] = useState('');
+
   // Crew management state
   const [newCrewName, setNewCrewName] = useState('');
   const [editingCrew, setEditingCrew] = useState(null); // crew name being edited
@@ -28,6 +34,38 @@ export default function Settings({ settings, onSave, timesheets, setTimesheets }
   const positionGagen = settings.positionGagen || {};
   const nameAliases = settings.nameAliases || {};
   const crews = settings.crews || {};
+  const projects = settings.projects || {};
+
+  // ===== Project Management Handlers =====
+  const handleAddProject = () => {
+    if (!newProjectName.trim()) return;
+    const updatedProjects = { ...projects, [newProjectName.trim()]: { projektnummer: '', produktionsfirma: '', crew: '', drehStartDatum: '' } };
+    onSave({ ...settings, projects: updatedProjects });
+    setNewProjectName('');
+    setEditingProject(newProjectName.trim());
+  };
+
+  const handleDeleteProject = (name) => {
+    const updatedProjects = { ...projects };
+    delete updatedProjects[name];
+    onSave({ ...settings, projects: updatedProjects });
+    if (editingProject === name) setEditingProject(null);
+  };
+
+  const handleRenameProject = (oldName, newName) => {
+    if (!newName.trim() || newName === oldName || projects[newName]) return;
+    const updatedProjects = { ...projects };
+    updatedProjects[newName.trim()] = updatedProjects[oldName];
+    delete updatedProjects[oldName];
+    onSave({ ...settings, projects: updatedProjects });
+    if (editingProject === oldName) setEditingProject(newName.trim());
+  };
+
+  const handleUpdateProject = (projectName, field, value) => {
+    const updatedProjects = { ...projects };
+    updatedProjects[projectName] = { ...(updatedProjects[projectName] || {}), [field]: value };
+    onSave({ ...settings, projects: updatedProjects });
+  };
 
   // Default positions if none configured yet
   const defaultPositions = ['Oberbeleuchter', 'Best-Boy', 'Beleuchter', 'Lichtassistent'];
@@ -188,6 +226,138 @@ export default function Settings({ settings, onSave, timesheets, setTimesheets }
   return (
     <div className="settings-view">
       <h2>Einstellungen</h2>
+
+      {/* Project Management */}
+      <div className="settings-card">
+        <h3>🎬 Projekte verwalten</h3>
+        <p className="settings-description">Erstelle Projekte mit Produktionsname, Firma und Crew. Beim Erstellen von Stundenzetteln kannst du ein Projekt auswählen, um alle Felder automatisch auszufüllen. Der Drehtag wird automatisch in die Bemerkung geschrieben.</p>
+        
+        {Object.keys(projects).length > 0 && (
+          <div className="crew-list">
+            {Object.entries(projects).map(([projectName, project]) => (
+              <div key={projectName} className={`crew-card ${editingProject === projectName ? 'crew-card-editing' : ''}`}>
+                <div className="crew-card-header">
+                  {renamingProject === projectName ? (
+                    <div className="crew-rename-row">
+                      <input
+                        type="text"
+                        value={renameProjectValue}
+                        onChange={e => setRenameProjectValue(e.target.value)}
+                        className="crew-rename-input"
+                        autoFocus
+                        onKeyDown={e => {
+                          if (e.key === 'Enter') { handleRenameProject(projectName, renameProjectValue); setRenamingProject(null); }
+                          if (e.key === 'Escape') setRenamingProject(null);
+                        }}
+                        onBlur={() => {
+                          if (renameProjectValue.trim() && renameProjectValue !== projectName) {
+                            handleRenameProject(projectName, renameProjectValue);
+                          }
+                          setRenamingProject(null);
+                        }}
+                        placeholder="Neuer Projektname..."
+                      />
+                      <button className="crew-rename-save" onClick={() => { handleRenameProject(projectName, renameProjectValue); setRenamingProject(null); }} title="Speichern">✓</button>
+                    </div>
+                  ) : (
+                    <>
+                      <div className="crew-card-title" onClick={() => setEditingProject(editingProject === projectName ? null : projectName)}>
+                        <span className={`crew-chevron ${editingProject === projectName ? 'open' : ''}`}>›</span>
+                        <span className="crew-name">{projectName}</span>
+                        <span className="crew-member-count">
+                          {project.produktionsfirma || 'Keine Firma'}
+                          {project.crew ? ` · Crew: ${project.crew}` : ''}
+                        </span>
+                      </div>
+                      <div className="crew-header-actions">
+                        <button className="crew-action-btn" onClick={(e) => { e.stopPropagation(); setRenamingProject(projectName); setRenameProjectValue(projectName); }} title="Projekt umbenennen">✏️</button>
+                        <button className="crew-action-btn crew-action-delete" onClick={() => handleDeleteProject(projectName)} title="Projekt löschen">🗑</button>
+                      </div>
+                    </>
+                  )}
+                </div>
+
+                {editingProject === projectName && (
+                  <div className="crew-card-body">
+                    <div className="project-fields-grid">
+                      <div className="project-field">
+                        <label>Projektnummer</label>
+                        <input
+                          type="text"
+                          value={project.projektnummer || ''}
+                          onChange={e => handleUpdateProject(projectName, 'projektnummer', e.target.value)}
+                          placeholder="z.B. 12345"
+                        />
+                      </div>
+                      <div className="project-field">
+                        <label>Produktionsfirma</label>
+                        <input
+                          type="text"
+                          value={project.produktionsfirma || ''}
+                          onChange={e => handleUpdateProject(projectName, 'produktionsfirma', e.target.value)}
+                          placeholder="z.B. Bavaria Film"
+                          list="suggest-firmen-project"
+                        />
+                      </div>
+                      <div className="project-field">
+                        <label>Crew zuweisen</label>
+                        <select
+                          value={project.crew || ''}
+                          onChange={e => handleUpdateProject(projectName, 'crew', e.target.value)}
+                          className="project-crew-select"
+                        >
+                          <option value="">Keine Crew</option>
+                          {Object.entries(crews).map(([crewName, crew]) => (
+                            <option key={crewName} value={crewName}>
+                              {crewName} ({(crew.members || []).length} Personen)
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                      <div className="project-field">
+                        <label>Erster Drehtag</label>
+                        <input
+                          type="date"
+                          value={project.drehStartDatum || ''}
+                          onChange={e => handleUpdateProject(projectName, 'drehStartDatum', e.target.value)}
+                        />
+                        <span className="project-field-hint">Für automatische Drehtag-Berechnung</span>
+                      </div>
+                    </div>
+                    {project.crew && crews[project.crew] && (
+                      <div className="project-crew-preview">
+                        <span className="project-crew-preview-label">Crew „{project.crew}":</span>
+                        <div className="crew-preview-members">
+                          {(crews[project.crew].members || []).map((m, i) => (
+                            <span key={i} className="crew-preview-chip">{m.name}{m.position ? ` (${m.position})` : ''}</span>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+
+        <div className="crew-add-row">
+          <input
+            type="text"
+            value={newProjectName}
+            onChange={e => setNewProjectName(e.target.value)}
+            className="crew-name-input"
+            placeholder="Neues Projekt erstellen..."
+            onKeyDown={e => e.key === 'Enter' && handleAddProject()}
+          />
+          <button className="spesen-add-btn" onClick={handleAddProject} title="Projekt erstellen">+</button>
+        </div>
+
+        {/* Datalist for firma suggestions in projects */}
+        <datalist id="suggest-firmen-project">
+          {[...new Set(timesheets.map(ts => ts.produktionsfirma).filter(Boolean))].map(f => <option key={f} value={f} />)}
+        </datalist>
+      </div>
 
       {/* Crew Management */}
       <div className="settings-card">

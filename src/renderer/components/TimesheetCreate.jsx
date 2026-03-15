@@ -82,8 +82,11 @@ const emptyDay = (tag, datum) => ({
   anmerkungen: '',
 });
 
-export default function TimesheetCreate({ onSave, onSaveBatch, onCancel, editSheet, existingTimesheets, crews, onCreateNext }) {
+export default function TimesheetCreate({ onSave, onSaveBatch, onCancel, editSheet, existingTimesheets, crews, projects, onCreateNext }) {
   const isEditing = !!editSheet;
+
+  // Project selection
+  const [selectedProject, setSelectedProject] = useState('');
 
   // Batch mode (crew selection)
   const [selectedCrew, setSelectedCrew] = useState('');
@@ -175,6 +178,26 @@ export default function TimesheetCreate({ onSave, onSaveBatch, onCancel, editShe
           updated[idx].ueberstunden25 = details.ueberstunden25;
           updated[idx].ueberstunden50 = details.ueberstunden50;
           updated[idx].nacht25 = details.nacht25;
+
+          // Auto-fill Drehtag in anmerkungen if project has drehStartDatum
+          const proj = selectedProject && projects ? projects[selectedProject] : null;
+          if (proj && proj.drehStartDatum && d.datum) {
+            const [dd, mm, yyyy] = d.datum.split('.');
+            if (dd && mm && yyyy) {
+              const dayDate = new Date(parseInt(yyyy), parseInt(mm) - 1, parseInt(dd));
+              const startDate = new Date(proj.drehStartDatum + 'T00:00:00');
+              if (!isNaN(dayDate.getTime()) && !isNaN(startDate.getTime()) && dayDate >= startDate) {
+                const diffDays = Math.round((dayDate - startDate) / (1000 * 60 * 60 * 24)) + 1;
+                const dtLabel = `DT ${diffDays}`;
+                const existing = updated[idx].anmerkungen || '';
+                if (!existing) {
+                  updated[idx].anmerkungen = dtLabel;
+                } else if (/^DT \d+/.test(existing)) {
+                  updated[idx].anmerkungen = existing.replace(/^DT \d+/, dtLabel);
+                }
+              }
+            }
+          }
         } else {
           updated[idx].stundenTotal = 0;
         }
@@ -182,7 +205,7 @@ export default function TimesheetCreate({ onSave, onSaveBatch, onCancel, editShe
 
       return updated;
     });
-  }, []);
+  }, [selectedProject, projects]);
 
   // Apply default pause to all days and recalculate
   const applyDefaultPause = useCallback(() => {
@@ -265,6 +288,62 @@ export default function TimesheetCreate({ onSave, onSaveBatch, onCancel, editShe
       alert('Kein Stundenzettel von der Vorwoche gefunden.');
     }
   }, [existingTimesheets, weekStart, name, projekt, projektnummer, produktionsfirma, position, abteilung]);
+
+  // Handle project selection — auto-fill fields and optionally select crew
+  const handleProjectSelect = useCallback((projectName) => {
+    setSelectedProject(projectName);
+    if (!projectName || !projects || !projects[projectName]) return;
+    const proj = projects[projectName];
+    setProjekt(projectName);
+    if (proj.projektnummer) setProjektnummer(proj.projektnummer);
+    if (proj.produktionsfirma) setProduktionsfirma(proj.produktionsfirma);
+    // If project has a crew, auto-select it
+    if (proj.crew && crews && crews[proj.crew]) {
+      setBatchMode(true);
+      setSelectedCrew(proj.crew);
+      setSelectedMembers(new Set((crews[proj.crew].members || []).map((_, i) => i)));
+    }
+  }, [projects, crews]);
+
+  // Calculate Drehtag number for a given date based on project's drehStartDatum
+  // Counts all days with work entries from existing timesheets for this project
+  // that come before the given date, plus 1
+  const calcDrehtag = useCallback((datum, drehStartDatum) => {
+    if (!datum || !drehStartDatum) return null;
+    // Parse datum (DD.MM.YYYY) to Date
+    const [dd, mm, yyyy] = datum.split('.');
+    if (!dd || !mm || !yyyy) return null;
+    const dayDate = new Date(parseInt(yyyy), parseInt(mm) - 1, parseInt(dd));
+    const startDate = new Date(drehStartDatum + 'T00:00:00');
+    if (isNaN(dayDate.getTime()) || isNaN(startDate.getTime())) return null;
+    if (dayDate < startDate) return null;
+    
+    // Count calendar days from start (inclusive) to this date (inclusive)
+    // Every day from start date to this date counts as a Drehtag
+    const diffMs = dayDate.getTime() - startDate.getTime();
+    const diffDays = Math.round(diffMs / (1000 * 60 * 60 * 24));
+    return diffDays + 1; // 1-based
+  }, []);
+
+  // Auto-fill Drehtag in Anmerkungen when project has drehStartDatum
+  const handleAutoFillDrehtag = useCallback(() => {
+    const proj = selectedProject && projects ? projects[selectedProject] : null;
+    if (!proj || !proj.drehStartDatum) return;
+    
+    setDays(prev => prev.map(day => {
+      // Only fill for days that have work (start time entered)
+      if (!day.start && !day.ende) return day;
+      const dt = calcDrehtag(day.datum, proj.drehStartDatum);
+      if (dt === null) return day;
+      const dtLabel = `DT ${dt}`;
+      // Don't overwrite existing anmerkungen unless they already contain a DT tag
+      const existing = day.anmerkungen || '';
+      if (existing && !/^DT \d+/.test(existing)) {
+        return { ...day, anmerkungen: `${dtLabel} – ${existing}` };
+      }
+      return { ...day, anmerkungen: existing.replace(/^DT \d+/, dtLabel) || dtLabel };
+    }));
+  }, [selectedProject, projects, calcDrehtag]);
 
   // Save handler
   const handleSave = useCallback(() => {
@@ -355,6 +434,35 @@ export default function TimesheetCreate({ onSave, onSaveBatch, onCancel, editShe
           </button>
         </div>
       </div>
+
+      {/* Project Selector (only when not editing and projects exist) */}
+      {!isEditing && projects && Object.keys(projects).length > 0 && (
+        <div className="create-section project-select-section">
+          <div className="project-select-row">
+            <label className="project-select-label">🎬 Projekt auswählen</label>
+            <select
+              className="project-select-dropdown"
+              value={selectedProject}
+              onChange={e => handleProjectSelect(e.target.value)}
+            >
+              <option value="">Kein Projekt (manuell ausfüllen)</option>
+              {Object.entries(projects).map(([pName, proj]) => (
+                <option key={pName} value={pName}>
+                  {pName}{proj.produktionsfirma ? ` – ${proj.produktionsfirma}` : ''}
+                </option>
+              ))}
+            </select>
+          </div>
+          {selectedProject && projects[selectedProject]?.drehStartDatum && (
+            <div className="project-drehtag-hint">
+              <span>📅 Erster Drehtag: {new Date(projects[selectedProject].drehStartDatum + 'T12:00:00').toLocaleDateString('de-DE')}</span>
+              <button className="drehtag-fill-btn" onClick={handleAutoFillDrehtag} title="Drehtag automatisch in Anmerkungen eintragen">
+                Drehtag eintragen
+              </button>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Crew Mode Toggle (only when not editing) */}
       {!isEditing && crews && Object.keys(crews).length > 0 && (
