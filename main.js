@@ -9,13 +9,13 @@ let autoUpdater = null;
 let pendingUpdateInfo = null; // Stores update info for macOS DMG flow
 let downloadedDmgPath = null; // Path to downloaded DMG on macOS
 try {
-  autoUpdater = require('electron-updater').autoUpdater;
-  autoUpdater.autoDownload = false;      // Don't download automatically — ask user first
-  autoUpdater.autoInstallOnAppQuit = false; // We handle install ourselves on macOS
-  autoUpdater.allowPrerelease = false;
-  // Skip code signature verification on macOS (no Apple Developer cert needed)
-  if (process.platform === 'darwin') {
-    autoUpdater.verifyUpdateCodeSignature = false;
+  // On macOS: skip electron-updater entirely to avoid Squirrel.Mac/ShipIt signature checks
+  // Instead, use GitHub API to check for updates and custom DMG download
+  if (process.platform !== 'darwin') {
+    autoUpdater = require('electron-updater').autoUpdater;
+    autoUpdater.autoDownload = false;
+    autoUpdater.autoInstallOnAppQuit = false;
+    autoUpdater.allowPrerelease = false;
   }
 } catch (e) {
   console.error('Auto-updater init failed:', e.message);
@@ -66,6 +66,54 @@ function downloadFile(url, dest, onProgress) {
     };
     doRequest(url);
   });
+}
+
+/**
+ * Check for updates via GitHub Releases API (used on macOS to avoid Squirrel.Mac).
+ * Returns update info if a newer version is available, null otherwise.
+ */
+function checkGitHubRelease() {
+  return new Promise((resolve, reject) => {
+    const https = require('https');
+    const options = {
+      hostname: 'api.github.com',
+      path: '/repos/Megakongi/zeitblick-releases/releases/latest',
+      headers: { 'User-Agent': 'ZeitBlick-Updater' },
+    };
+    https.get(options, (res) => {
+      let data = '';
+      res.on('data', chunk => { data += chunk; });
+      res.on('end', () => {
+        try {
+          const release = JSON.parse(data);
+          const latestVersion = (release.tag_name || '').replace(/^v/, '');
+          const currentVersion = app.getVersion();
+          if (latestVersion && latestVersion !== currentVersion && isNewerVersion(latestVersion, currentVersion)) {
+            resolve({
+              version: latestVersion,
+              releaseNotes: release.body || '',
+              releaseDate: release.published_at || '',
+            });
+          } else {
+            resolve(null);
+          }
+        } catch (e) {
+          reject(e);
+        }
+      });
+    }).on('error', reject);
+  });
+}
+
+/** Compare semver strings: returns true if a > b */
+function isNewerVersion(a, b) {
+  const pa = a.split('.').map(Number);
+  const pb = b.split('.').map(Number);
+  for (let i = 0; i < 3; i++) {
+    if ((pa[i] || 0) > (pb[i] || 0)) return true;
+    if ((pa[i] || 0) < (pb[i] || 0)) return false;
+  }
+  return false;
 }
 
 app.name = 'ZeitBlick';
@@ -121,7 +169,34 @@ app.on('activate', () => {
 // ===== Auto-Updater =====
 
 function setupAutoUpdater() {
-  if (!autoUpdater || !mainWindow) return;
+  if (!mainWindow) return;
+
+  // On macOS: use GitHub API to check for updates (avoids Squirrel.Mac/ShipIt)
+  if (process.platform === 'darwin') {
+    setTimeout(async () => {
+      try {
+        sendUpdateStatus('update-status', { status: 'checking' });
+        const info = await checkGitHubRelease();
+        if (info) {
+          pendingUpdateInfo = info;
+          sendUpdateStatus('update-status', {
+            status: 'available',
+            version: info.version,
+            releaseNotes: info.releaseNotes,
+            releaseDate: info.releaseDate,
+          });
+        } else {
+          sendUpdateStatus('update-status', { status: 'up-to-date', version: app.getVersion() });
+        }
+      } catch (err) {
+        console.error('[updater] GitHub release check failed:', err.message);
+      }
+    }, 5000);
+    return;
+  }
+
+  // On Windows: use electron-updater normally
+  if (!autoUpdater) return;
 
   autoUpdater.on('checking-for-update', () => {
     sendUpdateStatus('update-status', { status: 'checking' });
@@ -178,6 +253,20 @@ function setupAutoUpdater() {
 
 // IPC: Check for updates manually (from renderer)
 ipcMain.handle('check-for-updates', async () => {
+  // On macOS: use GitHub API directly
+  if (process.platform === 'darwin') {
+    try {
+      const info = await checkGitHubRelease();
+      if (info) {
+        pendingUpdateInfo = info;
+        return { success: true, updateInfo: info };
+      }
+      return { success: true, updateInfo: null };
+    } catch (err) {
+      return { success: false, error: err.message };
+    }
+  }
+  // On Windows: use electron-updater
   if (!autoUpdater) return { success: false, error: 'Auto-Updater nicht verfügbar (nur im gepackten Build)' };
   try {
     const result = await autoUpdater.checkForUpdates();
@@ -189,13 +278,11 @@ ipcMain.handle('check-for-updates', async () => {
 
 // IPC: Start downloading the update
 ipcMain.handle('download-update', async () => {
-  if (!autoUpdater) return { success: false, error: 'Auto-Updater nicht verfügbar' };
-
-  // On macOS: download DMG directly (bypasses Squirrel.Mac/ShipIt signature check)
-  if (process.platform === 'darwin' && pendingUpdateInfo) {
+  // On macOS: download DMG directly (no Squirrel.Mac/ShipIt involved)
+  if (process.platform === 'darwin') {
+    if (!pendingUpdateInfo) return { success: false, error: 'Kein Update verfügbar' };
     try {
       const version = pendingUpdateInfo.version;
-      // Construct DMG download URL from GitHub Releases
       const dmgFileName = `ZeitBlick-${version}-universal.dmg`;
       const dmgUrl = `https://github.com/Megakongi/zeitblick-releases/releases/download/v${version}/${encodeURIComponent(dmgFileName)}`;
       const dest = path.join(app.getPath('temp'), dmgFileName);
@@ -226,7 +313,8 @@ ipcMain.handle('download-update', async () => {
     }
   }
 
-  // On Windows: use native electron-updater (NSIS installer works fine)
+  // On Windows: use native electron-updater (NSIS installer)
+  if (!autoUpdater) return { success: false, error: 'Auto-Updater nicht verfügbar' };
   try {
     await autoUpdater.downloadUpdate();
     return { success: true };
