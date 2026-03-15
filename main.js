@@ -336,52 +336,73 @@ ipcMain.handle('install-update', async () => {
 
   // On macOS: mount DMG, copy .app, relaunch (bypasses Squirrel/ShipIt)
   if (process.platform === 'darwin' && downloadedDmgPath) {
-    const { execSync } = require('child_process');
+    const { exec } = require('child_process');
     sendUpdateStatus('update-status', { status: 'installing', message: 'Update wird installiert...' });
 
     try {
-      // Mount the DMG
-      console.log(`[updater] Mounting DMG: ${downloadedDmgPath}`);
-      const mountOutput = execSync(`hdiutil attach "${downloadedDmgPath}" -nobrowse -noverify -noautoopen 2>&1`, { encoding: 'utf8' });
-      
-      // Find the mount point
-      const mountMatch = mountOutput.match(/\/Volumes\/[^\n]+/);
-      if (!mountMatch) throw new Error('Konnte DMG nicht mounten');
-      const mountPoint = mountMatch[0].trim();
-      console.log(`[updater] Mounted at: ${mountPoint}`);
+      // Determine current app location: app.getAppPath() → .app/Contents/Resources/app.asar
+      // Go up 3 levels to get the .app bundle
+      const appAsarPath = app.getAppPath();
+      const currentAppPath = path.resolve(appAsarPath, '..', '..', '..'); // → .app
+      console.log(`[updater] Current app: ${currentAppPath}`);
+      console.log(`[updater] DMG path: ${downloadedDmgPath}`);
 
-      // Find the .app in the mounted volume
-      const appInDmg = path.join(mountPoint, 'ZeitBlick.app');
-      if (!fs.existsSync(appInDmg)) throw new Error('ZeitBlick.app nicht im DMG gefunden');
+      if (!currentAppPath.endsWith('.app')) {
+        throw new Error(`Unerwarteter App-Pfad: ${currentAppPath}`);
+      }
 
-      // Determine current app location
-      const currentAppPath = path.dirname(path.dirname(app.getAppPath())); // .app/Contents/Resources → .app
-      console.log(`[updater] Replacing: ${currentAppPath}`);
+      // Write a shell script that waits for the app to quit, then mounts DMG, copies, and relaunches
+      const scriptPath = path.join(app.getPath('temp'), 'zeitblick-update.sh');
+      const scriptContent = `#!/bin/bash
+# Wait for the app to quit
+sleep 2
 
-      // Copy new app over old one
-      execSync(`rm -rf "${currentAppPath}"`, { encoding: 'utf8' });
-      execSync(`cp -R "${appInDmg}" "${currentAppPath}"`, { encoding: 'utf8' });
-      console.log('[updater] App copied successfully');
+# Mount the DMG
+MOUNT_OUTPUT=$(hdiutil attach "${downloadedDmgPath}" -nobrowse -noverify -noautoopen 2>&1)
+MOUNT_POINT=$(echo "$MOUNT_OUTPUT" | grep -o '/Volumes/[^\\n]*' | head -1 | sed 's/[[:space:]]*$//')
 
-      // Unmount DMG
-      execSync(`hdiutil detach "${mountPoint}" -force 2>&1 || true`, { encoding: 'utf8' });
-      
-      // Clean up downloaded DMG
-      try { fs.unlinkSync(downloadedDmgPath); } catch {}
+if [ -z "$MOUNT_POINT" ]; then
+  echo "Failed to mount DMG"
+  exit 1
+fi
+
+APP_IN_DMG="$MOUNT_POINT/ZeitBlick.app"
+if [ ! -d "$APP_IN_DMG" ]; then
+  hdiutil detach "$MOUNT_POINT" -force 2>/dev/null
+  echo "ZeitBlick.app not found in DMG"
+  exit 1
+fi
+
+# Remove old app and copy new one
+rm -rf "${currentAppPath}"
+cp -R "$APP_IN_DMG" "${currentAppPath}"
+
+# Unmount DMG
+hdiutil detach "$MOUNT_POINT" -force 2>/dev/null
+
+# Clean up
+rm -f "${downloadedDmgPath}"
+rm -f "${scriptPath}"
+
+# Relaunch
+open "${currentAppPath}"
+`;
+      fs.writeFileSync(scriptPath, scriptContent, { mode: 0o755 });
+      console.log(`[updater] Update script written to: ${scriptPath}`);
+
+      // Launch the update script detached from this process
+      const child = exec(`bash "${scriptPath}"`, { detached: true, stdio: 'ignore' });
+      child.unref();
+
+      // Quit the app so the script can replace it
       downloadedDmgPath = null;
-
-      // Relaunch the app
-      console.log('[updater] Relaunching...');
       setTimeout(() => {
-        app.relaunch();
         app.exit(0);
       }, 500);
 
       return { success: true, autoInstall: true };
     } catch (err) {
       console.error('[updater] macOS install failed:', err.message);
-      // Try to unmount on error
-      try { execSync('hdiutil detach /Volumes/ZeitBlick* -force 2>/dev/null || true', { encoding: 'utf8' }); } catch {}
       sendUpdateStatus('update-status', { status: 'error', message: `Installation fehlgeschlagen: ${err.message}` });
       return { success: false, error: err.message };
     }
