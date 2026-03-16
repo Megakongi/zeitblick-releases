@@ -138,7 +138,7 @@ export default function TimesheetList({ timesheets, onViewDetail, onDelete, onBu
           const dateRange = getDateRange(sheet).replace(/\s/g, '');
           return {
             html: generateTimesheetHTML(sheet),
-            name: `Stundenzettel_${sheet.name || 'Unbekannt'}_${sheet.projekt || 'Projekt'}_${dateRange}.pdf`,
+            filename: `Stundenzettel_${sheet.name || 'Unbekannt'}_${sheet.projekt || 'Projekt'}_${dateRange}.pdf`,
           };
         });
         await window.electronAPI.exportPDFsToFolder(htmlArray);

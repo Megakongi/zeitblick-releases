@@ -534,12 +534,13 @@ ipcMain.handle('export-pdf', async (event, htmlContent, defaultName) => {
   });
   if (result.canceled) return { success: false, canceled: true };
   try {
-    // Create a hidden window to render the HTML
     const { BrowserWindow: BW } = require('electron');
-    const printWin = new BW({ show: false, width: 800, height: 600 });
-    await printWin.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(htmlContent));
-    // Wait for content to render
-    await new Promise(r => setTimeout(r, 500));
+    const os = require('os');
+    const printWin = new BW({ show: false, width: 800, height: 600, webPreferences: { offscreen: true } });
+    const tmpFile = path.join(os.tmpdir(), `zeitblick-pdf-${Date.now()}.html`);
+    fs.writeFileSync(tmpFile, htmlContent, 'utf-8');
+    await printWin.loadFile(tmpFile);
+    await new Promise(r => setTimeout(r, 600));
     const pdfData = await printWin.webContents.printToPDF({
       printBackground: true,
       landscape: true,
@@ -547,9 +548,11 @@ ipcMain.handle('export-pdf', async (event, htmlContent, defaultName) => {
       margins: { top: 0.4, bottom: 0.4, left: 0.4, right: 0.4 },
     });
     printWin.close();
+    try { fs.unlinkSync(tmpFile); } catch (_) {}
     fs.writeFileSync(result.filePath, pdfData);
     return { success: true, filePath: result.filePath };
   } catch (error) {
+    console.error('PDF export error:', error);
     return { success: false, error: error.message };
   }
 });
@@ -563,9 +566,12 @@ ipcMain.handle('export-timesheet-pdf', async (event, htmlContent, defaultName) =
   if (result.canceled) return { success: false, canceled: true };
   try {
     const { BrowserWindow: BW } = require('electron');
-    const printWin = new BW({ show: false, width: 1200, height: 800 });
-    await printWin.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(htmlContent));
-    await new Promise(r => setTimeout(r, 600));
+    const os = require('os');
+    const printWin = new BW({ show: false, width: 1200, height: 800, webPreferences: { offscreen: true } });
+    const tmpFile = path.join(os.tmpdir(), `zeitblick-pdf-${Date.now()}.html`);
+    fs.writeFileSync(tmpFile, htmlContent, 'utf-8');
+    await printWin.loadFile(tmpFile);
+    await new Promise(r => setTimeout(r, 800));
     const pdfData = await printWin.webContents.printToPDF({
       printBackground: true,
       landscape: true,
@@ -573,9 +579,11 @@ ipcMain.handle('export-timesheet-pdf', async (event, htmlContent, defaultName) =
       margins: { top: 0.4, bottom: 0.4, left: 0.5, right: 0.5 },
     });
     printWin.close();
+    try { fs.unlinkSync(tmpFile); } catch (_) {}
     fs.writeFileSync(result.filePath, pdfData);
     return { success: true, filePath: result.filePath };
   } catch (error) {
+    console.error('PDF export error:', error);
     return { success: false, error: error.message };
   }
 });
@@ -624,21 +632,28 @@ ipcMain.handle('export-pdfs-to-folder', async (event, htmlContentArray) => {
   const results = [];
   try {
     const { BrowserWindow: BW } = require('electron');
+    const os = require('os');
     for (const item of htmlContentArray) {
-      const printWin = new BW({ show: false, width: 1200, height: 800 });
-      await printWin.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(item.html));
-      await new Promise(r => setTimeout(r, 500));
+      const fname = item.filename || item.name || 'export.pdf';
+      const printWin = new BW({ show: false, width: 1200, height: 800, webPreferences: { offscreen: true } });
+      // Write HTML to temp file to avoid data-URL size limits
+      const tmpFile = path.join(os.tmpdir(), `zeitblick-pdf-${Date.now()}-${Math.random().toString(36).slice(2)}.html`);
+      fs.writeFileSync(tmpFile, item.html, 'utf-8');
+      await printWin.loadFile(tmpFile);
+      await new Promise(r => setTimeout(r, 800));
       const pdfData = await printWin.webContents.printToPDF({
         printBackground: true, landscape: true, scale: 0.75,
         margins: { top: 0.4, bottom: 0.4, left: 0.5, right: 0.5 },
       });
       printWin.close();
-      const filePath = path.join(folderPath, item.filename);
+      try { fs.unlinkSync(tmpFile); } catch (_) {}
+      const filePath = path.join(folderPath, fname);
       fs.writeFileSync(filePath, pdfData);
-      results.push({ success: true, filename: item.filename });
+      results.push({ success: true, filename: fname });
     }
     return { success: true, count: results.length, folder: folderPath };
   } catch (error) {
+    console.error('Batch PDF export error:', error);
     return { success: false, error: error.message, exported: results.length };
   }
 });

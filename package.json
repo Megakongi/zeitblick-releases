@@ -1,6 +1,6 @@
 {
   "name": "zeitblick",
-  "version": "1.3.10",
+  "version": "1.3.11",
   "description": "ZeitBlick - PDF Import & TV-FFS Auswertung",
   "author": "Till Pallapies",
   "main": "main.js",
