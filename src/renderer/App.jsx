@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useRef, useMemo, Component } from 'react';
 import Sidebar from './components/Sidebar';
 import Dashboard from './components/Dashboard';
 import TimesheetList from './components/TimesheetList';
@@ -10,6 +10,33 @@ import OnboardingTour from './components/OnboardingTour';
 import UpdateOverlay from './components/UpdateOverlay';
 import { calculateTVFFS } from './utils/tvffsCalculator';
 import { getTimesheetKW } from './utils/calendarWeek';
+
+class ErrorBoundary extends Component {
+  constructor(props) {
+    super(props);
+    this.state = { hasError: false, error: null };
+  }
+  static getDerivedStateFromError(error) {
+    return { hasError: true, error };
+  }
+  componentDidCatch(error, info) {
+    console.error('ErrorBoundary caught:', error, info.componentStack);
+  }
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div style={{ padding: 40, color: '#ff4444', fontFamily: 'monospace' }}>
+          <h2>Fehler in der App</h2>
+          <pre style={{ whiteSpace: 'pre-wrap', fontSize: 13 }}>{this.state.error?.toString()}</pre>
+          <button onClick={() => this.setState({ hasError: false, error: null })} style={{ marginTop: 16, padding: '8px 16px' }}>
+            Zurücksetzen
+          </button>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
 
 /**
  * Extract the base project name by stripping appended person info.
@@ -450,6 +477,7 @@ export default function App() {
   };
 
   return (
+    <ErrorBoundary>
     <div
       className="app-container"
       onDragEnter={handleDragEnter}
@@ -554,5 +582,6 @@ export default function App() {
       {showTour && <OnboardingTour onComplete={() => setShowTour(false)} />}
       <UpdateOverlay />
     </div>
+    </ErrorBoundary>
   );
 }

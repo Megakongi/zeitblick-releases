@@ -152,6 +152,53 @@ export default function TimesheetCreate({ onSave, onSaveBatch, onCancel, editShe
     }));
   }, []);
 
+  // Calculate Drehtag number for a given date based on actual work days
+  // currentDays parameter: the current form days array (to avoid stale closure over `days`)
+  const calcDrehtag = useCallback((datum, drehStartDatum, currentDays) => {
+    if (!datum || !drehStartDatum) return null;
+    const [dd, mm, yyyy] = datum.split('.');
+    if (!dd || !mm || !yyyy) return null;
+    const dayDate = new Date(parseInt(yyyy), parseInt(mm) - 1, parseInt(dd));
+    const startDate = new Date(drehStartDatum + 'T00:00:00');
+    if (isNaN(dayDate.getTime()) || isNaN(startDate.getTime())) return null;
+    if (dayDate < startDate) return null;
+
+    // Collect all actual work dates from existing timesheets for this project
+    const workDates = new Set();
+    if (existingTimesheets && projekt) {
+      for (const ts of existingTimesheets) {
+        if (!ts.projekt || !ts.days) continue;
+        const tsProjBase = ts.projekt.replace(/\s*KW\s*\d+.*$/i, '').trim();
+        const currentProjBase = projekt.replace(/\s*KW\s*\d+.*$/i, '').trim();
+        if (tsProjBase !== currentProjBase) continue;
+        for (const day of ts.days) {
+          if (!day.datum || (!day.start && !day.ende)) continue;
+          const [d2, m2, y2] = day.datum.split('.');
+          if (!d2 || !m2 || !y2) continue;
+          const dt = new Date(parseInt(y2), parseInt(m2) - 1, parseInt(d2));
+          if (dt >= startDate && dt < dayDate) {
+            workDates.add(day.datum);
+          }
+        }
+      }
+    }
+
+    // Also count work days from the current form that are before this date
+    if (currentDays) {
+      for (const day of currentDays) {
+        if (!day.datum || (!day.start && !day.ende)) continue;
+        const [d2, m2, y2] = day.datum.split('.');
+        if (!d2 || !m2 || !y2) continue;
+        const dt = new Date(parseInt(y2), parseInt(m2) - 1, parseInt(d2));
+        if (dt >= startDate && dt < dayDate) {
+          workDates.add(day.datum);
+        }
+      }
+    }
+
+    return workDates.size + 1;
+  }, [existingTimesheets, projekt]);
+
   // Update a day field
   const updateDay = useCallback((idx, field, value) => {
     setDays(prev => {
@@ -182,7 +229,7 @@ export default function TimesheetCreate({ onSave, onSaveBatch, onCancel, editShe
           // Auto-fill Drehtag in anmerkungen if project has drehStartDatum
           const proj = selectedProject && projects ? projects[selectedProject] : null;
           if (proj && proj.drehStartDatum && d.datum) {
-            const dt = calcDrehtag(d.datum, proj.drehStartDatum);
+            const dt = calcDrehtag(d.datum, proj.drehStartDatum, updated);
             if (dt !== null) {
               const dtLabel = `DT ${dt}`;
               const existing = updated[idx].anmerkungen || '';
@@ -300,64 +347,15 @@ export default function TimesheetCreate({ onSave, onSaveBatch, onCancel, editShe
     }
   }, [projects, crews]);
 
-  // Calculate Drehtag number for a given date based on actual work days
-  // Checks existing timesheets (including previous KWs) to count real Drehtage
-  const calcDrehtag = useCallback((datum, drehStartDatum) => {
-    if (!datum || !drehStartDatum) return null;
-    // Parse datum (DD.MM.YYYY) to Date
-    const [dd, mm, yyyy] = datum.split('.');
-    if (!dd || !mm || !yyyy) return null;
-    const dayDate = new Date(parseInt(yyyy), parseInt(mm) - 1, parseInt(dd));
-    const startDate = new Date(drehStartDatum + 'T00:00:00');
-    if (isNaN(dayDate.getTime()) || isNaN(startDate.getTime())) return null;
-    if (dayDate < startDate) return null;
-
-    // Collect all actual work dates from existing timesheets for this project
-    const workDates = new Set();
-    if (existingTimesheets && projekt) {
-      for (const ts of existingTimesheets) {
-        if (!ts.projekt || !ts.days) continue;
-        // Match project name
-        const tsProjBase = ts.projekt.replace(/\s*KW\s*\d+.*$/i, '').trim();
-        const currentProjBase = projekt.replace(/\s*KW\s*\d+.*$/i, '').trim();
-        if (tsProjBase !== currentProjBase) continue;
-        for (const day of ts.days) {
-          if (!day.datum || (!day.start && !day.ende)) continue;
-          // Parse DD.MM.YYYY
-          const [d2, m2, y2] = day.datum.split('.');
-          if (!d2 || !m2 || !y2) continue;
-          const dt = new Date(parseInt(y2), parseInt(m2) - 1, parseInt(d2));
-          if (dt >= startDate && dt < dayDate) {
-            workDates.add(day.datum);
-          }
-        }
-      }
-    }
-
-    // Also count work days from the current form that are before this date
-    for (const day of days) {
-      if (!day.datum || (!day.start && !day.ende)) continue;
-      const [d2, m2, y2] = day.datum.split('.');
-      if (!d2 || !m2 || !y2) continue;
-      const dt = new Date(parseInt(y2), parseInt(m2) - 1, parseInt(d2));
-      if (dt >= startDate && dt < dayDate) {
-        workDates.add(day.datum);
-      }
-    }
-
-    // This day itself is the next Drehtag
-    return workDates.size + 1;
-  }, [existingTimesheets, projekt, days]);
-
   // Auto-fill Drehtag in Anmerkungen when project has drehStartDatum
   const handleAutoFillDrehtag = useCallback(() => {
     const proj = selectedProject && projects ? projects[selectedProject] : null;
     if (!proj || !proj.drehStartDatum) return;
     
-    setDays(prev => prev.map(day => {
+    setDays(prev => prev.map((day, _i, allDays) => {
       // Only fill for days that have work (start time entered)
       if (!day.start && !day.ende) return day;
-      const dt = calcDrehtag(day.datum, proj.drehStartDatum);
+      const dt = calcDrehtag(day.datum, proj.drehStartDatum, allDays);
       if (dt === null) return day;
       const dtLabel = `DT ${dt}`;
       // Don't overwrite existing anmerkungen unless they already contain a DT tag
