@@ -128,6 +128,45 @@ export function calculateTVFFS(timesheets, settings) {
         totalSamstagsstunden += hours;
       }
 
+      // Saturday surcharge for cross-midnight shifts (TZ 5.6.4):
+      // If a shift extends past midnight into Saturday, hours from 00:00 onward count
+      if (day.tag !== 'Samstag' && day.tag !== 'Sa') {
+        let samstagCrossMidnight = 0;
+
+        // Check "Sa: X:XX" annotation from PDF import
+        const saMatch = (day.anmerkungen || '').match(/Sa:\s*(\d{1,2}):(\d{2})/);
+        if (saMatch) {
+          samstagCrossMidnight = parseInt(saMatch[1]) + parseInt(saMatch[2]) / 60;
+        } else if (day.start && day.ende) {
+          // Auto-calculate: if shift crosses midnight and next day is Saturday
+          const startH = parseTime(day.start);
+          const endH = parseTime(day.ende);
+          if (startH !== null && endH !== null && endH < startH) {
+            // Shift crosses midnight — check if next day is Saturday
+            let isFriday = false;
+            if (day.tag === 'Freitag' || day.tag === 'Fr') {
+              isFriday = true;
+            } else if (day.datum) {
+              const [dd, mm, yy] = day.datum.split('.').map(Number);
+              if (!isNaN(dd) && !isNaN(mm) && !isNaN(yy)) {
+                const year = yy < 100 ? 2000 + yy : yy;
+                const dateObj = new Date(year, mm - 1, dd);
+                isFriday = dateObj.getDay() === 5;
+              }
+            }
+            if (isFriday) {
+              samstagCrossMidnight = endH; // hours from 00:00 to end
+            }
+          }
+        }
+
+        if (samstagCrossMidnight > 0) {
+          totalSamstagsstunden += samstagCrossMidnight;
+          // Count as a Saturday day if there are hours on Saturday
+          totalSamstagstage = Math.max(totalSamstagstage, 1);
+        }
+      }
+
       // Collect for rest time check
       if (day.start && day.ende && day.datum) {
         allDays.push({

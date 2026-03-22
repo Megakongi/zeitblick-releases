@@ -115,7 +115,28 @@ export default function App() {
           console.log('[ZeitBlick] Migrated stored timesheet data (totals + project names)');
         }
       }
-      if (data.settings) setSettings(data.settings);
+      if (data.settings) {
+        // Migrate drehStartDatum: fix 2-digit years (0026 → 2026)
+        const s = { ...data.settings };
+        if (s.projects) {
+          let fixed = false;
+          const fixedProjects = { ...s.projects };
+          for (const [pName, proj] of Object.entries(fixedProjects)) {
+            if (proj.drehStartDatum) {
+              const parts = proj.drehStartDatum.split('-');
+              if (parts.length === 3 && parseInt(parts[0]) < 100) {
+                fixedProjects[pName] = { ...proj, drehStartDatum: String(parseInt(parts[0]) + 2000) + '-' + parts[1] + '-' + parts[2] };
+                fixed = true;
+              }
+            }
+          }
+          if (fixed) {
+            s.projects = fixedProjects;
+            console.log('[ZeitBlick] Migrated drehStartDatum years');
+          }
+        }
+        setSettings(s);
+      }
       if (data._loadError) {
         setImportMessage('⚠ Fehler beim Laden: ' + data._loadError);
         setTimeout(() => setImportMessage(null), 8000);

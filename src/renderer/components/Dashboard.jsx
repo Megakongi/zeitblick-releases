@@ -72,8 +72,8 @@ function generatePDFHTML(timesheets, c, settings, personFilter) {
   if (c.totalUeberstunden100 > 0) html += `<tr><td>&nbsp;&nbsp;davon 100% (Feiertag)</td><td class="num">${fmt(c.totalUeberstunden100)}</td></tr>`;
   html += `<tr><td>Nachtstunden</td><td class="num">${fmt(c.totalNacht)}</td></tr>`;
   html += `<tr><td>Fahrzeit</td><td class="num">${fmt(c.totalFahrzeit)}</td></tr>`;
-  html += `<tr><td>Samstage</td><td class="num">${c.totalSamstagstage} Tage / ${fmt(c.totalSamstagsstunden || 0)} Std.</td></tr>`;
-  html += `<tr><td>Sonntage</td><td class="num">${c.totalSonntagstage} Tage / ${fmt(c.totalSonntagsstunden || 0)} Std.</td></tr>`;
+  html += `<tr><td>Samstage</td><td class="num">${fmt(c.totalSamstagsstunden || 0)} Std.</td></tr>`;
+  html += `<tr><td>Sonntage</td><td class="num">${fmt(c.totalSonntagsstunden || 0)} Std.</td></tr>`;
   html += `<tr><td>Urlaubstage</td><td class="num">${fmt(c.urlaubstage)}</td></tr>`;
   html += `</tbody></table>`;
 
@@ -94,7 +94,7 @@ function generatePDFHTML(timesheets, c, settings, personFilter) {
       <td>${label}</td><td>${sheet.projekt || ''}</td>
       <td class="num">${sc.totalBezahlteTage}</td><td class="num">${fmt(sc.totalStunden)}</td>
       <td class="num">${fmt(sc.totalUeberstunden)}</td><td class="num">${fmt(sc.totalNacht)}</td>
-      <td class="num">${sc.totalSamstagstage || 0}</td><td class="num">${sc.totalSonntagstage || 0}</td>`;
+      <td class="num">${fmt(sc.totalSamstagsstunden || 0)}</td><td class="num">${fmt(sc.totalSonntagsstunden || 0)}</td>`;
     if (hasGage) html += `<td class="num">${fmtC(sc.gesamtVerdienst)}</td>`;
     html += `</tr>`;
   });
@@ -104,7 +104,7 @@ function generatePDFHTML(timesheets, c, settings, personFilter) {
     <td>Summe</td><td></td>
     <td class="num">${c.totalBezahlteTage}</td><td class="num">${fmt(c.totalStunden)}</td>
     <td class="num">${fmt(c.totalUeberstunden)}</td><td class="num">${fmt(c.totalNacht)}</td>
-    <td class="num">${c.totalSamstagstage}</td><td class="num">${c.totalSonntagstage}</td>`;
+    <td class="num">${fmt(c.totalSamstagsstunden || 0)}</td><td class="num">${fmt(c.totalSonntagsstunden || 0)}</td>`;
   if (hasGage) html += `<td class="num">${fmtC(c.gesamtVerdienst)}</td>`;
   html += `</tr></tbody></table>`;
 
@@ -203,8 +203,8 @@ function generateCSV(timesheets, c, settings, personFilter) {
   lines.push(`  davon 50%${sep}${fmt(c.totalUeberstunden50)}`);
   if (c.totalUeberstunden100 > 0) lines.push(`  davon 100%${sep}${fmt(c.totalUeberstunden100)}`);
   lines.push(`Nachtstunden${sep}${fmt(c.totalNacht)}`);
-  if (c.totalSamstagstage > 0) lines.push(`Samstage${sep}${c.totalSamstagstage} Tage / ${fmt(c.totalSamstagsstunden || 0)} Std.`);
-  if (c.totalSonntagstage > 0) lines.push(`Sonntage${sep}${c.totalSonntagstage} Tage / ${fmt(c.totalSonntagsstunden || 0)} Std.`);
+  if (c.totalSamstagsstunden > 0) lines.push(`Samstage${sep}${fmt(c.totalSamstagsstunden)} Std.`);
+  if (c.totalSonntagsstunden > 0) lines.push(`Sonntage${sep}${fmt(c.totalSonntagsstunden)} Std.`);
   lines.push(`Urlaubstage${sep}${c.urlaubstage}`);
 
   // ── VERDIENST ──
@@ -368,8 +368,8 @@ export default function Dashboard({ timesheets, calculations, settings, effectiv
       ['Gesamtstunden', fmt(c.totalStunden)],
       ['Überstunden', fmt(c.totalUeberstunden)],
       ['Nachtstunden', fmt(c.totalNacht)],
-      ['Samstage', c.totalSamstagstage],
-      ['Sonntage', c.totalSonntagstage],
+      ['Samstage (Std.)', fmt(c.totalSamstagsstunden || 0)],
+      ['Sonntage (Std.)', fmt(c.totalSonntagsstunden || 0)],
       ['Urlaubstage', c.urlaubstage],
     ];
     if (hasGage) summaryData.push([], ['Gesamtverdienst', fmt(c.gesamtVerdienst)]);
@@ -511,8 +511,8 @@ export default function Dashboard({ timesheets, calculations, settings, effectiv
         nacht: pc.totalNacht,
         verdienst: pc.gesamtVerdienst,
         kranktage: pc.totalKranktage,
-        samstage: pc.totalSamstagstage,
-        sonntage: pc.totalSonntagstage,
+        samstage: pc.totalSamstagsstunden,
+        sonntage: pc.totalSonntagsstunden,
         urlaubstage: pc.urlaubstage,
         urlaubstageGenommen: pc.urlaubstageGenommen,
         dates,
@@ -624,8 +624,8 @@ export default function Dashboard({ timesheets, calculations, settings, effectiv
         ueberstunden: pc.totalUeberstunden,
         nacht: pc.totalNacht,
         fahrzeit: pc.totalFahrzeit,
-        samstage: pc.totalSamstagstage,
-        sonntage: pc.totalSonntagstage,
+        samstage: pc.totalSamstagsstunden,
+        sonntage: pc.totalSonntagsstunden,
         verdienst: pc.gesamtVerdienst,
       };
     }).sort((a, b) => b.stunden - a.stunden);
@@ -828,8 +828,8 @@ export default function Dashboard({ timesheets, calculations, settings, effectiv
                 </div>
               </div>
               <div className="crew-detail-row">
-                {ps.samstage > 0 && <span className="crew-badge crew-badge-sa">Sa × {ps.samstage}</span>}
-                {ps.sonntage > 0 && <span className="crew-badge crew-badge-so">So × {ps.sonntage}</span>}
+                {ps.samstage > 0 && <span className="crew-badge crew-badge-sa">Sa {ps.samstage.toLocaleString('de-DE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} Std.</span>}
+                {ps.sonntage > 0 && <span className="crew-badge crew-badge-so">So {ps.sonntage.toLocaleString('de-DE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} Std.</span>}
                 {ps.kranktage > 0 && <span className="crew-badge crew-badge-krank">🤒 {ps.kranktage} krank</span>}
                 {ps.urlaubstageGenommen > 0 && <span className="crew-badge">🏖 {ps.urlaubstageGenommen} Urlaub</span>}
               </div>
@@ -1145,8 +1145,8 @@ export default function Dashboard({ timesheets, calculations, settings, effectiv
                   </div>
                 </div>
                 <div className="project-breakdown-badges">
-                  {ps.samstage > 0 && <span className="crew-badge crew-badge-sa">Sa × {ps.samstage}</span>}
-                  {ps.sonntage > 0 && <span className="crew-badge crew-badge-so">So × {ps.sonntage}</span>}
+                  {ps.samstage > 0 && <span className="crew-badge crew-badge-sa">Sa {ps.samstage.toLocaleString('de-DE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} Std.</span>}
+                  {ps.sonntage > 0 && <span className="crew-badge crew-badge-so">So {ps.sonntage.toLocaleString('de-DE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} Std.</span>}
                   {hasGage && ps.verdienst > 0 && <span className="crew-badge project-badge-earnings">{formatCurrency(ps.verdienst)}</span>}
                 </div>
               </button>
@@ -1183,8 +1183,8 @@ export default function Dashboard({ timesheets, calculations, settings, effectiv
           {c.totalUeberstunden100 > 0 && <StatCard label="Ü 100% (Feiertag)" value={c.totalUeberstunden100} unit="Std." color="red" />}
           <StatCard label="Nachtstunden" value={c.totalNacht} unit="Std." color="indigo" />
           <StatCard label="Fahrzeit" value={c.totalFahrzeit} unit="Std." color="gray" />
-          <StatCard label="Samstage" value={c.totalSamstagstage} unit="Tage" color="teal" />
-          <StatCard label="Sonntage" value={c.totalSonntagstage} unit="Tage" color="pink" />
+          <StatCard label="Samstage" value={c.totalSamstagsstunden} unit="Std." color="teal" />
+          <StatCard label="Sonntage" value={c.totalSonntagsstunden} unit="Std." color="pink" />
           {c.totalFeiertagstage > 0 && <StatCard label="Feiertage" value={c.totalFeiertagstage} unit="Tage" color="red" />}
           {c.weeklyOT25 > 0 && <StatCard label="Wöch. Ü 25% (5.4.3.3)" value={c.weeklyOT25} unit="Std." color="yellow" />}
           {c.weeklyOT50 > 0 && <StatCard label="Wöch. Ü 50% (5.4.3.3)" value={c.weeklyOT50} unit="Std." color="orange" />}

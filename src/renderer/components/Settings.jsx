@@ -62,8 +62,18 @@ export default function Settings({ settings, onSave, timesheets, setTimesheets }
   };
 
   const handleUpdateProject = (projectName, field, value) => {
+    let normalizedValue = value;
+    // Normalize drehStartDatum: ensure 4-digit year (HTML date inputs may store 2-digit years)
+    if (field === 'drehStartDatum' && value) {
+      const parts = value.split('-');
+      if (parts.length === 3) {
+        let y = parseInt(parts[0]);
+        if (y < 100) y += 2000;
+        normalizedValue = String(y) + '-' + parts[1] + '-' + parts[2];
+      }
+    }
     const updatedProjects = { ...projects };
-    updatedProjects[projectName] = { ...(updatedProjects[projectName] || {}), [field]: value };
+    updatedProjects[projectName] = { ...(updatedProjects[projectName] || {}), [field]: normalizedValue };
     onSave({ ...settings, projects: updatedProjects });
   };
 

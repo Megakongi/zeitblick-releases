@@ -32,11 +32,11 @@ const COLUMN_PATTERNS = [
 
 // Patterns for header metadata fields
 const HEADER_LABELS = [
-  { key: 'projekt',           patterns: [/^projekt:?$/i, /^production:?$/i, /^titel:?$/i] },
+  { key: 'projekt',           patterns: [/^projekt:?$/i, /^production:?$/i, /^titel:?$/i, /^project:?$/i] },
   { key: 'projektnummer',     patterns: [/^projektnr\.?:?$/i, /^projektnummer:?$/i, /^prod\.?\s*nr\.?:?$/i] },
-  { key: 'produktionsfirma',  patterns: [/^produktionsfirma:?$/i, /^produk/i, /^firma:?$/i, /^company:?$/i] },
+  { key: 'produktionsfirma',  patterns: [/^produktionsfirma:?$/i, /^firma:?$/i, /^company:?$/i, /^auftraggeber:?$/i, /^herstellungsleitung:?$/i] },
   { key: 'name',              patterns: [/^name:?$/i, /^mitarbeiter:?$/i, /^employee:?$/i] },
-  { key: 'position',          patterns: [/^position:?$/i, /^funktion:?$/i, /^rolle:?$/i] },
+  { key: 'position',          patterns: [/^position:?$/i, /^funktion:?$/i, /^rolle:?$/i, /^job:?$/i, /^gewerk:?$/i, /^t[äa]tigkeit:?$/i, /^beruf:?$/i] },
   { key: 'abteilung',         patterns: [/^abteilung:?$/i, /^department:?$/i, /^abt\.?:?$/i] },
   { key: 'pause',             patterns: [/^pause:?$/i] },
 ];
@@ -61,7 +61,7 @@ function parsePDF(filePath) {
 
     pdfParser.on('pdfParser_dataReady', pdfData => {
       try {
-        const result = extractTimesheetData(pdfData);
+        const result = extractTimesheetData(pdfData, filePath);
         resolve(result);
       } catch (error) {
         reject(error);
@@ -80,9 +80,12 @@ function decodeText(text) {
   }
 }
 
-function extractTimesheetData(pdfData) {
+function extractTimesheetData(pdfData, filePath) {
   const page = pdfData.Pages[0];
   if (!page) throw new Error('PDF hat keine Seiten');
+
+  // Extract PDF metadata for fallback header extraction
+  const pdfMeta = pdfData.Meta || {};
 
   // Extract all text items with positions
   const items = page.Texts.map(t => ({
@@ -90,6 +93,13 @@ function extractTimesheetData(pdfData) {
     y: t.y,
     text: decodeText(t.R.map(r => r.T).join(''))
   })).sort((a, b) => a.y - b.y || a.x - b.x);
+
+  // Check for form-field PDF: many items at negative coordinates
+  const formFieldItems = items.filter(it => it.y < 0 || it.x < 0);
+  const positionedItems = items.filter(it => it.y >= 0 && it.x >= 0);
+  if (formFieldItems.length > 10) {
+    return extractTimesheetFromFormPDF(formFieldItems, positionedItems, pdfMeta, filePath);
+  }
 
   // Group items into rows by y-position
   const rows = groupIntoRows(items, 0.4);
@@ -99,6 +109,9 @@ function extractTimesheetData(pdfData) {
 
   // Step 2: Extract header metadata (everything above the table header)
   const header = extractHeader(rows, headerRowY);
+
+  // Fallback: extract header from PDF metadata and filename
+  extractHeaderFromMetaAndFilename(pdfMeta, filePath, header);
 
   // Step 3: Extract day rows and totals row
   const { days, totals } = extractDaysAndTotals(rows, columns, headerRowY);
@@ -286,20 +299,66 @@ function extractHeader(rows, headerRowY) {
   for (const row of rows) {
     if (row.y >= headerRowY - 0.5) break; // Stop at table header
 
+    // First, concatenate all items in this row to try matching against full row text.
+    // This handles cases where a label like "Produktionsfirma:" is split across
+    // multiple text items (e.g. "Produktions" + "ﬁ" + "rma:").
+    const fullRowText = row.items.map(it => it.text.trim()).join(' ').trim();
+    
+    // Try matching "Label: Value" or "Label:Value" patterns in the full row text
+    for (const labelDef of HEADER_LABELS) {
+      if (header[labelDef.key] && labelDef.key !== 'pause') continue; // Already found
+      for (const pattern of labelDef.patterns) {
+        // Build a regex that finds the label followed by a value in the full row text
+        const labelSource = pattern.source.replace(/^\^/, '').replace(/\$$/, '').replace(/:?\$$/, '').replace(/:\?/, '');
+        const rowMatch = new RegExp(labelSource + ':?\\s+(.+?)(?:\\s+(?:' + 
+          HEADER_LABELS.map(ld => ld.patterns.map(p => p.source.replace(/^\^/, '').replace(/\$$/, '').replace(/:?\$$/, '').replace(/:\?/, '')).join('|')).join('|') + 
+          '):|$)', 'i').exec(fullRowText);
+        if (rowMatch && rowMatch[1]) {
+          const value = rowMatch[1].replace(/:$/, '').trim();
+          if (value) {
+            if (labelDef.key === 'pause') {
+              header.pause = parseFloat(value.replace(',', '.')) || 0;
+            } else {
+              header[labelDef.key] = value;
+            }
+            break;
+          }
+        }
+      }
+    }
+
+    // Also try the item-by-item approach for each row item
     for (let i = 0; i < row.items.length; i++) {
       const text = row.items[i].text.trim().replace(/:$/, '');
       
+      // Also try concatenating adjacent items at similar x to reconstruct split labels
+      // e.g. "Produktions" + "ﬁ" + "rma:" at x≈15
+      let combinedLabel = text;
+      let lastLabelIdx = i;
+      const labelX = row.items[i].x;
+      for (let k = i + 1; k < row.items.length; k++) {
+        if (Math.abs(row.items[k].x - labelX) < 1.5) {
+          combinedLabel += row.items[k].text.trim();
+          lastLabelIdx = k;
+        } else {
+          break;
+        }
+      }
+      combinedLabel = combinedLabel.replace(/:$/, '');
+
       for (const labelDef of HEADER_LABELS) {
-        if (labelDef.patterns.some(p => p.test(text + ':'))) {
+        if (header[labelDef.key] && labelDef.key !== 'pause') continue; // Already found
+        
+        // Try both single item text and combined label
+        const matched = labelDef.patterns.some(p => p.test(text + ':')) || 
+                        labelDef.patterns.some(p => p.test(combinedLabel + ':'));
+        if (matched) {
           // Value is the next item(s) on the same row — but stop at the next recognized label
-          // Also skip items at the same x-position (they are fragments of the label itself,
-          // e.g. "Produkitons" + "ﬁ" + "rma:" all at x=15.3)
-          const labelX = row.items[i].x;
           const valueItems = [];
-          for (let j = i + 1; j < row.items.length; j++) {
+          for (let j = lastLabelIdx + 1; j < row.items.length; j++) {
             const itemText = row.items[j].text.trim();
-            // Skip items at the same x-position as the label (fragments of split text)
-            if (Math.abs(row.items[j].x - labelX) < 0.5) continue;
+            // Skip items very close to the label x (fragments of split text)
+            if (Math.abs(row.items[j].x - labelX) < 1.5) continue;
             const itemTextClean = itemText.replace(/:$/, '');
             // Check if this item is another known header label
             const isNextLabel = HEADER_LABELS.some(ld => ld.patterns.some(p => p.test(itemTextClean + ':')));
@@ -322,12 +381,18 @@ function extractHeader(rows, headerRowY) {
   // Fallback: if no "Name:" label found, look for a name-like pattern
   // (capitalized multi-word near top of document)
   if (!header.name) {
+    // Words commonly found in column headers or table labels that are NOT person names
+    const nonNameWords = /^(tägliche|wöchentliche|mehrarbeit|arbeits|abzüglich|überstunden|nacht|ruhezeit|anteilige|bezahlte|teilnahme|bemerkungen|zuschläge|fahrzeit|catering|sonstiges|summe|gesamt|total|pause|beginn|ende|datum|stunden|arbeitszeit|dienstbeginn|dienstende)\b/i;
+    
     for (const row of rows) {
       if (row.y >= headerRowY - 0.5) break;
       for (const item of row.items) {
         const text = item.text.trim();
-        // Looks like a person name: "Vorname Nachname"
-        if (/^[A-ZÄÖÜ][a-zäöüß]+\s+[A-ZÄÖÜ][a-zäöüß]+$/.test(text) && !header.name) {
+        // Looks like a person name: "Vorname Nachname" (supports hyphenated names)
+        if (/^[A-ZÄÖÜ][a-zäöüß]+(?:-[A-ZÄÖÜ][a-zäöüß]+)?\s+[A-ZÄÖÜ][a-zäöüß]+(?:-[A-ZÄÖÜ][a-zäöüß]+)?$/.test(text) && !header.name) {
+          // Exclude known non-name column header words
+          const words = text.split(/\s+/);
+          if (words.some(w => nonNameWords.test(w))) continue;
           // Only use if it's not already matched as something else
           const isOtherField = Object.values(header).some(v => v === text);
           if (!isOtherField) header.name = text;
@@ -630,6 +695,548 @@ function extractTimesheetLegacy(items, header) {
     days,
     totals,
   };
+}
+
+/**
+ * Parse a form-field-based PDF where cell values are stored at negative coordinates
+ * (y < 0) while labels, day names, dates, and Fahrzeit arrows are positioned normally.
+ */
+function extractTimesheetFromFormPDF(formFieldItems, positionedItems, pdfMeta, filePath) {
+  // --- Step 0: Extract header metadata from positioned items ---
+  const merged = mergeFragmentedTexts(positionedItems);
+  const headerRows = groupIntoRows(merged, 0.4);
+  // Find the first day row to determine where the header ends
+  const dayOrder = ['Montag', 'Dienstag', 'Mittwoch', 'Donnerstag', 'Freitag', 'Samstag', 'Sonntag'];
+  let firstDayY = Infinity;
+  for (const item of merged) {
+    if (dayOrder.includes(item.text.trim())) {
+      firstDayY = Math.min(firstDayY, item.y);
+    }
+  }
+  // Also detect column header row from positioned items
+  const { headerRowY: posHeaderRowY } = detectColumns(headerRows);
+  const headerCutoffY = Math.min(
+    firstDayY !== Infinity ? firstDayY : Infinity,
+    posHeaderRowY > 0 ? posHeaderRowY : Infinity
+  );
+  const header = extractHeader(headerRows, headerCutoffY !== Infinity ? headerCutoffY : firstDayY);
+
+  // Also try to extract header from form-field items (before first day type)
+  extractHeaderFromFormFields(formFieldItems.map(it => it.text), header);
+
+  // Fallback: extract header from PDF metadata and filename
+  extractHeaderFromMetaAndFilename(pdfMeta, filePath, header);
+
+  // --- Step 1: Build day info from positioned items ---
+
+  // Find day names and their dates from positioned items
+  const dayInfos = extractDayInfoFromPositioned(merged);
+
+  // Extract Fahrzeit from arrows (→/←) at each day's y-position
+  extractFahrzeitFromPositioned(merged, dayInfos);
+
+  // Extract Saturday surcharge data from positioned items (anteilige Zuschläge column ~x=32)
+  extractPositionedSurcharges(merged, dayInfos);
+
+  // --- Step 2: Parse form-field values sequentially ---
+  const formTexts = formFieldItems.map(it => it.text);
+  const dayBlocks = parseFormFieldDayBlocks(formTexts);
+
+  // --- Step 3: Merge form-field day blocks with positioned day info ---
+  // Match blocks to dayInfos by order (form blocks only exist for worked days)
+  const days = [];
+  let blockIdx = 0;
+
+  for (const info of dayInfos) {
+    const day = {
+      tag: info.tag,
+      datum: info.datum || '',
+      start: '',
+      ende: '',
+      pause: 0,
+      stundenTotal: 0,
+      ueberstunden25: 0,
+      ueberstunden50: 0,
+      ueberstunden100: 0,
+      nacht25: 0,
+      fahrzeit: info.fahrzeit || 0,
+      anmerkungen: '',
+    };
+
+    if (blockIdx < dayBlocks.length) {
+      const block = dayBlocks[blockIdx];
+      day.start = block.start || '';
+      day.ende = block.ende || '';
+      day.pause = block.pause || 0;
+      day.stundenTotal = block.stundenTotal || 0;
+      day.anmerkungen = block.anmerkungen || '';
+
+      // Recalculate OT and night hours from start/end using TV-FFS rules
+      // This is more reliable than parsing the complex surcharge column structure
+      if (day.stundenTotal > 0) {
+        day.ueberstunden25 = round2(Math.max(0, Math.min(day.stundenTotal - 10, 1)));
+        day.ueberstunden50 = round2(Math.max(0, day.stundenTotal - 11));
+      }
+      day.nacht25 = calcNightHoursFromTimes(day.start, day.ende);
+
+      // Saturday surcharge from form data "Sa: X:XX"
+      if (block.samstagStunden > 0) {
+        const saNote = `Sa: ${formatTimeValue(block.samstagStunden)}`;
+        day.anmerkungen = day.anmerkungen ? day.anmerkungen + ' / ' + saNote : saNote;
+      }
+
+      blockIdx++;
+    }
+
+    // Override Fahrzeit from positioned data if available
+    if (info.fahrzeit > 0) {
+      day.fahrzeit = info.fahrzeit;
+    }
+
+    // Merge positioned surcharge info (e.g., Samstag surcharge time)
+    if (info.samstagStunden > 0 && !day.anmerkungen.includes('Sa:')) {
+      const saNote = `Sa: ${formatTimeValue(info.samstagStunden)}`;
+      day.anmerkungen = day.anmerkungen ? day.anmerkungen + ' / ' + saNote : saNote;
+    }
+
+    // Recalculate stundenTotal from start/end/pause if missing
+    if (day.stundenTotal === 0 && day.start && day.ende) {
+      const s = parseTimeValue(day.start);
+      const e = parseTimeValue(day.ende);
+      if (s !== null && e !== null) {
+        let diff = e - s;
+        if (diff < 0) diff += 24;
+        diff -= day.pause || 0;
+        day.stundenTotal = Math.max(0, Math.round(diff * 100) / 100);
+      }
+    }
+
+    days.push(day);
+  }
+
+  // Build totals from individual days
+  const totals = {
+    stundenTotal: round2(days.reduce((s, d) => s + (d.stundenTotal || 0), 0)),
+    ueberstunden25: round2(days.reduce((s, d) => s + (d.ueberstunden25 || 0), 0)),
+    ueberstunden50: round2(days.reduce((s, d) => s + (d.ueberstunden50 || 0), 0)),
+    ueberstunden100: round2(days.reduce((s, d) => s + (d.ueberstunden100 || 0), 0)),
+    nacht25: round2(days.reduce((s, d) => s + (d.nacht25 || 0), 0)),
+    fahrzeit: round2(days.reduce((s, d) => s + (d.fahrzeit || 0), 0)),
+  };
+
+  return {
+    id: generateId(),
+    importDate: new Date().toISOString(),
+    filePath: '',
+    ...header,
+    days,
+    totals,
+  };
+}
+
+/**
+ * Extract header metadata from form-field text items (before the first day type).
+ * Form-field PDFs store values sequentially; the header items appear before day blocks.
+ * We look for known label patterns and take the following text as the value.
+ */
+function extractHeaderFromFormFields(formTexts, header) {
+  const dayTypes = /^(arbeitstag|drehtag|feiertag|frei|ruhetag|krank|urlaub|azv|reisetag|bereitschaft|probe|reise|montag|dienstag|mittwoch|donnerstag|freitag|samstag|sonntag)$/i;
+
+  // Only look at items before the first day type
+  let endIdx = formTexts.length;
+  for (let i = 0; i < formTexts.length; i++) {
+    if (dayTypes.test(formTexts[i].trim())) {
+      endIdx = i;
+      break;
+    }
+  }
+
+  const headerTexts = formTexts.slice(0, endIdx).map(t => t.trim()).filter(Boolean);
+
+  // Try to match "Label:" followed by a value
+  for (let i = 0; i < headerTexts.length; i++) {
+    const text = headerTexts[i].replace(/:$/, '');
+
+    for (const labelDef of HEADER_LABELS) {
+      if (header[labelDef.key] && labelDef.key !== 'pause') continue; // Already found from positioned items
+      if (labelDef.patterns.some(p => p.test(text + ':'))) {
+        // The value is the next non-label item
+        if (i + 1 < headerTexts.length) {
+          const nextText = headerTexts[i + 1].replace(/:$/, '');
+          // Make sure the next item is not itself a label
+          const nextIsLabel = HEADER_LABELS.some(ld => ld.patterns.some(p => p.test(nextText + ':')));
+          if (!nextIsLabel && nextText.length > 0) {
+            if (labelDef.key === 'pause') {
+              header.pause = parseFloat(nextText.replace(',', '.')) || 0;
+            } else {
+              header[labelDef.key] = nextText;
+            }
+          }
+        }
+        break;
+      }
+    }
+  }
+
+  // Also try to find "Label: Value" combined in a single text item
+  for (const text of headerTexts) {
+    for (const labelDef of HEADER_LABELS) {
+      if (header[labelDef.key] && labelDef.key !== 'pause') continue;
+      for (const pattern of labelDef.patterns) {
+        const src = pattern.source.replace(/^\^/, '').replace(/\$$/, '').replace(/:?\$$/, '').replace(/:\?/, '');
+        const combinedMatch = new RegExp(src + ':?\\s+(.+)', 'i').exec(text);
+        if (combinedMatch && combinedMatch[1]) {
+          const value = combinedMatch[1].trim();
+          if (value) {
+            if (labelDef.key === 'pause') {
+              header.pause = parseFloat(value.replace(',', '.')) || 0;
+            } else {
+              header[labelDef.key] = value;
+            }
+            break;
+          }
+        }
+      }
+    }
+  }
+}
+
+/**
+ * Extract header metadata from PDF metadata and filename as fallback.
+ * Only fills in fields that are still empty.
+ * 
+ * PDF metadata fields used:
+ * - Author → name
+ * - Subject → projekt or produktionsfirma
+ * 
+ * Filename patterns (common in production timesheets):
+ * - "Name-Project-DateRange.pdf" 
+ * - "X-Lastname-Project Name S1-MM.DD-MM.DD.YYYY.pdf"
+ */
+function extractHeaderFromMetaAndFilename(pdfMeta, filePath, header) {
+  if (!pdfMeta && !filePath) return;
+
+  // Extract from PDF metadata
+  if (pdfMeta) {
+    if (!header.name && pdfMeta.Author) {
+      header.name = pdfMeta.Author;
+    }
+    if (!header.projekt && pdfMeta.Subject) {
+      header.projekt = pdfMeta.Subject;
+    }
+  }
+
+  // Extract from filename
+  if (filePath) {
+    const path = require('path');
+    const basename = path.basename(filePath, path.extname(filePath));
+
+    // Common pattern: "Initial-Lastname-Project Name-DateRange"
+    // e.g. "A-Streckmann-Babylon Berlin S5-04.07-04.13.2025"
+    // Also: "Lastname-Project-DateRange" or "Name_Project_DateRange"
+    
+    // Remove date range parts from end (dd.mm-dd.mm.yyyy or similar)
+    const withoutDates = basename.replace(/-?\d{1,2}\.\d{1,2}[-–]\d{1,2}\.\d{1,2}\.\d{4}$/, '')
+                                  .replace(/-?\d{1,2}\.\d{1,2}\.\d{4}[-–]\d{1,2}\.\d{1,2}\.\d{4}$/, '')
+                                  .replace(/-?KW\s*\d+.*$/i, '')
+                                  .trim();
+
+    if (withoutDates) {
+      // Try splitting by "-" to extract name and project
+      const parts = withoutDates.split('-').map(p => p.trim()).filter(Boolean);
+
+      if (parts.length >= 2) {
+        // First part(s) are typically the name, last part is the project
+        // Check if first part is a single letter (initial)
+        if (parts[0].length <= 2 && parts.length >= 3) {
+          // "A-Streckmann-Babylon Berlin S5" → name = "A. Streckmann", project = "Babylon Berlin S5"
+          if (!header.name) {
+            header.name = parts[0] + '. ' + parts[1];
+          }
+          if (!header.projekt) {
+            header.projekt = parts.slice(2).join(' - ');
+          }
+        } else if (parts.length >= 2) {
+          // "Streckmann-Babylon Berlin S5" → try to figure out name vs project
+          // If the first part looks like a name (single word, capitalized)
+          if (/^[A-ZÄÖÜ][a-zäöüß]+$/.test(parts[0])) {
+            if (!header.name) header.name = parts[0];
+            if (!header.projekt) header.projekt = parts.slice(1).join(' - ');
+          }
+        }
+      }
+    }
+  }
+}
+
+function round2(n) {
+  return Math.round(n * 100) / 100;
+}
+
+/**
+ * Merge fragmented text items at the same (x,y) position into single items.
+ * Many form-based PDFs split individual characters into separate text objects at identical coordinates.
+ */
+function mergeFragmentedTexts(items) {
+  const merged = [];
+  let i = 0;
+  while (i < items.length) {
+    let text = items[i].text;
+    const x = items[i].x;
+    const y = items[i].y;
+    let j = i + 1;
+    while (j < items.length && Math.abs(items[j].x - x) < 0.05 && Math.abs(items[j].y - y) < 0.05) {
+      text += items[j].text;
+      j++;
+    }
+    merged.push({ x, y, text: text.trim() });
+    i = j;
+  }
+  return merged;
+}
+
+/**
+ * Extract day names and dates from positioned items.
+ * Day names appear near x≈2, dates appear below each day name.
+ */
+function extractDayInfoFromPositioned(mergedItems) {
+  const dayInfos = [];
+  const dayOrder = ['Montag', 'Dienstag', 'Mittwoch', 'Donnerstag', 'Freitag', 'Samstag', 'Sonntag'];
+
+  // Find day name items
+  for (const item of mergedItems) {
+    const text = item.text.trim();
+    if (dayOrder.includes(text) && item.x < 10) {
+      dayInfos.push({ tag: text, y: item.y, datum: '', fahrzeit: 0, samstagStunden: 0 });
+    }
+  }
+
+  // Sort by y-position (top to bottom)
+  dayInfos.sort((a, b) => a.y - b.y);
+
+  // Find dates for each day (positioned below day name, near x≈2)
+  for (const info of dayInfos) {
+    // Look for date-like items below the day name (within ~2 y units)
+    const dateItems = mergedItems.filter(it =>
+      it.y > info.y && it.y < info.y + 2 &&
+      it.x < 10 &&
+      /^\d{1,2}\.\d{1,2}/.test(it.text)
+    );
+    if (dateItems.length > 0) {
+      info.datum = dateItems[0].text;
+      // If date only has dd.mm (no year), don't add year — keep it short like other PDFs
+    }
+  }
+
+  return dayInfos;
+}
+
+/**
+ * Extract Fahrzeit from arrow symbols (→/←) in the positioned items.
+ * These appear at x≈40 near each day's y-position.
+ */
+function extractFahrzeitFromPositioned(mergedItems, dayInfos) {
+  // Find arrow items with time values
+  const fahrzeitItems = mergedItems.filter(it =>
+    it.x >= 38 && it.x <= 44 &&
+    (it.text.includes('→') || it.text.includes('←'))
+  );
+
+  for (const info of dayInfos) {
+    let totalFahrzeit = 0;
+    // Find Fahrzeit arrows within this day's y range
+    const nextDayY = dayInfos.find(d => d.y > info.y + 0.5)?.y || info.y + 3;
+
+    for (const fItem of fahrzeitItems) {
+      if (fItem.y >= info.y - 0.2 && fItem.y < nextDayY) {
+        // Extract time from arrow text like "→ 0:45" or "← 0:45"
+        const timeMatch = fItem.text.match(/(\d{1,2}):(\d{2})/);
+        if (timeMatch) {
+          totalFahrzeit += parseInt(timeMatch[1]) + parseInt(timeMatch[2]) / 60;
+        }
+      }
+    }
+    info.fahrzeit = round2(totalFahrzeit);
+  }
+}
+
+/**
+ * Extract surcharge data from positioned items in the anteilige Zuschläge column (~x=32).
+ * This captures things like "Samstag" notes and associated time values.
+ */
+function extractPositionedSurcharges(mergedItems, dayInfos) {
+  for (const info of dayInfos) {
+    const nextDayY = dayInfos.find(d => d.y > info.y + 0.5)?.y || info.y + 3;
+
+    // Look for "Samstag" text in the surcharges column area
+    const hasSamstag = mergedItems.some(it =>
+      it.y >= info.y - 0.2 && it.y < nextDayY &&
+      it.x >= 30 && it.x <= 36 &&
+      it.text.includes('Samstag')
+    );
+
+    if (hasSamstag) {
+      // Find the associated time value
+      const timeItem = mergedItems.find(it =>
+        it.y >= info.y - 0.2 && it.y < nextDayY &&
+        it.x >= 30 && it.x <= 36 &&
+        /^\d{1,2}:\d{2}$/.test(it.text)
+      );
+      if (timeItem) {
+        info.samstagStunden = parseTimeToDecimal(timeItem.text);
+      }
+    }
+  }
+}
+
+/**
+ * Parse form-field items sequentially into day blocks.
+ * Day blocks start with a day-type marker (Arbeitstag, Drehtag, etc.)
+ */
+function parseFormFieldDayBlocks(formTexts) {
+  const dayTypes = /^(arbeitstag|drehtag|feiertag|frei|ruhetag|krank|urlaub|azv|reisetag|bereitschaft|probe|reise)$/i;
+  const timeRegex = /^\d{1,2}:\d{2}$/;
+  const blocks = [];
+
+  // Skip header form items until the first day type
+  let idx = 0;
+  while (idx < formTexts.length && !dayTypes.test(formTexts[idx].trim())) {
+    idx++;
+  }
+
+  // Parse each day block
+  while (idx < formTexts.length) {
+    const typeText = formTexts[idx].trim();
+    if (!dayTypes.test(typeText)) {
+      idx++;
+      continue;
+    }
+
+    idx++; // move past day type
+
+    const block = {
+      type: typeText,
+      start: '',
+      ende: '',
+      pause: 0,
+      stundenTotal: 0,
+      surchargeValues: [],
+      anmerkungen: '',
+      samstagStunden: 0,
+    };
+
+    // Collect time values, Ja/Nein, prices, remarks, Sa: prefix
+    const timeValues = [];
+    let waitingSa = false;
+
+    while (idx < formTexts.length && !dayTypes.test(formTexts[idx].trim())) {
+      const text = formTexts[idx].trim();
+
+      // Skip empty texts
+      if (!text || text === ' ') { idx++; continue; }
+
+      // "Sa:" indicates Saturday surcharge — next time value is the surcharge hours
+      if (/^sa:?$/i.test(text)) {
+        waitingSa = true;
+        idx++;
+        continue;
+      }
+
+      if (waitingSa && timeRegex.test(text)) {
+        block.samstagStunden = parseTimeToDecimal(text);
+        waitingSa = false;
+        idx++;
+        continue;
+      }
+      waitingSa = false;
+
+      // Skip "Ja"/"Nein" (catering flag)
+      if (/^(ja|nein)$/i.test(text)) { idx++; continue; }
+
+      // Skip price fragments (contain €, or comma-separated numbers preceding €)
+      if (text.includes('€') || text.includes('€')) { idx++; continue; }
+      // Also skip standalone comma and number fragments that are part of prices
+      if (text === ',' || /^\d+\s*€/.test(text) || /^,\s*\d+\s*€/.test(text)) { idx++; continue; }
+
+      // Skip consent/signature text
+      if (text.length > 40) { idx++; continue; }
+
+      // Time values
+      if (timeRegex.test(text)) {
+        timeValues.push(text);
+        idx++;
+        continue;
+      }
+
+      // Standalone number with comma (price fragment like "47")
+      if (/^\d+$/.test(text) && idx + 1 < formTexts.length && formTexts[idx + 1].trim() === ',') {
+        // Skip this number and the following comma + price part
+        idx++;
+        continue;
+      }
+
+      // Text remarks (not a day type, not a time, not Ja/Nein)
+      if (text.length > 1 && !dayTypes.test(text)) {
+        block.anmerkungen = (block.anmerkungen ? block.anmerkungen + ' ' : '') + text;
+      }
+
+      idx++;
+    }
+
+    // Map time values: first 4 are start, end, pause, total
+    if (timeValues.length >= 1) block.start = timeValues[0];
+    if (timeValues.length >= 2) block.ende = timeValues[1];
+    if (timeValues.length >= 3) block.pause = parseTimeToDecimal(timeValues[2]);
+    if (timeValues.length >= 4) block.stundenTotal = parseTimeToDecimal(timeValues[3]);
+
+    // Remaining time values are surcharges
+    for (let i = 4; i < timeValues.length; i++) {
+      block.surchargeValues.push(parseTimeToDecimal(timeValues[i]));
+    }
+
+    blocks.push(block);
+  }
+
+  return blocks;
+}
+
+/**
+ * Calculate night hours (22:00-06:00) from start/end time strings.
+ */
+function calcNightHoursFromTimes(startStr, endeStr) {
+  const start = parseTimeValue(startStr);
+  const end = parseTimeValue(endeStr);
+  if (start === null || end === null) return 0;
+
+  let adjustedEnd = end;
+  if (adjustedEnd <= start) adjustedEnd += 24;
+
+  let nightHours = 0;
+  // Night period before 06:00
+  nightHours += Math.max(0, Math.min(adjustedEnd, 6) - Math.max(start, 0));
+  // Night period after 22:00 (through to 30 = 06:00 next day)
+  nightHours += Math.max(0, Math.min(adjustedEnd, 30) - Math.max(start, 22));
+
+  return round2(Math.max(0, nightHours));
+}
+
+/**
+ * Parse a time string "H:MM" or "HH:MM" into decimal hours.
+ */
+function parseTimeToDecimal(str) {
+  if (!str) return 0;
+  const m = str.match(/^(\d{1,2}):(\d{2})$/);
+  if (!m) return 0;
+  return parseInt(m[1], 10) + parseInt(m[2], 10) / 60;
+}
+
+/**
+ * Format decimal hours back to "H:MM" string.
+ */
+function formatTimeValue(decimal) {
+  const h = Math.floor(decimal);
+  const m = Math.round((decimal - h) * 60);
+  return `${h}:${String(m).padStart(2, '0')}`;
 }
 
 function generateId() {

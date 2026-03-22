@@ -159,20 +159,44 @@ export default function TimesheetCreate({ onSave, onSaveBatch, onCancel, editShe
     const [dd, mm, yyyy] = datum.split('.');
     if (!dd || !mm || !yyyy) return null;
     const dayDate = new Date(parseInt(yyyy), parseInt(mm) - 1, parseInt(dd));
-    const startDate = new Date(drehStartDatum + 'T00:00:00');
+
+    // Parse drehStartDatum (ISO format YYYY-MM-DD); handle 2-digit years stored as 00YY
+    const startParts = drehStartDatum.split('-');
+    if (startParts.length !== 3) return null;
+    let startYear = parseInt(startParts[0]);
+    if (startYear < 100) startYear += 2000;
+    const startDate = new Date(startYear, parseInt(startParts[1]) - 1, parseInt(startParts[2]));
     if (isNaN(dayDate.getTime()) || isNaN(startDate.getTime())) return null;
     if (dayDate < startDate) return null;
+
+    // Check if a day is a non-work day (Krank, Urlaub, AZV, Frei)
+    const isNonWorkDay = (anmerkungen) => {
+      const anm = (anmerkungen || '').toLowerCase().trim();
+      if (anm.includes('krank')) return true;
+      if (anm.includes('urlaub') || anm === 'u') return true;
+      if (anm.includes('azv') || anm.includes('arbeitszeitverkürzung') || anm.includes('zeitausgleich') || anm === 'za') return true;
+      if (anm === 'frei' || anm === 'f' || anm.includes('ruhetag')) return true;
+      return false;
+    };
+
+    // Check if a day has actual work (aligned with tvffsCalculator logic)
+    const hasWork = (day) => {
+      if (isNonWorkDay(day.anmerkungen)) return false;
+      return Number(day.stundenTotal) > 0 || (day.start && String(day.start).trim().includes(':'));
+    };
 
     // Collect all actual work dates from existing timesheets for this project
     const workDates = new Set();
     if (existingTimesheets && projekt) {
       for (const ts of existingTimesheets) {
+        // Skip the sheet being edited to avoid counting stale data
+        if (editSheet && ts.id === editSheet.id) continue;
         if (!ts.projekt || !ts.days) continue;
-        const tsProjBase = ts.projekt.replace(/\s*KW\s*\d+.*$/i, '').trim();
-        const currentProjBase = projekt.replace(/\s*KW\s*\d+.*$/i, '').trim();
+        const tsProjBase = ts.projekt.replace(/\s*KW\s*\d+.*$/i, '').trim().toLowerCase();
+        const currentProjBase = projekt.replace(/\s*KW\s*\d+.*$/i, '').trim().toLowerCase();
         if (tsProjBase !== currentProjBase) continue;
         for (const day of ts.days) {
-          if (!day.datum || (!day.start && !day.ende)) continue;
+          if (!day.datum || !hasWork(day)) continue;
           const [d2, m2, y2] = day.datum.split('.');
           if (!d2 || !m2 || !y2) continue;
           const dt = new Date(parseInt(y2), parseInt(m2) - 1, parseInt(d2));
@@ -186,7 +210,7 @@ export default function TimesheetCreate({ onSave, onSaveBatch, onCancel, editShe
     // Also count work days from the current form that are before this date
     if (currentDays) {
       for (const day of currentDays) {
-        if (!day.datum || (!day.start && !day.ende)) continue;
+        if (!day.datum || !hasWork(day)) continue;
         const [d2, m2, y2] = day.datum.split('.');
         if (!d2 || !m2 || !y2) continue;
         const dt = new Date(parseInt(y2), parseInt(m2) - 1, parseInt(d2));
@@ -197,7 +221,7 @@ export default function TimesheetCreate({ onSave, onSaveBatch, onCancel, editShe
     }
 
     return workDates.size + 1;
-  }, [existingTimesheets, projekt]);
+  }, [existingTimesheets, projekt, editSheet]);
 
   // Update a day field
   const updateDay = useCallback((idx, field, value) => {
@@ -477,7 +501,7 @@ export default function TimesheetCreate({ onSave, onSaveBatch, onCancel, editShe
           </div>
           {selectedProject && projects[selectedProject]?.drehStartDatum && (
             <div className="project-drehtag-hint">
-              <span>📅 Erster Drehtag: {new Date(projects[selectedProject].drehStartDatum + 'T12:00:00').toLocaleDateString('de-DE')}</span>
+              <span>📅 Erster Drehtag: {(() => { const p = projects[selectedProject].drehStartDatum.split('-'); let y = parseInt(p[0]); if (y < 100) y += 2000; return new Date(y, parseInt(p[1]) - 1, parseInt(p[2])).toLocaleDateString('de-DE'); })()}</span>
               <button className="drehtag-fill-btn" onClick={handleAutoFillDrehtag} title="Drehtag automatisch in Anmerkungen eintragen">
                 Drehtag eintragen
               </button>
