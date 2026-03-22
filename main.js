@@ -334,7 +334,7 @@ ipcMain.handle('install-update', async () => {
 
   // On macOS: mount DMG, copy .app, relaunch (bypasses Squirrel/ShipIt)
   if (process.platform === 'darwin' && downloadedDmgPath) {
-    const { spawn } = require('child_process');
+    const { execSync } = require('child_process');
     sendUpdateStatus('update-status', { status: 'installing', message: 'Update wird installiert...' });
 
     try {
@@ -354,28 +354,51 @@ ipcMain.handle('install-update', async () => {
       const logPath = path.join(app.getPath('temp'), 'zeitblick-update.log');
       const dmgPath = downloadedDmgPath;
       const pid = process.pid;
+      const appName = path.basename(currentAppPath, '.app');
       const scriptContent = [
         '#!/bin/bash',
         `LOG="${logPath}"`,
         'exec > "$LOG" 2>&1',
-        'set -e',
+        'echo "=== ZeitBlick Update Script ==="',
+        `echo "Started at: $(date)"`,
+        `echo "Main PID: ${pid}"`,
+        `echo "App path: ${currentAppPath}"`,
+        `echo "DMG path: ${dmgPath}"`,
         '',
         '# Wait for the Electron process to fully exit (up to 30s)',
         `PID=${pid}`,
         'for i in $(seq 1 60); do',
         '  if ! kill -0 "$PID" 2>/dev/null; then',
-        '    echo "App exited after ${i}x0.5s"',
+        '    echo "Main process exited after ${i}x0.5s"',
         '    break',
         '  fi',
         '  sleep 0.5',
         'done',
+        '',
+        '# Also wait for any remaining ZeitBlick helper processes (GPU, Renderer, etc.)',
+        'for i in $(seq 1 20); do',
+        `  HELPERS=$(pgrep -f "${appName}" 2>/dev/null | grep -v "$$" || true)`,
+        '  if [ -z "$HELPERS" ]; then',
+        '    echo "All helper processes exited after ${i}x0.5s"',
+        '    break',
+        '  fi',
+        '  echo "Waiting for helpers: $HELPERS"',
+        '  sleep 0.5',
+        'done',
         '# Extra safety margin',
-        'sleep 1',
+        'sleep 2',
         '',
         '# Mount the DMG',
         `echo "Mounting DMG: ${dmgPath}"`,
+        `if [ ! -f "${dmgPath}" ]; then`,
+        '  echo "ERROR: DMG file not found!"',
+        '  exit 1',
+        'fi',
         `MOUNT_OUTPUT=$(hdiutil attach "${dmgPath}" -nobrowse -noverify -noautoopen 2>&1)`,
+        'MOUNT_EXIT=$?',
+        'echo "hdiutil exit code: $MOUNT_EXIT"',
         'echo "hdiutil output: $MOUNT_OUTPUT"',
+        '',
         '# Extract mount point (last tab-separated field on the /Volumes line)',
         'MOUNT_POINT=$(echo "$MOUNT_OUTPUT" | awk -F\'\\t\' \'/\\/Volumes\\//{print $NF}\' | head -1 | sed \'s/^ *//;s/ *$//\')',
         '',
@@ -387,33 +410,68 @@ ipcMain.handle('install-update', async () => {
         '',
         'APP_IN_DMG="$MOUNT_POINT/ZeitBlick.app"',
         'if [ ! -d "$APP_IN_DMG" ]; then',
-        '  hdiutil detach "$MOUNT_POINT" -force 2>/dev/null',
+        '  hdiutil detach "$MOUNT_POINT" -force 2>/dev/null || true',
         '  echo "ERROR: ZeitBlick.app not found in DMG"',
         '  exit 1',
         'fi',
+        'echo "Source app found: $APP_IN_DMG"',
         '',
         '# Remove old app (retry up to 5 times if locked)',
+        'REMOVED=false',
         'for attempt in 1 2 3 4 5; do',
-        `  rm -rf "${currentAppPath}" && break`,
+        `  if rm -rf "${currentAppPath}" 2>/dev/null; then`,
+        '    REMOVED=true',
+        '    echo "Old app removed on attempt $attempt"',
+        '    break',
+        '  fi',
         '  echo "rm -rf failed (attempt $attempt), retrying in 2s..."',
         '  sleep 2',
         'done',
         '',
+        'if [ "$REMOVED" != "true" ]; then',
+        '  echo "ERROR: Could not remove old app after 5 attempts"',
+        '  hdiutil detach "$MOUNT_POINT" -force 2>/dev/null || true',
+        '  exit 1',
+        'fi',
+        '',
         '# Copy new app',
-        `cp -R "$APP_IN_DMG" "${currentAppPath}"`,
+        `echo "Copying new app to ${currentAppPath}..."`,
+        `if ! cp -R "$APP_IN_DMG" "${currentAppPath}"; then`,
+        '  echo "ERROR: cp -R failed!"',
+        '  hdiutil detach "$MOUNT_POINT" -force 2>/dev/null || true',
+        '  exit 1',
+        'fi',
+        '',
+        '# Verify the copy',
+        `if [ ! -d "${currentAppPath}/Contents/MacOS" ]; then`,
+        '  echo "ERROR: Copy verification failed — MacOS directory missing"',
+        '  hdiutil detach "$MOUNT_POINT" -force 2>/dev/null || true',
+        '  exit 1',
+        'fi',
+        'echo "Copy verified OK"',
         '',
         '# Remove quarantine attribute so macOS does not block the app',
         `xattr -cr "${currentAppPath}" 2>/dev/null || true`,
         '',
         '# Unmount DMG',
         'hdiutil detach "$MOUNT_POINT" -force 2>/dev/null || true',
+        'echo "DMG unmounted"',
         '',
-        '# Clean up',
+        '# Clean up DMG',
         `rm -f "${dmgPath}"`,
         '',
         '# Relaunch',
         `echo "Relaunching: ${currentAppPath}"`,
-        `open "${currentAppPath}"`,
+        `open -a "${currentAppPath}"`,
+        'OPEN_EXIT=$?',
+        'echo "open exit code: $OPEN_EXIT"',
+        '',
+        'if [ $OPEN_EXIT -ne 0 ]; then',
+        '  echo "open -a failed, trying open directly..."',
+        `  open "${currentAppPath}"`,
+        'fi',
+        '',
+        `echo "Update complete at: $(date)"`,
         '',
         '# Clean up script itself',
         `rm -f "${scriptPath}"`,
@@ -421,17 +479,19 @@ ipcMain.handle('install-update', async () => {
       fs.writeFileSync(scriptPath, scriptContent, { mode: 0o755 });
       console.log(`[updater] Update script written to: ${scriptPath}`);
 
-      // Launch the update script detached from this process
-      const child = spawn('bash', [scriptPath], {
+      // Launch the update script via nohup to ensure it survives parent exit
+      const logFd = fs.openSync(logPath, 'w');
+      const child = require('child_process').spawn('/usr/bin/nohup', ['/bin/bash', scriptPath], {
         detached: true,
-        stdio: 'ignore',
+        stdio: ['ignore', logFd, logFd],
       });
       child.unref();
+      fs.closeSync(logFd);
 
       // Quit the app so the script can replace it
       downloadedDmgPath = null;
       setTimeout(() => {
-        app.exit(0);
+        app.quit();
       }, 500);
 
       return { success: true, autoInstall: true };
