@@ -127,14 +127,32 @@ export default function UpdateOverlay() {
     return result;
   }, []);
 
+  // Sanitize HTML to prevent XSS from external release notes
+  const sanitizeHTML = (html) => {
+    if (!html) return '';
+    const doc = new DOMParser().parseFromString(html, 'text/html');
+    doc.querySelectorAll('script, style, iframe, object, embed, form, input, textarea, button').forEach(el => el.remove());
+    doc.querySelectorAll('*').forEach(el => {
+      for (const attr of [...el.attributes]) {
+        if (attr.name.startsWith('on') || (attr.name === 'href' && attr.value.trim().toLowerCase().startsWith('javascript:'))) {
+          el.removeAttribute(attr.name);
+        }
+      }
+    });
+    return doc.body.innerHTML;
+  };
+
   // Parse release notes (can be string or array of objects from electron-updater)
   const formatReleaseNotes = (notes) => {
     if (!notes) return null;
-    if (typeof notes === 'string') return notes;
-    if (Array.isArray(notes)) {
-      return notes.map(n => typeof n === 'string' ? n : (n.note || n.body || '')).join('\n\n');
+    let raw;
+    if (typeof notes === 'string') raw = notes;
+    else if (Array.isArray(notes)) {
+      raw = notes.map(n => typeof n === 'string' ? n : (n.note || n.body || '')).join('\n\n');
+    } else {
+      raw = String(notes);
     }
-    return String(notes);
+    return sanitizeHTML(raw);
   };
 
   // ===== "What's New" Overlay after an update =====

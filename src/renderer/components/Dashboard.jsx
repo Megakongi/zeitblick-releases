@@ -1,12 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { calculateTVFFS as calcTVFFS, calculateSheetTVFFS } from '../utils/tvffsCalculator';
-
-function parseDateDE(str) {
-  if (!str) return new Date(0);
-  const parts = str.split('.');
-  if (parts.length === 3) return new Date(parts[2], parts[1] - 1, parts[0]);
-  return new Date(0);
-}
+import { parseDateDE } from '../utils/helpers';
 
 function generatePDFHTML(timesheets, c, settings, personFilter) {
   const hasGage = settings.tagesgage > 0;
@@ -552,19 +546,28 @@ export default function Dashboard({ timesheets, calculations, settings, effectiv
     // Person with most days = Hauptcrew reference
     const maxDays = personStats[0]?.arbeitstage || 0;
 
-    // Zusatztage: persons who worked fewer days than the total unique days
-    // Auto-exclude: Stammteam (project crew members), Vertretung, krank
+    // Zusatztage: persons not in Stammteam and not Vertretung
+    // Only consider Stammteam from the currently filtered project(s)
     const crewNames = new Set();
     const projectCrews = settings.projectCrews || {};
-    for (const members of Object.values(projectCrews)) {
-      for (const name of (members || [])) {
+    if (projectFilter && projectFilter !== 'all') {
+      // Single project selected: only that project's Stammteam
+      for (const name of (projectCrews[projectFilter] || [])) {
         crewNames.add(resolve(name));
+      }
+    } else {
+      // All projects: collect unique project names from displayed timesheets
+      // and use each person's Stammteam status per their projects
+      const displayedProjects = new Set(timesheets.map(t => baseProject(t.projekt)));
+      for (const proj of displayedProjects) {
+        for (const name of (projectCrews[proj] || [])) {
+          crewNames.add(resolve(name));
+        }
       }
     }
     const zusatzPersonen = personStats
-      .filter(ps => ps.arbeitstage < totalUniqueDays)
       .filter(ps => !crewNames.has(ps.name))
-      .filter(ps => !ps.isVertretung && !ps.hasKrank)
+      .filter(ps => !ps.isVertretung)
       .filter(ps => !hiddenZusatzPersonen.includes(ps.name))
       .map(ps => ({ name: ps.name, tage: ps.arbeitstage }));
     const totalZusatztage = zusatzPersonen.reduce((sum, zp) => sum + zp.tage, 0);
@@ -580,7 +583,7 @@ export default function Dashboard({ timesheets, calculations, settings, effectiv
       zusatzPersonen,
       totalZusatztage,
     };
-  }, [isAllPersons, personStats, hiddenZusatzPersonen]);
+  }, [isAllPersons, personStats, hiddenZusatzPersonen, settings, projectFilter, timesheets, resolve, baseProject]);
 
   // === Per-project breakdown — always use unfiltered-by-project data ===
   const projectStats = useMemo(() => {

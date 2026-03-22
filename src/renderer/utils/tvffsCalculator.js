@@ -54,6 +54,8 @@ export function calculateTVFFS(timesheets, settings) {
   const feiertageList = [];
   const heiligabendSilvester = [];
   const ruhezeitVerletzungen = [];
+  let weeklyOT25 = 0;
+  let weeklyOT50 = 0;
 
   // Collect all days with sheet context for rest time check
   const allDays = [];
@@ -119,13 +121,27 @@ export function calculateTVFFS(timesheets, settings) {
         }
       }
 
-      if (day.tag === 'Sonntag' || day.tag === 'So') {
+      // Günstigkeitsprinzip: Feiertag (100%) takes priority over Sonntag (75%)
+      if ((day.tag === 'Sonntag' || day.tag === 'So') && !holiday) {
         totalSonntagstage++;
         totalSonntagsstunden += hours;
       }
       if (day.tag === 'Samstag' || day.tag === 'Sa') {
         totalSamstagstage++;
-        totalSamstagsstunden += hours;
+        // Check if shift crosses midnight into Sunday (TZ 5.6.3)
+        let sonntagCrossMidnight = 0;
+        if (day.start && day.ende) {
+          const startH = parseTime(day.start);
+          const endH = parseTime(day.ende);
+          if (startH !== null && endH !== null && endH < startH) {
+            sonntagCrossMidnight = endH;
+          }
+        }
+        totalSamstagsstunden += hours - sonntagCrossMidnight;
+        if (sonntagCrossMidnight > 0) {
+          totalSonntagsstunden += sonntagCrossMidnight;
+          totalSonntagstage = Math.max(totalSonntagstage, 1);
+        }
       }
 
       // Saturday surcharge for cross-midnight shifts (TZ 5.6.4):
@@ -175,6 +191,7 @@ export function calculateTVFFS(timesheets, settings) {
           ende: day.ende,
           tag: day.tag,
           sheetId: sheet.id,
+          person: sheet.name || sheet.id,
         });
       }
     }
@@ -184,59 +201,64 @@ export function calculateTVFFS(timesheets, settings) {
     // 51–55h: 25%, 56+h: 50%
     // This is ADDITIONAL to the daily OT already on the PDF
     // We track it separately for information
-    sheet._weeklyOTHours25 = Math.max(0, Math.min(sheetStunden, 55) - 50);
-    sheet._weeklyOTHours50 = Math.max(0, sheetStunden - 55);
+    weeklyOT25 += Math.max(0, Math.min(sheetStunden, 55) - 50);
+    weeklyOT50 += Math.max(0, sheetStunden - 55);
   }
 
   // === REST TIME VIOLATIONS (ArbZG §5: 11h between shifts) ===
-  // Sort all days by date
-  allDays.sort((a, b) => {
-    const [dA, mA, yA] = a.datum.split('.').map(Number);
-    const [dB, mB, yB] = b.datum.split('.').map(Number);
-    const dateA = new Date(yA < 100 ? 2000 + yA : yA, mA - 1, dA);
-    const dateB = new Date(yB < 100 ? 2000 + yB : yB, mB - 1, dB);
-    return dateA - dateB;
-  });
+  // Group by person to avoid comparing different people's shifts
+  const daysByPerson = new Map();
+  for (const d of allDays) {
+    const key = d.person;
+    if (!daysByPerson.has(key)) daysByPerson.set(key, []);
+    daysByPerson.get(key).push(d);
+  }
 
-  for (let i = 1; i < allDays.length; i++) {
-    const prev = allDays[i - 1];
-    const curr = allDays[i];
-    
-    const prevEnd = parseTime(prev.ende);
-    const currStart = parseTime(curr.start);
-    if (prevEnd === null || currStart === null) continue;
+  for (const [, personDays] of daysByPerson) {
+    personDays.sort((a, b) => {
+      const [dA, mA, yA] = a.datum.split('.').map(Number);
+      const [dB, mB, yB] = b.datum.split('.').map(Number);
+      const dateA = new Date(yA < 100 ? 2000 + yA : yA, mA - 1, dA);
+      const dateB = new Date(yB < 100 ? 2000 + yB : yB, mB - 1, dB);
+      return dateA - dateB;
+    });
 
-    // Parse dates
-    const [pd, pm, py] = prev.datum.split('.').map(Number);
-    const [cd, cm, cy] = curr.datum.split('.').map(Number);
-    const prevDate = new Date(py < 100 ? 2000 + py : py, pm - 1, pd);
-    const currDate = new Date(cy < 100 ? 2000 + cy : cy, cm - 1, cd);
-    
-    const dayDiff = (currDate - prevDate) / (1000 * 60 * 60 * 24);
-    if (dayDiff > 2 || dayDiff < 0) continue; // skip non-consecutive
+    for (let i = 1; i < personDays.length; i++) {
+      const prev = personDays[i - 1];
+      const curr = personDays[i];
+      
+      const prevEnd = parseTime(prev.ende);
+      const currStart = parseTime(curr.start);
+      if (prevEnd === null || currStart === null) continue;
 
-    // Calculate rest hours
-    let restHours;
-    if (dayDiff === 0) {
-      // Same day — unusual, skip
-      continue;
-    } else if (dayDiff === 1) {
-      // Next day: rest = (24 - prevEnd) + currStart
-      restHours = (24 - prevEnd) + currStart;
-    } else {
-      // 2 days apart: always > 11h rest
-      continue;
-    }
+      // Parse dates
+      const [pd, pm, py] = prev.datum.split('.').map(Number);
+      const [cd, cm, cy] = curr.datum.split('.').map(Number);
+      const prevDate = new Date(py < 100 ? 2000 + py : py, pm - 1, pd);
+      const currDate = new Date(cy < 100 ? 2000 + cy : cy, cm - 1, cd);
+      
+      const dayDiff = (currDate - prevDate) / (1000 * 60 * 60 * 24);
+      if (dayDiff > 2 || dayDiff < 0) continue;
 
-    if (restHours < 11) {
-      ruhezeitVerletzungen.push({
-        datum1: prev.datum,
-        ende1: prev.ende,
-        datum2: curr.datum,
-        start2: curr.start,
-        ruhezeit: round2(restHours),
-        fehlend: round2(11 - restHours),
-      });
+      let restHours;
+      if (dayDiff === 0) {
+        continue;
+      } else if (dayDiff === 1) {
+        restHours = (24 - prevEnd) + currStart;
+      } else {
+        continue;
+      }
+
+      if (restHours < 11) {
+        ruhezeitVerletzungen.push({
+          datum1: prev.datum,
+          ende1: prev.ende,
+          datum2: curr.datum,
+          start2: curr.start,
+          ruhezeit: round2(restHours),
+          fehlend: round2(11 - restHours),
+        });
+      }
     }
   }
 
@@ -247,13 +269,7 @@ export function calculateTVFFS(timesheets, settings) {
   const totalUeberstunden = totalUeberstunden25 + totalUeberstunden50 + totalUeberstunden100;
   const durchschnittStundenProTag = totalArbeitstage > 0 ? totalStunden / totalArbeitstage : 0;
 
-  // Weekly OT totals
-  let weeklyOT25 = 0;
-  let weeklyOT50 = 0;
-  for (const sheet of timesheets) {
-    weeklyOT25 += sheet._weeklyOTHours25 || 0;
-    weeklyOT50 += sheet._weeklyOTHours50 || 0;
-  }
+  // Weekly OT totals already accumulated in loop above
 
   // Urlaub (TZ 14.1): 0,5 Urlaubstag pro angefangene 7-Tage-Vertragszeit
   // Vertragszeit = zusammenhängende Anstellungstage (erster bis letzter Arbeitstag)

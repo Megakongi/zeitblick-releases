@@ -53,7 +53,7 @@ export default function App() {
   const [view, setView] = useState('dashboard');
   const [timesheets, setTimesheets] = useState([]);
   const [selectedSheet, setSelectedSheet] = useState(null);
-  const [settings, setSettings] = useState({ tagesgage: 0, gageType: 'tag', zeitkonto: false, theme: 'dark', spesen: [], personGagen: {}, positionGagen: {}, nameAliases: {}, crews: {}, projectCrews: {}, projects: {} });
+  const [settings, setSettings] = useState({ tagesgage: 0, gageType: 'tag', zeitkonto: false, theme: 'light', spesen: [], personGagen: {}, positionGagen: {}, nameAliases: {}, crews: {}, projectCrews: {}, projects: {} });
   const [isImporting, setIsImporting] = useState(false);
   const [isDragOver, setIsDragOver] = useState(false);
   const [importMessage, setImportMessage] = useState(null);
@@ -67,6 +67,7 @@ export default function App() {
   const [saveError, setSaveError] = useState(null);
   const dragCounter = useRef(0);
   const saveTimeout = useRef(null);
+  const dataLoaded = useRef(false);
 
   // Load data on startup
   useEffect(() => {
@@ -141,12 +142,14 @@ export default function App() {
         setImportMessage('⚠ Fehler beim Laden: ' + data._loadError);
         setTimeout(() => setImportMessage(null), 8000);
       }
+      dataLoaded.current = true;
     }
     load();
   }, []);
 
   // Debounced save — waits 500ms after last change before saving
   useEffect(() => {
+    if (!dataLoaded.current) return;
     if (saveTimeout.current) clearTimeout(saveTimeout.current);
     saveTimeout.current = setTimeout(async () => {
       const result = await window.electronAPI.saveData({ timesheets, settings });
@@ -377,7 +380,7 @@ export default function App() {
 
   // Apply theme
   useEffect(() => {
-    document.documentElement.setAttribute('data-theme', settings.theme || 'dark');
+    document.documentElement.setAttribute('data-theme', settings.theme || 'light');
   }, [settings.theme]);
 
   // Get unique projects and persons for filters
@@ -514,7 +517,7 @@ export default function App() {
         onCreate={() => { setSelectedSheet(null); setView('create'); }}
         onSearch={() => { setSearchOpen(true); setTimeout(() => searchInputRef.current?.focus(), 50); }}
         timesheetCount={timesheets.length}
-        theme={settings.theme || 'dark'}
+        theme={settings.theme || 'light'}
         onToggleTheme={() => setSettings(s => ({ ...s, theme: s.theme === 'dark' ? 'light' : 'dark' }))}
         persons={persons}
         personCounts={personCounts}
