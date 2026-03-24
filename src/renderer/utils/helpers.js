@@ -54,3 +54,34 @@ export function fmt2(n) {
   const val = parseFloat(n);
   return isNaN(val) ? '0,00' : val.toLocaleString('de-DE', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
+
+/**
+ * Calculate hours in the overlap between two intervals.
+ */
+export function overlapHours(aStart, aEnd, bStart, bEnd) {
+  return Math.max(0, Math.min(aEnd, bEnd) - Math.max(aStart, bStart));
+}
+
+/**
+ * Calculate night hours (22:00–06:00) for a given work period (TV-FFS TZ 5.5.2).
+ * @param {string} startStr - Start time (HH:MM)
+ * @param {string} endeStr - End time (HH:MM)
+ * @param {function} parseTimeFn - Time parser returning decimal hours
+ * @returns {number}
+ */
+export function calcNightHours(startStr, endeStr, parseTimeFn) {
+  const start = parseTimeFn(startStr);
+  const end = parseTimeFn(endeStr);
+  if (start === null || end === null) return 0;
+
+  let adjustedEnd = end;
+  if (adjustedEnd <= start) adjustedEnd += 24; // overnight
+
+  let nightHours = 0;
+  // Night period before 06:00
+  nightHours += overlapHours(start, adjustedEnd, 0, 6);
+  // Night period after 22:00 (through to 30 = 06:00 next day)
+  nightHours += overlapHours(start, adjustedEnd, 22, 30);
+
+  return Math.round(nightHours * 100) / 100;
+}

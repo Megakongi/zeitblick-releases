@@ -74,7 +74,9 @@ function createBackup() {
     fs.copyFileSync(sourcePath, backupPath);
     // Keep only last 20 backups
     const backups = fs.readdirSync(backupDir).filter(f => f.startsWith('zeitblick-backup-') && f.endsWith('.json')).sort().reverse();
-    for (const old of backups.slice(20)) fs.unlinkSync(path.join(backupDir, old));
+    for (const old of backups.slice(20)) {
+      try { fs.unlinkSync(path.join(backupDir, old)); } catch (e) { console.warn(`Could not delete old backup ${old}:`, e.message); }
+    }
     return { success: true, path: backupPath, filename: path.basename(backupPath) };
   } catch (error) {
     return { success: false, error: error.message };

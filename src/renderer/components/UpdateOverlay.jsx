@@ -54,8 +54,14 @@ export default function UpdateOverlay() {
       if (!window.electronAPI?.getAppVersion) return;
       try {
         const currentVersion = await window.electronAPI.getAppVersion();
-        const lastSeen = localStorage.getItem(UPDATE_SEEN_KEY);
-        const whatsNewDismissed = localStorage.getItem(WHATS_NEW_KEY);
+        let lastSeen = null;
+        let whatsNewDismissed = null;
+        try {
+          lastSeen = localStorage.getItem(UPDATE_SEEN_KEY);
+          whatsNewDismissed = localStorage.getItem(WHATS_NEW_KEY);
+        } catch (e) {
+          // localStorage unavailable (e.g. private browsing)
+        }
         
         if (lastSeen && lastSeen !== currentVersion && whatsNewDismissed !== currentVersion) {
           // Version has changed since last use — show What's New
@@ -67,7 +73,7 @@ export default function UpdateOverlay() {
         }
         
         // Always save current version
-        localStorage.setItem(UPDATE_SEEN_KEY, currentVersion);
+        try { localStorage.setItem(UPDATE_SEEN_KEY, currentVersion); } catch (e) { /* ignore */ }
       } catch (e) {
         // Ignore in dev mode
       }
@@ -113,7 +119,7 @@ export default function UpdateOverlay() {
   const handleDismissWhatsNew = useCallback(() => {
     setShowWhatsNew(false);
     if (whatsNewContent?.toVersion) {
-      localStorage.setItem(WHATS_NEW_KEY, whatsNewContent.toVersion);
+      try { localStorage.setItem(WHATS_NEW_KEY, whatsNewContent.toVersion); } catch (e) { /* ignore */ }
     }
   }, [whatsNewContent]);
 

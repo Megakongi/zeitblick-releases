@@ -10,6 +10,7 @@ import OnboardingTour from './components/OnboardingTour';
 import UpdateOverlay from './components/UpdateOverlay';
 import { calculateTVFFS } from './utils/tvffsCalculator';
 import { getTimesheetKW } from './utils/calendarWeek';
+import { FilterContext, SettingsContext } from './contexts';
 
 class ErrorBoundary extends Component {
   constructor(props) {
@@ -30,6 +31,34 @@ class ErrorBoundary extends Component {
           <pre style={{ whiteSpace: 'pre-wrap', fontSize: 13 }}>{this.state.error?.toString()}</pre>
           <button onClick={() => this.setState({ hasError: false, error: null })} style={{ marginTop: 16, padding: '8px 16px' }}>
             Zurücksetzen
+          </button>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
+/** Per-section ErrorBoundary with a friendly fallback and section label */
+class SectionErrorBoundary extends Component {
+  constructor(props) {
+    super(props);
+    this.state = { hasError: false, error: null };
+  }
+  static getDerivedStateFromError(error) {
+    return { hasError: true, error };
+  }
+  componentDidCatch(error, info) {
+    console.error(`SectionErrorBoundary [${this.props.label || '?'}]:`, error, info.componentStack);
+  }
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div style={{ padding: 32, textAlign: 'center', color: 'var(--text-secondary, #888)' }}>
+          <p style={{ fontSize: 15, marginBottom: 8 }}>Fehler in {this.props.label || 'diesem Bereich'}</p>
+          <pre style={{ whiteSpace: 'pre-wrap', fontSize: 12, color: '#ff6666', marginBottom: 12 }}>{this.state.error?.message}</pre>
+          <button onClick={() => this.setState({ hasError: false, error: null })} style={{ padding: '6px 14px', cursor: 'pointer' }}>
+            Erneut versuchen
           </button>
         </div>
       );
@@ -189,6 +218,7 @@ export default function App() {
       const results = await window.electronAPI.importPDFs(filePaths);
       const newSheets = results
         .filter(r => r.success)
+        .filter(r => r.data && r.data.id && Array.isArray(r.data.days))
         .map(r => ({ ...r.data, filePath: r.filePath }));
       
       // Duplicate detection: check if same date range + project already exists
@@ -415,7 +445,7 @@ export default function App() {
       // Search by date
       if (ts.days && ts.days.some(d => (d.datum || '').includes(q))) return true;
       return false;
-    }).slice(0, 20); // Limit results
+    }).slice(0, 50); // Limit results
   }, [searchQuery, timesheets, resolveName]);
 
   const handleSearchSelect = useCallback((sheet) => {
@@ -459,7 +489,7 @@ export default function App() {
 
   // TVFFS calculations — use per-person gage when a person is selected
   const effectiveSettings = personFilter !== 'all' ? getPersonSettings(personFilter) : settings;
-  const calculations = calculateTVFFS(filteredTimesheets, effectiveSettings);
+  const calculations = useMemo(() => calculateTVFFS(filteredTimesheets, effectiveSettings), [filteredTimesheets, effectiveSettings]);
 
   // Person sheet counts for sidebar (using resolved names)
   const personCounts = {};
@@ -477,13 +507,13 @@ export default function App() {
   const renderView = () => {
     switch (view) {
       case 'dashboard':
-        return <Dashboard timesheets={filteredTimesheets} calculations={calculations} settings={settings} effectiveSettings={effectiveSettings} onSettings={setSettings} onViewDetail={handleViewDetail} onUpdateTimesheets={setTimesheets} projects={filteredProjects} projectFilter={projectFilter} onProjectFilter={setProjectFilter} personFilter={personFilter} onPersonFilter={handlePersonFilter} allTimesheets={timesheets} personFilteredTimesheets={personFiltered} getPersonSettings={getPersonSettings} resolveName={resolveName} getBaseProject={getBaseProject} />;
+        return <SectionErrorBoundary label="Übersicht"><Dashboard timesheets={filteredTimesheets} calculations={calculations} settings={settings} effectiveSettings={effectiveSettings} onSettings={setSettings} onViewDetail={handleViewDetail} onUpdateTimesheets={setTimesheets} projects={filteredProjects} projectFilter={projectFilter} onProjectFilter={setProjectFilter} personFilter={personFilter} onPersonFilter={handlePersonFilter} allTimesheets={timesheets} personFilteredTimesheets={personFiltered} getPersonSettings={getPersonSettings} resolveName={resolveName} getBaseProject={getBaseProject} /></SectionErrorBoundary>;
       case 'timesheets':
-        return <TimesheetList timesheets={timesheets} onViewDetail={handleViewDetail} onDelete={handleDelete} onBulkDelete={handleBulkDelete} personFilter={personFilter} resolveName={resolveName} getBaseProject={getBaseProject} />;
+        return <SectionErrorBoundary label="Stundenzettel-Liste"><TimesheetList timesheets={timesheets} onViewDetail={handleViewDetail} onDelete={handleDelete} onBulkDelete={handleBulkDelete} personFilter={personFilter} resolveName={resolveName} getBaseProject={getBaseProject} /></SectionErrorBoundary>;
       case 'detail':
-        return selectedSheet ? <TimesheetDetail sheet={selectedSheet} settings={getPersonSettings(selectedSheet.name)} onBack={() => setView('timesheets')} onEdit={handleEditSheet} allTimesheets={timesheets} onSelectSheet={(s) => { setSelectedSheet(s); }} /> : null;
+        return selectedSheet ? <SectionErrorBoundary label="Stundenzettel-Detail"><TimesheetDetail sheet={selectedSheet} settings={getPersonSettings(selectedSheet.name)} onBack={() => setView('timesheets')} onEdit={handleEditSheet} allTimesheets={timesheets} onSelectSheet={(s) => { setSelectedSheet(s); }} /></SectionErrorBoundary> : null;
       case 'create':
-        return <TimesheetCreate
+        return <SectionErrorBoundary label="Stundenzettel erstellen"><TimesheetCreate
           onSave={handleCreateSheet}
           onSaveBatch={handleBatchCreateSheets}
           onCancel={() => { setSelectedSheet(null); setView('timesheets'); }}
@@ -492,16 +522,29 @@ export default function App() {
           crews={settings.crews || {}}
           projects={settings.projects || {}}
           onCreateNext={(weekStart) => { setSelectedSheet(null); setView('create'); }}
-        />;
+        /></SectionErrorBoundary>;
       case 'settings':
-        return <Settings settings={settings} onSave={setSettings} timesheets={timesheets} setTimesheets={setTimesheets} />;
+        return <SectionErrorBoundary label="Einstellungen"><Settings settings={settings} onSave={setSettings} timesheets={timesheets} setTimesheets={setTimesheets} /></SectionErrorBoundary>;
       default:
-        return <Dashboard timesheets={filteredTimesheets} calculations={calculations} settings={settings} effectiveSettings={effectiveSettings} onSettings={setSettings} onViewDetail={handleViewDetail} onUpdateTimesheets={setTimesheets} projects={filteredProjects} projectFilter={projectFilter} onProjectFilter={setProjectFilter} personFilter={personFilter} onPersonFilter={handlePersonFilter} allTimesheets={timesheets} personFilteredTimesheets={personFiltered} getPersonSettings={getPersonSettings} resolveName={resolveName} getBaseProject={getBaseProject} />;
+        return <SectionErrorBoundary label="Übersicht"><Dashboard timesheets={filteredTimesheets} calculations={calculations} settings={settings} effectiveSettings={effectiveSettings} onSettings={setSettings} onViewDetail={handleViewDetail} onUpdateTimesheets={setTimesheets} projects={filteredProjects} projectFilter={projectFilter} onProjectFilter={setProjectFilter} personFilter={personFilter} onPersonFilter={handlePersonFilter} allTimesheets={timesheets} personFilteredTimesheets={personFiltered} getPersonSettings={getPersonSettings} resolveName={resolveName} getBaseProject={getBaseProject} /></SectionErrorBoundary>;
     }
   };
 
+  const filterCtx = useMemo(() => ({
+    projectFilter, personFilter,
+    onProjectFilter: setProjectFilter,
+    onPersonFilter: handlePersonFilter,
+  }), [projectFilter, personFilter, handlePersonFilter]);
+
+  const settingsCtx = useMemo(() => ({
+    settings, effectiveSettings, onSettings: setSettings,
+    getPersonSettings, resolveName, getBaseProject,
+  }), [settings, effectiveSettings, getPersonSettings, resolveName]);
+
   return (
     <ErrorBoundary>
+    <FilterContext.Provider value={filterCtx}>
+    <SettingsContext.Provider value={settingsCtx}>
     <div
       className="app-container"
       onDragEnter={handleDragEnter}
@@ -552,8 +595,9 @@ export default function App() {
               <div className="search-results">
                 {searchResults.length === 0 && (
                   <div className="search-empty">Keine Ergebnisse für „{searchQuery}"</div>
-                )}
-                {searchResults.map(sheet => {
+                )}                {searchResults.length >= 50 && (
+                  <div className="search-empty" style={{ color: 'var(--text-secondary)', fontSize: 12 }}>Weitere Ergebnisse vorhanden — Suche verfeinern</div>
+                )}                {searchResults.map(sheet => {
                   const kw = getTimesheetKW(sheet);
                   const firstDate = sheet.days?.find(d => d.datum)?.datum || '';
                   const lastDate = sheet.days ? [...sheet.days].reverse().find(d => d.datum)?.datum || '' : '';
@@ -606,6 +650,8 @@ export default function App() {
       {showTour && <OnboardingTour onComplete={() => setShowTour(false)} />}
       <UpdateOverlay />
     </div>
+    </SettingsContext.Provider>
+    </FilterContext.Provider>
     </ErrorBoundary>
   );
 }

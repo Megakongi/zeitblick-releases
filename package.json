@@ -30,6 +30,8 @@
     "mac": {
       "icon": "build/icon.icns",
       "category": "public.app-category.productivity",
+      "identity": null,
+      "gatekeeperAssess": false,
       "target": [
         {
           "target": "dmg",
@@ -80,13 +82,14 @@
     ]
   },
   "devDependencies": {
-    "@vitejs/plugin-react": "^4.2.1",
+    "@electron/notarize": "^3.1.1",
+    "@vitejs/plugin-react": "^4.7.0",
     "canvas": "^3.2.1",
-    "concurrently": "^8.2.2",
-    "electron": "^28.1.0",
-    "electron-builder": "^24.9.1",
-    "vite": "^5.0.12",
-    "wait-on": "^7.2.0"
+    "concurrently": "^9.2.1",
+    "electron": "^35.7.5",
+    "electron-builder": "^26.8.1",
+    "vite": "^5.4.21",
+    "wait-on": "^9.0.4"
   },
   "dependencies": {
     "electron-updater": "^6.8.3",

@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { calculateTVFFS as calcTVFFS, calculateSheetTVFFS } from '../utils/tvffsCalculator';
 import { parseDateDE } from '../utils/helpers';
+import { useFilters, useSettings } from '../contexts';
 
 function generatePDFHTML(timesheets, c, settings, personFilter) {
   const hasGage = settings.tagesgage > 0;
@@ -290,18 +291,30 @@ function generateCSV(timesheets, c, settings, personFilter) {
   return lines.join('\n');
 }
 
-export default function Dashboard({ timesheets, calculations, settings, effectiveSettings, onSettings, onViewDetail, onUpdateTimesheets, projects, projectFilter, onProjectFilter, personFilter, onPersonFilter, allTimesheets, personFilteredTimesheets, getPersonSettings, resolveName, getBaseProject }) {
+export default function Dashboard({ timesheets, calculations, settings: propSettings, effectiveSettings: propEffectiveSettings, onSettings: propOnSettings, onViewDetail, onUpdateTimesheets, projects, projectFilter: propProjectFilter, onProjectFilter: propOnProjectFilter, personFilter: propPersonFilter, onPersonFilter: propOnPersonFilter, allTimesheets, personFilteredTimesheets, getPersonSettings: propGetPersonSettings, resolveName: propResolveName, getBaseProject: propGetBaseProject }) {
+  // Use contexts with prop fallback for backward compatibility
+  const filterCtx = useFilters();
+  const settingsCtx = useSettings();
+  const personFilter = propPersonFilter ?? filterCtx.personFilter;
+  const onPersonFilter = propOnPersonFilter ?? filterCtx.onPersonFilter;
+  const projectFilter = propProjectFilter ?? filterCtx.projectFilter;
+  const onProjectFilter = propOnProjectFilter ?? filterCtx.onProjectFilter;
+  const settings = propSettings ?? settingsCtx.settings;
+  const onSettings = propOnSettings ?? settingsCtx.onSettings;
+  const getPersonSettings = propGetPersonSettings ?? settingsCtx.getPersonSettings;
+
   const c = calculations;
   const hasData = timesheets.length > 0;
-  const es = effectiveSettings || settings;
+  const es = propEffectiveSettings || settingsCtx.effectiveSettings || settings;
   const hasGage = es.tagesgage > 0;
-  const resolve = resolveName || ((n) => n);
-  const baseProject = getBaseProject || ((p) => p || 'Sonstiges');
+  const resolve = propResolveName || settingsCtx.resolveName || ((n) => n);
+  const baseProject = propGetBaseProject || settingsCtx.getBaseProject || ((p) => p || 'Sonstiges');
 
   const [gageInput, setGageInput] = useState(es.tagesgage || '');
   const [gageType, setGageType] = useState(es.gageType || 'tag');
   const [zeitkonto, setZeitkonto] = useState(settings.zeitkonto || false);
   const [showExport, setShowExport] = useState(false);
+  const [exporting, setExporting] = useState(false);
   const [spesenInput, setSpesenInput] = useState({ datum: '', beschreibung: '', betrag: '', kategorie: 'Fahrt' });
   const [spesenCollapsed, setSpesenCollapsed] = useState(true);
   const [draggedPerson, setDraggedPerson] = useState(null);
@@ -331,23 +344,35 @@ export default function Dashboard({ timesheets, calculations, settings, effectiv
 
   const handleExportCSV = async () => {
     setShowExport(false);
-    const csv = generateCSV(timesheets, c, settings, personFilter);
-    const personSuffix = personFilter !== 'all' ? `-${personFilter}` : '';
-    await window.electronAPI.exportCSV(csv, `ZeitBlick-Export${personSuffix}-${new Date().toISOString().slice(0,10)}.csv`);
+    setExporting(true);
+    try {
+      const csv = generateCSV(timesheets, c, settings, personFilter);
+      const personSuffix = personFilter !== 'all' ? `-${personFilter}` : '';
+      await window.electronAPI.exportCSV(csv, `ZeitBlick-Export${personSuffix}-${new Date().toISOString().slice(0,10)}.csv`);
+    } finally {
+      setExporting(false);
+    }
   };
 
   const handleExportPDF = async () => {
     setShowExport(false);
-    const html = generatePDFHTML(timesheets, c, settings, personFilter);
-    const personSuffix = personFilter !== 'all' ? `-${personFilter}` : '';
-    const result = await window.electronAPI.exportPDF(html, `ZeitBlick-Übersicht${personSuffix}-${new Date().toISOString().slice(0,10)}.pdf`);
-    if (result && !result.success && result.error) {
-      alert('Export fehlgeschlagen: ' + result.error);
+    setExporting(true);
+    try {
+      const html = generatePDFHTML(timesheets, c, settings, personFilter);
+      const personSuffix = personFilter !== 'all' ? `-${personFilter}` : '';
+      const result = await window.electronAPI.exportPDF(html, `ZeitBlick-Übersicht${personSuffix}-${new Date().toISOString().slice(0,10)}.pdf`);
+      if (result && !result.success && result.error) {
+        alert('Export fehlgeschlagen: ' + result.error);
+      }
+    } finally {
+      setExporting(false);
     }
   };
 
   const handleExportExcel = async () => {
     setShowExport(false);
+    setExporting(true);
+    try {
     const hasGage = settings.tagesgage > 0;
     const fmt = (n) => typeof n === 'number' ? Math.round(n * 100) / 100 : 0;
 
@@ -389,6 +414,9 @@ export default function Dashboard({ timesheets, calculations, settings, effectiv
     };
     const personSuffix = personFilter !== 'all' ? `-${personFilter}` : '';
     await window.electronAPI.exportXLSX(xlsxData, `ZeitBlick-Export${personSuffix}-${new Date().toISOString().slice(0,10)}.xlsx`);
+    } finally {
+      setExporting(false);
+    }
   };
 
   useEffect(() => {
@@ -618,7 +646,7 @@ export default function Dashboard({ timesheets, calculations, settings, effectiv
       byProject[proj].push(ts);
     }
     return Object.entries(byProject).map(([projektName, sheets]) => {
-      const pc = calcTVFFS(sheets, effectiveSettings || settings);
+      const pc = calcTVFFS(sheets, es || settings);
       return {
         projekt: projektName,
         sheets: sheets.length,
@@ -632,7 +660,7 @@ export default function Dashboard({ timesheets, calculations, settings, effectiv
         verdienst: pc.gesamtVerdienst,
       };
     }).sort((a, b) => b.stunden - a.stunden);
-  }, [timesheets, personFilteredTimesheets, isAllPersons, effectiveSettings, settings, baseProject]);
+  }, [timesheets, personFilteredTimesheets, isAllPersons, es, settings, baseProject]);
 
   // Build chart data: hours per week, sorted by date
   const sortedTimesheets = useMemo(() => {
@@ -692,10 +720,10 @@ export default function Dashboard({ timesheets, calculations, settings, effectiv
               </select>
             )}
             <div className="export-dropdown">
-              <button className="export-btn" onClick={() => setShowExport(!showExport)} aria-label="Exportieren">
-                ↗ Exportieren
+              <button className="export-btn" onClick={() => setShowExport(!showExport)} disabled={exporting} aria-label="Exportieren">
+                {exporting ? '⏳ Exportiert…' : '↗ Exportieren'}
               </button>
-              {showExport && (
+              {showExport && !exporting && (
                 <div className="export-menu" role="menu">
                   <button onClick={() => handleExportCSV()} role="menuitem">CSV exportieren</button>
                   <button onClick={() => handleExportPDF()} role="menuitem">PDF exportieren</button>
@@ -988,10 +1016,10 @@ export default function Dashboard({ timesheets, calculations, settings, effectiv
             </select>
           )}
           <div className="export-dropdown">
-            <button className="export-btn" onClick={() => setShowExport(!showExport)} aria-label="Exportieren">
-              ↗ Exportieren
+            <button className="export-btn" onClick={() => setShowExport(!showExport)} disabled={exporting} aria-label="Exportieren">
+              {exporting ? '⏳ Exportiert…' : '↗ Exportieren'}
             </button>
-            {showExport && (
+            {showExport && !exporting && (
               <div className="export-menu" role="menu">
                 <button onClick={() => handleExportCSV()} role="menuitem">CSV exportieren</button>
                 <button onClick={() => handleExportPDF()} role="menuitem">PDF exportieren</button>

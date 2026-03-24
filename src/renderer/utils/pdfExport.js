@@ -5,16 +5,19 @@
  * @param {Object} sheet - A timesheet object with projekt, name, days, totals, etc.
  * @returns {string} Full HTML document string
  */
+/** Escape HTML special characters to prevent XSS/injection in generated PDFs */
+const escHtml = (s) => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+
 export function generateTimesheetHTML(sheet) {
   const { projekt, projektnummer, produktionsfirma, name, position, abteilung, pause, days, totals } = sheet;
   const fmt2 = v => { const n = parseFloat(v); return isNaN(n) || n === 0 ? '' : n.toFixed(2); };
 
   const daysRows = (days || []).map(d => `
     <tr class="${d.start || d.stundenTotal > 0 ? 'active' : 'empty'}">
-      <td class="day-name">${d.tag || ''}</td>
-      <td>${d.datum || ''}</td>
-      <td>${d.start || ''}</td>
-      <td>${d.ende || ''}</td>
+      <td class="day-name">${escHtml(d.tag)}</td>
+      <td>${escHtml(d.datum)}</td>
+      <td>${escHtml(d.start)}</td>
+      <td>${escHtml(d.ende)}</td>
       <td>${fmt2(d.pause)}</td>
       <td class="hours">${fmt2(d.stundenTotal)}</td>
       <td>${fmt2(d.ueberstunden25)}</td>
@@ -22,7 +25,7 @@ export function generateTimesheetHTML(sheet) {
       <td>${fmt2(d.ueberstunden100)}</td>
       <td>${fmt2(d.nacht25)}</td>
       <td>${fmt2(d.fahrzeit)}</td>
-      <td class="notes">${d.anmerkungen || ''}</td>
+      <td class="notes">${escHtml(d.anmerkungen)}</td>
     </tr>
   `).join('');
 
@@ -32,7 +35,7 @@ export function generateTimesheetHTML(sheet) {
 <html lang="de">
 <head>
 <meta charset="UTF-8">
-<title>Stundenzettel - ${name || 'Unbekannt'}</title>
+<title>Stundenzettel - ${escHtml(name) || 'Unbekannt'}</title>
 <style>
   @page {
     size: A4 landscape;
@@ -184,12 +187,12 @@ export function generateTimesheetHTML(sheet) {
   </div>
 
   <div class="meta-grid">
-    <div class="meta-item"><span class="label">Projekt:</span><span class="value">${projekt || '—'}</span></div>
-    <div class="meta-item"><span class="label">Name:</span><span class="value">${name || '—'}</span></div>
-    <div class="meta-item"><span class="label">Projektnummer:</span><span class="value">${projektnummer || '—'}</span></div>
-    <div class="meta-item"><span class="label">Position:</span><span class="value">${position || '—'}</span></div>
-    <div class="meta-item"><span class="label">Produktionsfirma:</span><span class="value">${produktionsfirma || '—'}</span></div>
-    <div class="meta-item"><span class="label">Abteilung:</span><span class="value">${abteilung || '—'}</span></div>
+    <div class="meta-item"><span class="label">Projekt:</span><span class="value">${escHtml(projekt) || '—'}</span></div>
+    <div class="meta-item"><span class="label">Name:</span><span class="value">${escHtml(name) || '—'}</span></div>
+    <div class="meta-item"><span class="label">Projektnummer:</span><span class="value">${escHtml(projektnummer) || '—'}</span></div>
+    <div class="meta-item"><span class="label">Position:</span><span class="value">${escHtml(position) || '—'}</span></div>
+    <div class="meta-item"><span class="label">Produktionsfirma:</span><span class="value">${escHtml(produktionsfirma) || '—'}</span></div>
+    <div class="meta-item"><span class="label">Abteilung:</span><span class="value">${escHtml(abteilung) || '—'}</span></div>
     <div class="meta-item"><span class="label">Standardpause:</span><span class="value">${pause || '—'} Std.</span></div>
   </div>
 

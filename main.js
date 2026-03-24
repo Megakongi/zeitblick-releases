@@ -561,15 +561,20 @@ ipcMain.handle('open-folder-dialog', async () => {
   const folderPath = result.filePaths[0];
   const pdfFiles = [];
 
+  const resolvedRoot = fs.realpathSync(folderPath);
   function scanDir(dir) {
     try {
       const entries = fs.readdirSync(dir, { withFileTypes: true });
       for (const entry of entries) {
         const fullPath = path.join(dir, entry.name);
+        // Resolve symlinks and ensure path stays within selected folder
+        let resolvedPath;
+        try { resolvedPath = fs.realpathSync(fullPath); } catch (_) { continue; }
+        if (!resolvedPath.startsWith(resolvedRoot)) continue;
         if (entry.isDirectory()) {
           scanDir(fullPath);
         } else if (entry.isFile() && entry.name.toLowerCase().endsWith('.pdf')) {
-          pdfFiles.push(fullPath);
+          pdfFiles.push(resolvedPath);
         }
       }
     } catch (e) {
@@ -730,26 +735,26 @@ ipcMain.handle('export-pdfs-to-folder', async (event, htmlContentArray) => {
   try {
     const { BrowserWindow: BW } = require('electron');
     const os = require('os');
-    for (const item of htmlContentArray) {
-      const fname = item.filename || item.name || 'export.pdf';
-      const printWin = new BW({ show: false, width: 1200, height: 800, webPreferences: { offscreen: true } });
-      // Write HTML to temp file to avoid data-URL size limits
-      const tmpFile = path.join(os.tmpdir(), `zeitblick-pdf-${Date.now()}-${Math.random().toString(36).slice(2)}.html`);
-      fs.writeFileSync(tmpFile, item.html, 'utf-8');
-      try {
-      await printWin.loadFile(tmpFile);
-      await new Promise(r => setTimeout(r, 800));
-      const pdfData = await printWin.webContents.printToPDF({
-        printBackground: true, landscape: true, scale: 0.75,
-        margins: { top: 0.4, bottom: 0.4, left: 0.5, right: 0.5 },
-      });
-      try { fs.unlinkSync(tmpFile); } catch (_) {}
-      const filePath = path.join(folderPath, fname);
-      fs.writeFileSync(filePath, pdfData);
-      results.push({ success: true, filename: fname });
-      } finally {
-        printWin.close();
+    // Reuse a single BrowserWindow for all PDFs to avoid overhead
+    const printWin = new BW({ show: false, width: 1200, height: 800, webPreferences: { offscreen: true } });
+    try {
+      for (const item of htmlContentArray) {
+        const fname = item.filename || item.name || 'export.pdf';
+        const tmpFile = path.join(os.tmpdir(), `zeitblick-pdf-${Date.now()}-${Math.random().toString(36).slice(2)}.html`);
+        fs.writeFileSync(tmpFile, item.html, 'utf-8');
+        await printWin.loadFile(tmpFile);
+        await new Promise(r => setTimeout(r, 400));
+        const pdfData = await printWin.webContents.printToPDF({
+          printBackground: true, landscape: true, scale: 0.75,
+          margins: { top: 0.4, bottom: 0.4, left: 0.5, right: 0.5 },
+        });
+        try { fs.unlinkSync(tmpFile); } catch (_) {}
+        const filePath = path.join(folderPath, fname);
+        fs.writeFileSync(filePath, pdfData);
+        results.push({ success: true, filename: fname });
       }
+    } finally {
+      printWin.close();
     }
     return { success: true, count: results.length, folder: folderPath };
   } catch (error) {

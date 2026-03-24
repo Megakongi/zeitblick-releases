@@ -2,7 +2,7 @@ import React, { useState, useCallback, useMemo } from 'react';
 import { getKW } from '../utils/calendarWeek';
 import { isHoliday, parseTime } from '../utils/holidays';
 import { generateTimesheetHTML } from '../utils/pdfExport';
-import { generateId } from '../utils/helpers';
+import { generateId, calcNightHours, overlapHours } from '../utils/helpers';
 
 const DAY_NAMES = ['Montag', 'Dienstag', 'Mittwoch', 'Donnerstag', 'Freitag', 'Samstag', 'Sonntag'];
 
@@ -32,29 +32,6 @@ function calcHours(start, ende, pause) {
   return Math.max(0, Math.round(diff * 100) / 100);
 }
 
-// Calculate hours in the overlap between two intervals
-function overlapHours(aStart, aEnd, bStart, bEnd) {
-  return Math.max(0, Math.min(aEnd, bEnd) - Math.max(aStart, bStart));
-}
-
-// Calculate night hours (22:00–06:00) for a given work period
-function calcNightHours(startStr, endeStr) {
-  const start = parseTime(startStr);
-  const end = parseTime(endeStr);
-  if (start === null || end === null) return 0;
-
-  let adjustedEnd = end;
-  if (adjustedEnd <= start) adjustedEnd += 24; // overnight
-
-  let nightHours = 0;
-  // Night period before 06:00 (applies if work starts before 06:00)
-  nightHours += overlapHours(start, adjustedEnd, 0, 6);
-  // Night period after 22:00 (through to 30 = 06:00 next day)
-  nightHours += overlapHours(start, adjustedEnd, 22, 30);
-
-  return Math.round(nightHours * 100) / 100;
-}
-
 // Auto-calculate overtime and night hours based on TV-FFS rules
 function calcDayDetails(startStr, endeStr, pause, datum) {
   const totalHours = calcHours(startStr, endeStr, pause);
@@ -62,7 +39,7 @@ function calcDayDetails(startStr, endeStr, pause, datum) {
   const ueberstunden25 = Math.round(Math.max(0, Math.min(totalHours - 10, 1)) * 100) / 100;
   const ueberstunden50 = Math.round(Math.max(0, totalHours - 11) * 100) / 100;
   // Night hours (22:00–06:00), not reduced by pause
-  const nacht25 = calcNightHours(startStr, endeStr);
+  const nacht25 = calcNightHours(startStr, endeStr, parseTime);
   // Ü100% stays manual (holiday detection is handled by tvffsCalculator)
   return { stundenTotal: totalHours, ueberstunden25, ueberstunden50, nacht25 };
 }
@@ -308,6 +285,7 @@ export default function TimesheetCreate({ onSave, onSaveBatch, onCancel, editShe
 
   // Validation state
   const [validationErrors, setValidationErrors] = useState([]);
+  const [overnightWarnings, setOvernightWarnings] = useState([]);
 
   // Copy from previous week
   const handleCopyFromPrev = useCallback(() => {
@@ -404,6 +382,24 @@ export default function TimesheetCreate({ onSave, onSaveBatch, onCancel, editShe
       return;
     }
     setValidationErrors([]);
+
+    // Warn about potential overnight shifts (end < start)
+    const warnings = [];
+    for (const d of days) {
+      if (d.start && d.ende) {
+        const s = parseTime(d.start);
+        const e = parseTime(d.ende);
+        if (s !== null && e !== null && e < s) {
+          warnings.push(`${d.tag} (${d.datum}): Ende (${d.ende}) liegt vor Beginn (${d.start}) — wird als Nachtschicht berechnet.`);
+        }
+      }
+    }
+    if (warnings.length > 0 && overnightWarnings.length === 0) {
+      // Show warning first time, user must click save again to confirm
+      setOvernightWarnings(warnings);
+      return;
+    }
+    setOvernightWarnings([]);
 
     if (batchMode && selectedCrew && crews && crews[selectedCrew]) {
       // Batch: create one sheet per selected crew member
@@ -873,6 +869,16 @@ export default function TimesheetCreate({ onSave, onSaveBatch, onCancel, editShe
           {validationErrors.map((err, i) => (
             <div key={i} className="validation-error">⚠ {err}</div>
           ))}
+        </div>
+      )}
+
+      {/* Overnight Shift Warnings */}
+      {overnightWarnings.length > 0 && (
+        <div className="validation-errors" style={{ borderColor: '#f59e0b', background: 'rgba(245, 158, 11, 0.08)' }}>
+          {overnightWarnings.map((w, i) => (
+            <div key={i} className="validation-error" style={{ color: '#b45309' }}>⚠ {w}</div>
+          ))}
+          <div style={{ marginTop: 6, fontSize: 12, color: '#92400e' }}>Nochmal „Speichern" klicken um zu bestätigen.</div>
         </div>
       )}
 
