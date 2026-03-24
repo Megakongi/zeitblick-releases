@@ -286,31 +286,53 @@ export function calculateTVFFS(timesheets, settings) {
   // Weekly OT totals already accumulated in loop above
 
   // Urlaub (TZ 14.1): 0,5 Urlaubstag pro angefangene 7-Tage-Vertragszeit
-  // Vertragszeit = zusammenhängende Anstellungstage (erster bis letzter Arbeitstag)
-  // Include all relevant days (work, krank, AZV, urlaub) for contract duration
-  const allDates = [];
+  // Vertragszeit = erster Tag mit Aktivität bis letzter Tag pro Person
+  // Führende freie Tage (vor erstem Arbeitstag) zählen nicht mit
+  // Berechnung individuell pro Person, dann summiert
+  const contractDaysByPerson = {};
   for (const sheet of timesheets) {
+    const person = sheet.name || 'Unbekannt';
+    if (!contractDaysByPerson[person]) contractDaysByPerson[person] = [];
     for (const day of sheet.days) {
       if (!day.datum) continue;
+      const [dd, mm, yy] = day.datum.split('.').map(Number);
+      if (!dd || !mm || !yy) continue;
+      const date = new Date(yy < 100 ? 2000 + yy : yy, mm - 1, dd);
+      const hrs = Number(day.stundenTotal) || 0;
+      const hasStart = day.start && String(day.start).includes(':');
       const anm = (day.anmerkungen || '').toLowerCase().trim();
-      const hasActivity = Number(day.stundenTotal) > 0 || (day.start && String(day.start).trim().includes(':'))
-        || anm.includes('krank') || anm.includes('urlaub') || anm === 'u'
-        || anm.includes('azv') || anm.includes('arbeitszeitverkürzung') || anm.includes('zeitausgleich') || anm === 'za';
-      if (hasActivity) {
-        const [dd, mm, yy] = day.datum.split('.').map(Number);
-        if (dd && mm && yy) allDates.push(new Date(yy, mm - 1, dd));
-      }
+      const active = hrs > 0 || hasStart || anm.includes('krank') || anm.includes('urlaub') || anm === 'u' || anm.includes('azv');
+      contractDaysByPerson[person].push({ date, active });
     }
   }
   let anstellungstage = 0;
-  if (allDates.length > 0) {
-    allDates.sort((a, b) => a - b);
-    const first = allDates[0];
-    const last = allDates[allDates.length - 1];
-    anstellungstage = Math.round((last - first) / (1000 * 60 * 60 * 24)) + 1;
+  let urlaubstage = 0;
+  let totalWochen = 0;
+  const personAnstellungstage = {};
+  for (const [person, days] of Object.entries(contractDaysByPerson)) {
+    if (days.length === 0) continue;
+    days.sort((a, b) => a.date - b.date);
+    // Find first day with activity (skip leading free days)
+    const firstActive = days.find(d => d.active);
+    const startDate = firstActive ? firstActive.date : days[0].date;
+    const endDate = days[days.length - 1].date;
+    const tage = Math.round((endDate - startDate) / (1000 * 60 * 60 * 24)) + 1;
+    personAnstellungstage[person] = tage;
+    const wochen = Math.floor(tage / 7);
+    totalWochen += wochen;
+    urlaubstage += wochen * VACATION_DAYS_PER_WEEK;
   }
-  const totalWochen = Math.floor(anstellungstage / 7);
-  const urlaubstage = totalWochen * VACATION_DAYS_PER_WEEK;
+  // For single-person: show their individual value
+  // For multi-person: show max (representative) — urlaubstage are already summed correctly
+  const personCount = Object.keys(contractDaysByPerson).length;
+  if (personCount === 1) {
+    anstellungstage = Object.values(personAnstellungstage)[0] || 0;
+    totalWochen = Math.floor(anstellungstage / 7);
+  } else {
+    // For multi-person summary, anstellungstage is not meaningful as a single number
+    // Set to 0 to signal "not applicable" — urlaubstage are the sum of per-person values
+    anstellungstage = 0;
+  }
 
   // === GAGE ===
   if (!hasGage) {

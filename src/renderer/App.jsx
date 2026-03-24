@@ -270,6 +270,17 @@ export default function App() {
     setIsImporting(false);
   }, [timesheets]);
 
+  const handleRenameProject = useCallback((oldName, newName) => {
+    if (!newName.trim() || oldName === newName) return;
+    setTimesheets(prev => prev.map(t => {
+      const base = getBaseProject ? getBaseProject(t.projekt) : (t.projekt || 'Sonstiges');
+      if (base === oldName) return { ...t, projekt: newName.trim() };
+      return t;
+    }));
+    // Update project filter if it was pointing at the old name
+    setProjectFilter(prev => prev === oldName ? newName.trim() : prev);
+  }, [getBaseProject]);
+
   // Drag & Drop handlers — use counter to prevent flicker from child elements
   // Only show overlay for external file drags, not internal card drags
   const handleDragEnter = useCallback((e) => {
@@ -376,9 +387,10 @@ export default function App() {
   }, [trash]);
 
   // View timesheet detail
+  const prevView = React.useRef('timesheets');
   const handleViewDetail = useCallback((sheet) => {
     setSelectedSheet(sheet);
-    setView('detail');
+    setView(prev => { prevView.current = prev; return 'detail'; });
   }, []);
 
   // Create new timesheet
@@ -457,6 +469,14 @@ export default function App() {
 
   const projects = [...new Set(timesheets.map(t => getBaseProject(t.projekt)))].sort();
   const persons = [...new Set(timesheets.map(t => resolveName(t.name || 'Unbekannt')))].sort();
+
+  // Reset stale filters (e.g. after rename or delete)
+  useEffect(() => {
+    if (personFilter !== 'all' && !persons.includes(personFilter)) setPersonFilter('all');
+  }, [personFilter, persons]);
+  useEffect(() => {
+    if (projectFilter !== 'all' && !projects.includes(projectFilter)) setProjectFilter('all');
+  }, [projectFilter, projects]);
   
   // Filter timesheets by person first (using resolved names), then by project
   const personFiltered = personFilter === 'all'
@@ -509,9 +529,9 @@ export default function App() {
       case 'dashboard':
         return <SectionErrorBoundary label="Übersicht"><Dashboard timesheets={filteredTimesheets} calculations={calculations} settings={settings} effectiveSettings={effectiveSettings} onSettings={setSettings} onViewDetail={handleViewDetail} onUpdateTimesheets={setTimesheets} projects={filteredProjects} projectFilter={projectFilter} onProjectFilter={setProjectFilter} personFilter={personFilter} onPersonFilter={handlePersonFilter} allTimesheets={timesheets} personFilteredTimesheets={personFiltered} getPersonSettings={getPersonSettings} resolveName={resolveName} getBaseProject={getBaseProject} /></SectionErrorBoundary>;
       case 'timesheets':
-        return <SectionErrorBoundary label="Stundenzettel-Liste"><TimesheetList timesheets={timesheets} onViewDetail={handleViewDetail} onDelete={handleDelete} onBulkDelete={handleBulkDelete} personFilter={personFilter} resolveName={resolveName} getBaseProject={getBaseProject} /></SectionErrorBoundary>;
+        return <SectionErrorBoundary label="Stundenzettel-Liste"><TimesheetList timesheets={timesheets} onViewDetail={handleViewDetail} onDelete={handleDelete} onBulkDelete={handleBulkDelete} personFilter={personFilter} resolveName={resolveName} getBaseProject={getBaseProject} onRenameProject={handleRenameProject} /></SectionErrorBoundary>;
       case 'detail':
-        return selectedSheet ? <SectionErrorBoundary label="Stundenzettel-Detail"><TimesheetDetail sheet={selectedSheet} settings={getPersonSettings(selectedSheet.name)} onBack={() => setView('timesheets')} onEdit={handleEditSheet} allTimesheets={timesheets} onSelectSheet={(s) => { setSelectedSheet(s); }} /></SectionErrorBoundary> : null;
+        return selectedSheet ? <SectionErrorBoundary label="Stundenzettel-Detail"><TimesheetDetail sheet={selectedSheet} settings={getPersonSettings(selectedSheet.name)} onBack={() => setView(prevView.current || 'timesheets')} onEdit={handleEditSheet} allTimesheets={timesheets} onSelectSheet={(s) => { setSelectedSheet(s); }} /></SectionErrorBoundary> : null;
       case 'create':
         return <SectionErrorBoundary label="Stundenzettel erstellen"><TimesheetCreate
           onSave={handleCreateSheet}

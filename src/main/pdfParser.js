@@ -98,6 +98,11 @@ function extractTimesheetData(pdfData, filePath) {
   const formFieldItems = items.filter(it => it.y < 0 || it.x < 0);
   const positionedItems = items.filter(it => it.y >= 0 && it.x >= 0);
   if (formFieldItems.length > 10) {
+    // Detect "flat" form PDFs where all items share identical coordinates
+    // (no position data at all, purely sequential form fields)
+    if (positionedItems.length === 0) {
+      return extractTimesheetFromFlatFormPDF(formFieldItems, pdfMeta, filePath);
+    }
     return extractTimesheetFromFormPDF(formFieldItems, positionedItems, pdfMeta, filePath);
   }
 
@@ -916,29 +921,32 @@ function extractHeaderFromFormFields(formTexts, header) {
 function extractHeaderFromMetaAndFilename(pdfMeta, filePath, header) {
   if (!pdfMeta && !filePath) return;
 
-  // Extract from PDF metadata
-  if (pdfMeta) {
-    if (!header.name && pdfMeta.Author) {
-      header.name = pdfMeta.Author;
-    }
-    if (!header.projekt && pdfMeta.Subject) {
-      header.projekt = pdfMeta.Subject;
-    }
-  }
-
-  // Extract from filename
+  // Extract from filename FIRST (more reliable for name than PDF Author metadata,
+  // which often contains whoever created/exported the PDF, not the timesheet owner)
   if (filePath) {
     const path = require('path');
     const basename = path.basename(filePath, path.extname(filePath));
 
-    // Common pattern: "Initial-Lastname-Project Name-DateRange"
+    // Pattern 1: "YYYY_KWXX_FirstnameLastname" or "YYYY_KWXX_Firstname_Lastname"
+    // e.g. "2025_KW45_FabianZenker" or "2025_KW45_Fabian_Zenker"
+    const kwNameMatch = basename.match(/\d{4}[_-]KW\s*\d+[_-](.+)/i);
+    if (kwNameMatch && !header.name) {
+      let nameCandidate = kwNameMatch[1].replace(/[_-]/g, ' ').trim();
+      // Split camelCase "FabianZenker" → "Fabian Zenker"
+      nameCandidate = nameCandidate.replace(/([a-zäöüß])([A-ZÄÖÜ])/g, '$1 $2');
+      if (nameCandidate.length >= 3) {
+        header.name = nameCandidate;
+      }
+    }
+
+    // Pattern 2: "Initial-Lastname-Project Name-DateRange"
     // e.g. "A-Streckmann-Babylon Berlin S5-04.07-04.13.2025"
     // Also: "Lastname-Project-DateRange" or "Name_Project_DateRange"
     
     // Remove date range parts from end (dd.mm-dd.mm.yyyy or similar)
     const withoutDates = basename.replace(/-?\d{1,2}\.\d{1,2}[-–]\d{1,2}\.\d{1,2}\.\d{4}$/, '')
                                   .replace(/-?\d{1,2}\.\d{1,2}\.\d{4}[-–]\d{1,2}\.\d{1,2}\.\d{4}$/, '')
-                                  .replace(/-?KW\s*\d+.*$/i, '')
+                                  .replace(/[-_]?KW\s*\d+.*$/i, '')
                                   .trim();
 
     if (withoutDates) {
@@ -967,6 +975,236 @@ function extractHeaderFromMetaAndFilename(pdfMeta, filePath, header) {
       }
     }
   }
+
+  // Extract from PDF metadata LAST (lowest priority — Author often contains the
+  // person who created/exported the PDF template, not the timesheet owner)
+  if (pdfMeta) {
+    if (!header.name && pdfMeta.Author) {
+      header.name = pdfMeta.Author;
+    }
+    if (!header.projekt && pdfMeta.Subject) {
+      header.projekt = pdfMeta.Subject;
+    }
+  }
+}
+
+/**
+ * Parse a "flat" form-field PDF where ALL items share identical coordinates.
+ * These PDFs store everything as sequential form field values with no position data.
+ * 
+ * Typical structure (sequential):
+ * 1. Header labels: "PRODUKTION:", "NAME:", "Tätigkeit:", ...
+ * 2. Column headers: "Wochentag", "Datum", "Arbeitsbeginn", ...
+ * 3. Day blocks: DayName, Date, Start, End, Hours, Pause, Catering, Total, [Remarks]
+ * 4. Totals (standalone number)
+ * 5. Footer text
+ * 6. Header VALUES (project, name, position) — appear AFTER footer
+ * 7. Boilerplate / date range info
+ */
+function extractTimesheetFromFlatFormPDF(formFieldItems, pdfMeta, filePath) {
+  const texts = formFieldItems.map(it => it.text.trim());
+  const dayOrder = ['Montag', 'Dienstag', 'Mittwoch', 'Donnerstag', 'Freitag', 'Samstag', 'Sonntag'];
+  const dateRegex = /^\d{1,2}\.\d{1,2}\.\d{2,4}$/;
+  const timeRegex = /^\d{1,2}:\d{2}$/;
+  const numberRegex = /^\d+([,.]\d+)?$/;
+
+  // --- Step 1: Find day blocks ---
+  const days = [];
+  let i = 0;
+
+  // Skip until first day name
+  while (i < texts.length && !dayOrder.includes(texts[i])) i++;
+
+  while (i < texts.length) {
+    const dayName = texts[i];
+    if (!dayOrder.includes(dayName)) break; // past the day section
+
+    const day = {
+      tag: dayName,
+      datum: '',
+      start: '',
+      ende: '',
+      pause: 0,
+      stundenTotal: 0,
+      ueberstunden25: 0,
+      ueberstunden50: 0,
+      ueberstunden100: 0,
+      nacht25: 0,
+      fahrzeit: 0,
+      anmerkungen: '',
+    };
+
+    i++; // move past day name
+
+    // Next should be date
+    if (i < texts.length && dateRegex.test(texts[i])) {
+      day.datum = texts[i];
+      i++;
+    }
+
+    // Check if this is a non-working day (next items are empty/spaces or another day name)
+    if (i < texts.length && (!texts[i] || texts[i] === ' ' || dayOrder.includes(texts[i]))) {
+      // Skip empty values for non-working days
+      while (i < texts.length && (texts[i] === '' || texts[i] === ' ') && !dayOrder.includes(texts[i])) i++;
+      days.push(day);
+      continue;
+    }
+
+    // Working day: extract Start, End, Hours, Pause, Catering, Total, [Remarks]
+    const values = [];
+    while (i < texts.length && !dayOrder.includes(texts[i])) {
+      const t = texts[i];
+      // Stop if we hit totals/footer markers
+      if (/^(köln|ort|unterschrift|genehmigt|bereich|achtung)/i.test(t)) break;
+      // Stop at standalone large number that looks like weekly total (no day context)
+      if (numberRegex.test(t.replace(',', '.')) && values.length >= 5 && !timeRegex.test(t)) {
+        // This might be the daily total — check if next is another day or totals section
+        values.push(t);
+        i++;
+        // Peek: if next is a day name or footer, we're done with this day
+        if (i < texts.length && (dayOrder.includes(texts[i]) || /^(köln|ort|unterschrift|genehmigt|bereich|achtung|\d+[,.]\d+$)/i.test(texts[i].trim()))) {
+          break;
+        }
+        // Otherwise it might be remarks
+        continue;
+      }
+      values.push(t);
+      i++;
+    }
+
+    // Parse the collected values
+    // Expected order: start, end, hours, pause, catering(ja/nein), total, [remarks...]
+    let vi = 0;
+    if (vi < values.length && timeRegex.test(values[vi])) { day.start = values[vi]; vi++; }
+    if (vi < values.length && timeRegex.test(values[vi])) { day.ende = values[vi]; vi++; }
+
+    // Hours worked (raw, before pause deduction)
+    if (vi < values.length && numberRegex.test(values[vi].replace(',', '.'))) {
+      vi++; // skip raw hours (we'll use the total instead)
+    }
+
+    // Pause
+    if (vi < values.length && numberRegex.test(values[vi].replace(',', '.'))) {
+      day.pause = parseFloat(values[vi].replace(',', '.')) || 0;
+      vi++;
+    }
+
+    // Catering flag (ja/nein)
+    if (vi < values.length && /^(ja|nein)$/i.test(values[vi])) { vi++; }
+
+    // Total hours (after pause deduction)
+    if (vi < values.length && numberRegex.test(values[vi].replace(',', '.'))) {
+      day.stundenTotal = parseFloat(values[vi].replace(',', '.')) || 0;
+      vi++;
+    }
+
+    // Remaining values are remarks
+    const remarks = [];
+    while (vi < values.length) {
+      const v = values[vi];
+      if (v && v !== ' ') remarks.push(v);
+      vi++;
+    }
+    if (remarks.length > 0) day.anmerkungen = remarks.join(' ');
+
+    // Calculate overtime (TV-FFS rules: >10h = 25%, >11h = 50%)
+    if (day.stundenTotal > 10) {
+      day.ueberstunden25 = round2(Math.min(day.stundenTotal - 10, 1));
+      day.ueberstunden50 = round2(Math.max(0, day.stundenTotal - 11));
+    }
+
+    // Calculate night hours
+    day.nacht25 = calcNightHoursFromTimes(day.start, day.ende);
+
+    days.push(day);
+  }
+
+  // --- Step 2: Find weekly total ---
+  // After the last day, look for a standalone number = weekly total
+  while (i < texts.length && !numberRegex.test(texts[i].replace(',', '.'))) i++;
+  let weeklyTotal = 0;
+  if (i < texts.length && numberRegex.test(texts[i].replace(',', '.'))) {
+    weeklyTotal = parseFloat(texts[i].replace(',', '.')) || 0;
+  }
+
+  // --- Step 3: Extract header info from the tail of the document ---
+  // In these flat PDFs, the actual values (project, name, position) appear
+  // after the footer/signature section, often with quotes around the project name
+  const header = { projekt: '', projektnummer: '', produktionsfirma: '', name: '', position: '', abteilung: '', pause: 0 };
+
+  // Scan items after the totals/footer for header-like values
+  const footerMarkers = /^(köln|ort|unterschrift|genehmigt|bereich)/i;
+  let footerStart = texts.findIndex(t => footerMarkers.test(t));
+  if (footerStart === -1) footerStart = texts.length;
+
+  const tailTexts = texts.slice(footerStart);
+  for (const t of tailTexts) {
+    if (!t || t === ' ' || footerMarkers.test(t) || /^achtung/i.test(t) || t.length > 80) continue;
+
+    // Quoted project name: "X1345-Merz gegen Merz 3+4" or similar
+    const projectMatch = t.match(/^[„""«](.+?)[""»"]$/);
+    if (projectMatch && !header.projekt) {
+      header.projekt = projectMatch[1];
+      continue;
+    }
+
+    // Person name: "Vorname Nachname" pattern
+    if (/^[A-ZÄÖÜ][a-zäöüß]+\s+[A-ZÄÖÜ][a-zäöüß]+/.test(t) && !header.name && !/^(Mo|Di|Mi|Do|Fr|Sa|So)\s/.test(t)) {
+      header.name = t;
+      continue;
+    }
+
+    // Position/role: single word or short phrase, typically a job title
+    if (!header.position && header.name && t.length < 40 && !/^(arbeitsnachweis|die liste|zusatztage)/i.test(t)) {
+      header.position = t;
+      continue;
+    }
+  }
+
+  // Also try to extract project from header labels section
+  // Look for "PRODUKTION:" label and find its value
+  const produktionIdx = texts.findIndex(t => /^PRODUKTION/i.test(t));
+  if (produktionIdx !== -1 && !header.projekt) {
+    // The value might not be adjacent — check a few items ahead
+    for (let j = produktionIdx + 1; j < Math.min(produktionIdx + 5, texts.length); j++) {
+      const val = texts[j].trim();
+      if (val && val !== ' ' && !HEADER_LABELS.some(ld => ld.patterns.some(p => p.test(val + ':')))) {
+        header.projekt = val.replace(/^[„""«]|[""»"]$/g, '');
+        break;
+      }
+    }
+  }
+
+  // Fallback: extract from filename and PDF metadata
+  extractHeaderFromMetaAndFilename(pdfMeta, filePath, header);
+
+  // Compute default pause from header if days don't have individual pause values
+  if (header.pause > 0) {
+    for (const day of days) {
+      if (day.stundenTotal > 0 && day.pause === 0) {
+        day.pause = header.pause;
+      }
+    }
+  }
+
+  // Build totals
+  const totals = {
+    stundenTotal: weeklyTotal || round2(days.reduce((s, d) => s + (d.stundenTotal || 0), 0)),
+    ueberstunden25: round2(days.reduce((s, d) => s + (d.ueberstunden25 || 0), 0)),
+    ueberstunden50: round2(days.reduce((s, d) => s + (d.ueberstunden50 || 0), 0)),
+    ueberstunden100: round2(days.reduce((s, d) => s + (d.ueberstunden100 || 0), 0)),
+    nacht25: round2(days.reduce((s, d) => s + (d.nacht25 || 0), 0)),
+    fahrzeit: round2(days.reduce((s, d) => s + (d.fahrzeit || 0), 0)),
+  };
+
+  return {
+    id: generateId(),
+    importDate: new Date().toISOString(),
+    filePath: '',
+    ...header,
+    days,
+    totals,
+  };
 }
 
 function round2(n) {

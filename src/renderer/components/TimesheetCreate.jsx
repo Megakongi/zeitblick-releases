@@ -285,7 +285,6 @@ export default function TimesheetCreate({ onSave, onSaveBatch, onCancel, editShe
 
   // Validation state
   const [validationErrors, setValidationErrors] = useState([]);
-  const [overnightWarnings, setOvernightWarnings] = useState([]);
 
   // Copy from previous week
   const handleCopyFromPrev = useCallback(() => {
@@ -382,24 +381,6 @@ export default function TimesheetCreate({ onSave, onSaveBatch, onCancel, editShe
       return;
     }
     setValidationErrors([]);
-
-    // Warn about potential overnight shifts (end < start)
-    const warnings = [];
-    for (const d of days) {
-      if (d.start && d.ende) {
-        const s = parseTime(d.start);
-        const e = parseTime(d.ende);
-        if (s !== null && e !== null && e < s) {
-          warnings.push(`${d.tag} (${d.datum}): Ende (${d.ende}) liegt vor Beginn (${d.start}) — wird als Nachtschicht berechnet.`);
-        }
-      }
-    }
-    if (warnings.length > 0 && overnightWarnings.length === 0) {
-      // Show warning first time, user must click save again to confirm
-      setOvernightWarnings(warnings);
-      return;
-    }
-    setOvernightWarnings([]);
 
     if (batchMode && selectedCrew && crews && crews[selectedCrew]) {
       // Batch: create one sheet per selected crew member
@@ -869,16 +850,6 @@ export default function TimesheetCreate({ onSave, onSaveBatch, onCancel, editShe
           {validationErrors.map((err, i) => (
             <div key={i} className="validation-error">⚠ {err}</div>
           ))}
-        </div>
-      )}
-
-      {/* Overnight Shift Warnings */}
-      {overnightWarnings.length > 0 && (
-        <div className="validation-errors" style={{ borderColor: '#f59e0b', background: 'rgba(245, 158, 11, 0.08)' }}>
-          {overnightWarnings.map((w, i) => (
-            <div key={i} className="validation-error" style={{ color: '#b45309' }}>⚠ {w}</div>
-          ))}
-          <div style={{ marginTop: 6, fontSize: 12, color: '#92400e' }}>Nochmal „Speichern" klicken um zu bestätigen.</div>
         </div>
       )}
 

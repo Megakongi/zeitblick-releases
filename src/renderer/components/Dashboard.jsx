@@ -157,7 +157,7 @@ function generatePDFHTML(timesheets, c, settings, personFilter) {
     if (c.urlaubstageGenommen > 0) html += `<tr><td>Genommene Urlaubstage</td><td class="num">${c.urlaubstageGenommen} Tage</td></tr>`;
     html += `<tr><td>Offene Urlaubstage</td><td class="num">${c.urlaubstageOffen} Tage</td></tr>`;
     html += `</tbody></table>`;
-    html += `<p class="section-note">0,5 Urlaubstag pro 7 zusammenhängende Anstellungstage (${c.anstellungstage} Tage ÷ 7 = ${c.totalWochen} × 0,5 = ${c.urlaubstage} Tage).${c.urlaubstageOffen > 0 ? ` Nicht genommene Urlaubstage (${c.urlaubstageOffen}) werden als Tagesgage ausgezahlt.` : ''}</p>`;
+    html += `<p class="section-note">${c.anstellungstage > 0 ? `0,5 Urlaubstag pro 7 zusammenhängende Anstellungstage (${c.anstellungstage} Tage ÷ 7 = ${c.totalWochen} × 0,5 = ${c.urlaubstage} Tage).` : `Summe der individuell berechneten Urlaubstage aller Personen (0,5 Tage pro 7 Anstellungstage).`}${c.urlaubstageOffen > 0 ? ` Nicht genommene Urlaubstage (${c.urlaubstageOffen}) werden als Tagesgage ausgezahlt.` : ''}</p>`;
   }
 
   html += `</body></html>`;
@@ -245,7 +245,9 @@ function generateCSV(timesheets, c, settings, personFilter) {
   lines.push(`Gesammelte Urlaubstage${sep}${c.urlaubstage}`);
   if (c.urlaubstageGenommen > 0) lines.push(`Genommene Urlaubstage${sep}${c.urlaubstageGenommen}`);
   lines.push(`Offene Urlaubstage${sep}${c.urlaubstageOffen}`);
-  lines.push(`Berechnung${sep}${c.anstellungstage} Anstellungstage ÷ 7 = ${c.totalWochen} × 0,5 = ${c.urlaubstage}`);
+  lines.push(c.anstellungstage > 0
+    ? `Berechnung${sep}${c.anstellungstage} Anstellungstage ÷ 7 = ${c.totalWochen} × 0,5 = ${c.urlaubstage}`
+    : `Berechnung${sep}Summe individueller Urlaubstage aller Personen = ${c.urlaubstage}`);
 
   // ── WOCHENÜBERSICHT ──
   lines.push('');
@@ -955,9 +957,6 @@ export default function Dashboard({ timesheets, calculations, settings: propSett
                 <span className="zusatztage-total-label">Zusatztage gesamt</span>
               </div>
             </div>
-            <p className="zusatztage-note">
-              Personen, die nicht an allen {zusatztageInfo.totalUniqueDays} Drehtagen dabei waren:
-            </p>
             <div className="zusatztage-list">
               {zusatztageInfo.zusatzPersonen.map((zp) => (
                 <div key={zp.name} className="zusatztage-row">
@@ -1296,7 +1295,11 @@ export default function Dashboard({ timesheets, calculations, settings: propSett
         <div className="stats-grid">
           <StatCard label="Gesammelte Urlaubstage" value={c.urlaubstage} unit="Tage" color="green" large />
         </div>
-        <p className="stats-note">0,5 Urlaubstag pro 7 zusammenhängende Anstellungstage ({c.anstellungstage} Tage ÷ 7 = {c.totalWochen} × 0,5 = {Number(c.urlaubstage).toFixed(2)} Tage). Urlaubstage werden gesammelt und nicht als Geld ausgezahlt.</p>
+        {c.anstellungstage > 0 ? (
+          <p className="stats-note">0,5 Urlaubstag pro 7 zusammenhängende Anstellungstage ({c.anstellungstage} Tage ÷ 7 = {c.totalWochen} × 0,5 = {Number(c.urlaubstage).toFixed(2)} Tage). Urlaubstage werden gesammelt und nicht als Geld ausgezahlt.</p>
+        ) : (
+          <p className="stats-note">Summe der individuell berechneten Urlaubstage aller Personen (0,5 Tage pro 7 Anstellungstage). Urlaubstage werden gesammelt und nicht als Geld ausgezahlt.</p>
+        )}
       </div>
 
       {/* Stunden-Chart */}

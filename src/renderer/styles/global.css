@@ -1157,6 +1157,212 @@ body {
   letter-spacing: -0.5px;
 }
 
+/* Project Tiles Grid */
+.project-tiles-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 16px;
+  margin-top: 16px;
+}
+
+.project-tile {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 20px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  cursor: pointer;
+  transition: all var(--transition);
+  text-align: left;
+  width: 100%;
+  color: inherit;
+  font-family: inherit;
+}
+
+.project-tile:hover {
+  border-color: var(--accent-blue);
+  background: var(--bg-card-hover);
+  transform: translateY(-2px);
+  box-shadow: 0 4px 16px rgba(0,0,0,0.12);
+}
+
+.project-tile-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.project-tile-name {
+  font-size: 17px;
+  font-weight: 700;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+}
+
+.project-tile-badge {
+  background: var(--accent-blue);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: 10px;
+  min-width: 24px;
+  text-align: center;
+  flex-shrink: 0;
+}
+
+.project-tile-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.project-tile-kw {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--accent-purple, #8b5cf6);
+}
+
+.project-tile-dates {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.project-tile-stats {
+  display: flex;
+  gap: 16px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+
+.project-tile-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.project-tile-stat-value {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
+}
+
+.project-tile-stat-label {
+  font-size: 11px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+
+.project-tile-people {
+  display: flex;
+  gap: -4px;
+  margin-top: 4px;
+}
+
+.project-tile-avatar {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: var(--accent-blue);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  font-weight: 700;
+  color: #fff;
+  border: 2px solid var(--bg-card);
+  margin-left: -6px;
+}
+
+.project-tile-avatar:first-child {
+  margin-left: 0;
+}
+
+.project-tile-avatar:nth-child(2) { background: #8b5cf6; }
+.project-tile-avatar:nth-child(3) { background: #10b981; }
+.project-tile-avatar:nth-child(4) { background: #f59e0b; }
+.project-tile-avatar:nth-child(5) { background: #ef4444; }
+
+.project-tile-avatar-more {
+  background: var(--bg-tertiary, #3a3f4b) !important;
+  font-size: 9px;
+}
+
+/* Project Rename */
+.project-rename-btn {
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 12px;
+  padding: 2px 4px;
+  opacity: 0;
+  transition: opacity 0.15s;
+  margin-left: 4px;
+}
+.project-tile:hover .project-rename-btn,
+.project-rename-btn:focus {
+  opacity: 0.7;
+}
+.project-rename-btn:hover {
+  opacity: 1;
+}
+.project-rename-btn-lg {
+  font-size: 15px;
+  opacity: 0.5;
+  vertical-align: middle;
+}
+.project-rename-btn-lg:hover {
+  opacity: 1;
+}
+.project-rename-form {
+  flex: 1;
+  min-width: 0;
+}
+.project-rename-input {
+  background: var(--bg-primary, #1a1d23);
+  border: 1px solid var(--accent-blue);
+  border-radius: 6px;
+  color: var(--text-primary, #f0f0f0);
+  font-size: 14px;
+  font-weight: 600;
+  padding: 4px 8px;
+  width: 100%;
+  outline: none;
+}
+.project-rename-input-lg {
+  font-size: 18px;
+  padding: 4px 10px;
+}
+
+/* Back to Projects Button */
+.back-to-projects-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: none;
+  border: none;
+  color: var(--accent-blue);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  padding: 4px 0;
+  margin-bottom: 4px;
+  transition: opacity 0.15s;
+  font-family: inherit;
+}
+
+.back-to-projects-btn:hover {
+  opacity: 0.7;
+}
+
 .project-group {
   margin-bottom: 32px;
 }
@@ -4412,6 +4618,25 @@ body {
 [data-theme="light"] .sheet-card-kw {
   background: #eef;
   border-color: #ddd;
+}
+
+[data-theme="light"] .project-tile {
+  background: #fff;
+  border-color: #e0e0e0;
+}
+
+[data-theme="light"] .project-tile:hover {
+  box-shadow: 0 4px 16px rgba(74, 125, 255, 0.1);
+}
+
+[data-theme="light"] .project-tile-avatar-more {
+  background: #ddd !important;
+  color: #555;
+}
+[data-theme="light"] .project-rename-input {
+  background: #fff;
+  border-color: var(--accent-blue);
+  color: #1a1a2e;
 }
 
 [data-theme="light"] .crew-preview-chip {
