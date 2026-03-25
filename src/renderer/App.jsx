@@ -279,7 +279,29 @@ export default function App() {
     }));
     // Update project filter if it was pointing at the old name
     setProjectFilter(prev => prev === oldName ? newName.trim() : prev);
+    // Update completedProjects key if the project was completed
+    setSettings(prev => {
+      const cp = { ...(prev.completedProjects || {}) };
+      if (cp[oldName]) {
+        cp[newName.trim()] = cp[oldName];
+        delete cp[oldName];
+        return { ...prev, completedProjects: cp };
+      }
+      return prev;
+    });
   }, [getBaseProject]);
+
+  const handleToggleProjectComplete = useCallback((projectName) => {
+    setSettings(prev => {
+      const cp = { ...(prev.completedProjects || {}) };
+      if (cp[projectName]) {
+        delete cp[projectName];
+      } else {
+        cp[projectName] = { completedAt: new Date().toISOString() };
+      }
+      return { ...prev, completedProjects: cp };
+    });
+  }, []);
 
   // Drag & Drop handlers — use counter to prevent flicker from child elements
   // Only show overlay for external file drags, not internal card drags
@@ -490,25 +512,35 @@ export default function App() {
   // Filtered projects (only projects available for selected person)
   const filteredProjects = [...new Set(personFiltered.map(t => getBaseProject(t.projekt)))].sort();
 
-  // Helper: get settings with per-person gage override (via position-based gagen)
-  const getPersonSettings = useCallback((personName) => {
-    // First check personGagen (legacy / direct override)
+  // Helper: get settings with per-person gage override
+  // Priority: personProjectGagen > personGagen > positionGagen > global
+  const getPersonSettings = useCallback((personName, projectName) => {
+    // 1. Check personProjectGagen (per-person-per-project override)
+    const ppg = settings.personProjectGagen || {};
+    if (personName && projectName && ppg[personName] && ppg[personName][projectName] && ppg[personName][projectName].tagesgage > 0) {
+      return { ...settings, tagesgage: ppg[personName][projectName].tagesgage, gageType: ppg[personName][projectName].gageType || settings.gageType };
+    }
+    // 2. Check personGagen (direct override per person)
     const pg = settings.personGagen || {};
     if (personName && pg[personName] && pg[personName].tagesgage > 0) {
       return { ...settings, tagesgage: pg[personName].tagesgage, gageType: pg[personName].gageType || settings.gageType };
     }
-    // Then look up by position from timesheets
-    const posGagen = settings.positionGagen || {};
-    const resolvedName = resolveName(personName);
-    const ts = timesheets.find(t => resolveName(t.name || 'Unbekannt') === resolvedName && t.position);
-    if (ts && ts.position && posGagen[ts.position] && posGagen[ts.position].tagesgage > 0) {
-      return { ...settings, tagesgage: posGagen[ts.position].tagesgage, gageType: posGagen[ts.position].gageType || settings.gageType };
+    // 3. Look up by position from timesheets
+    if (personName) {
+      const posGagen = settings.positionGagen || {};
+      const resolvedName = resolveName(personName);
+      const ts = timesheets.find(t => resolveName(t.name || 'Unbekannt') === resolvedName && t.position);
+      if (ts && ts.position && posGagen[ts.position] && posGagen[ts.position].tagesgage > 0) {
+        return { ...settings, tagesgage: posGagen[ts.position].tagesgage, gageType: posGagen[ts.position].gageType || settings.gageType };
+      }
     }
     return settings;
   }, [settings, timesheets, resolveName]);
 
-  // TVFFS calculations — use per-person gage when a person is selected
-  const effectiveSettings = personFilter !== 'all' ? getPersonSettings(personFilter) : settings;
+  // TVFFS calculations — use per-person gage when filtered
+  const effectiveSettings = personFilter !== 'all'
+    ? getPersonSettings(personFilter, projectFilter !== 'all' ? projectFilter : undefined)
+    : settings;
   const calculations = useMemo(() => calculateTVFFS(filteredTimesheets, effectiveSettings), [filteredTimesheets, effectiveSettings]);
 
   // Person sheet counts for sidebar (using resolved names)
@@ -520,18 +552,17 @@ export default function App() {
 
   const handlePersonFilter = useCallback((person) => {
     setPersonFilter(person);
-    setProjectFilter('all'); // reset project filter when switching person
     setView('dashboard');
   }, []);
 
   const renderView = () => {
     switch (view) {
       case 'dashboard':
-        return <SectionErrorBoundary label="Übersicht"><Dashboard timesheets={filteredTimesheets} calculations={calculations} settings={settings} effectiveSettings={effectiveSettings} onSettings={setSettings} onViewDetail={handleViewDetail} onUpdateTimesheets={setTimesheets} projects={filteredProjects} projectFilter={projectFilter} onProjectFilter={setProjectFilter} personFilter={personFilter} onPersonFilter={handlePersonFilter} allTimesheets={timesheets} personFilteredTimesheets={personFiltered} getPersonSettings={getPersonSettings} resolveName={resolveName} getBaseProject={getBaseProject} /></SectionErrorBoundary>;
+        return <SectionErrorBoundary label="Übersicht"><Dashboard timesheets={filteredTimesheets} calculations={calculations} settings={settings} effectiveSettings={effectiveSettings} onSettings={setSettings} onViewDetail={handleViewDetail} onUpdateTimesheets={setTimesheets} projects={filteredProjects} projectFilter={projectFilter} onProjectFilter={setProjectFilter} personFilter={personFilter} onPersonFilter={handlePersonFilter} allTimesheets={timesheets} personFilteredTimesheets={personFiltered} getPersonSettings={getPersonSettings} resolveName={resolveName} getBaseProject={getBaseProject} completedProjects={settings.completedProjects || {}} /></SectionErrorBoundary>;
       case 'timesheets':
-        return <SectionErrorBoundary label="Stundenzettel-Liste"><TimesheetList timesheets={timesheets} onViewDetail={handleViewDetail} onDelete={handleDelete} onBulkDelete={handleBulkDelete} personFilter={personFilter} resolveName={resolveName} getBaseProject={getBaseProject} onRenameProject={handleRenameProject} /></SectionErrorBoundary>;
+        return <SectionErrorBoundary label="Stundenzettel-Liste"><TimesheetList timesheets={timesheets} onViewDetail={handleViewDetail} onDelete={handleDelete} onBulkDelete={handleBulkDelete} personFilter={personFilter} resolveName={resolveName} getBaseProject={getBaseProject} onRenameProject={handleRenameProject} completedProjects={settings.completedProjects || {}} onToggleProjectComplete={handleToggleProjectComplete} /></SectionErrorBoundary>;
       case 'detail':
-        return selectedSheet ? <SectionErrorBoundary label="Stundenzettel-Detail"><TimesheetDetail sheet={selectedSheet} settings={getPersonSettings(selectedSheet.name)} onBack={() => setView(prevView.current || 'timesheets')} onEdit={handleEditSheet} allTimesheets={timesheets} onSelectSheet={(s) => { setSelectedSheet(s); }} /></SectionErrorBoundary> : null;
+        return selectedSheet ? <SectionErrorBoundary label="Stundenzettel-Detail"><TimesheetDetail sheet={selectedSheet} settings={getPersonSettings(selectedSheet.name, getBaseProject(selectedSheet.projekt))} onBack={() => setView(prevView.current || 'timesheets')} onEdit={handleEditSheet} allTimesheets={timesheets} onSelectSheet={(s) => { setSelectedSheet(s); }} /></SectionErrorBoundary> : null;
       case 'create':
         return <SectionErrorBoundary label="Stundenzettel erstellen"><TimesheetCreate
           onSave={handleCreateSheet}
@@ -546,7 +577,7 @@ export default function App() {
       case 'settings':
         return <SectionErrorBoundary label="Einstellungen"><Settings settings={settings} onSave={setSettings} timesheets={timesheets} setTimesheets={setTimesheets} /></SectionErrorBoundary>;
       default:
-        return <SectionErrorBoundary label="Übersicht"><Dashboard timesheets={filteredTimesheets} calculations={calculations} settings={settings} effectiveSettings={effectiveSettings} onSettings={setSettings} onViewDetail={handleViewDetail} onUpdateTimesheets={setTimesheets} projects={filteredProjects} projectFilter={projectFilter} onProjectFilter={setProjectFilter} personFilter={personFilter} onPersonFilter={handlePersonFilter} allTimesheets={timesheets} personFilteredTimesheets={personFiltered} getPersonSettings={getPersonSettings} resolveName={resolveName} getBaseProject={getBaseProject} /></SectionErrorBoundary>;
+        return <SectionErrorBoundary label="Übersicht"><Dashboard timesheets={filteredTimesheets} calculations={calculations} settings={settings} effectiveSettings={effectiveSettings} onSettings={setSettings} onViewDetail={handleViewDetail} onUpdateTimesheets={setTimesheets} projects={filteredProjects} projectFilter={projectFilter} onProjectFilter={setProjectFilter} personFilter={personFilter} onPersonFilter={handlePersonFilter} allTimesheets={timesheets} personFilteredTimesheets={personFiltered} getPersonSettings={getPersonSettings} resolveName={resolveName} getBaseProject={getBaseProject} completedProjects={settings.completedProjects || {}} /></SectionErrorBoundary>;
     }
   };
 

@@ -1229,6 +1229,11 @@ body {
   color: var(--accent-purple, #8b5cf6);
 }
 
+.project-tile-firma {
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
 .project-tile-dates {
   font-size: 12px;
   color: var(--text-muted);
@@ -5883,5 +5888,208 @@ a:focus-visible {
 [data-theme="light"] .project-crew-preview {
   background: rgba(74, 125, 255, 0.04);
   border-color: rgba(74, 125, 255, 0.1);
+}
+
+/* ========== PROJECT COMPLETED / FINAL SUMMARY ========== */
+
+/* Completed project tile */
+.project-tile-completed {
+  border: 2px solid rgba(34, 197, 94, 0.4) !important;
+  position: relative;
+}
+.project-tile-completed::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: linear-gradient(135deg, rgba(34, 197, 94, 0.04), transparent);
+  pointer-events: none;
+}
+.project-completed-icon {
+  margin-right: 6px;
+  font-size: 0.85em;
+}
+.project-completed-badge {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 600;
+  background: rgba(34, 197, 94, 0.15);
+  color: #22c55e;
+}
+
+/* Tile footer with people + complete button */
+.project-tile-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: auto;
+}
+
+/* Complete button (tile) */
+.project-complete-btn {
+  padding: 4px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: var(--radius-md);
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--text-secondary);
+  font-size: 12px;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.2s, background 0.2s, color 0.2s;
+  white-space: nowrap;
+}
+.project-tile:hover .project-complete-btn { opacity: 1; }
+.project-complete-btn:hover {
+  background: rgba(34, 197, 94, 0.15);
+  color: #22c55e;
+  border-color: rgba(34, 197, 94, 0.3);
+}
+.project-complete-btn-active {
+  opacity: 1;
+  background: rgba(34, 197, 94, 0.12);
+  color: #22c55e;
+  border-color: rgba(34, 197, 94, 0.25);
+}
+.project-complete-btn-active:hover {
+  background: rgba(239, 68, 68, 0.12);
+  color: #ef4444;
+  border-color: rgba(239, 68, 68, 0.25);
+}
+
+/* Complete button (drill-in header, larger) */
+.project-complete-btn-lg {
+  padding: 6px 14px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: var(--radius-md);
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text-secondary);
+  font-size: 13px;
+  cursor: pointer;
+  transition: background 0.2s, color 0.2s;
+  white-space: nowrap;
+}
+.project-complete-btn-lg:hover {
+  background: rgba(34, 197, 94, 0.15);
+  color: #22c55e;
+  border-color: rgba(34, 197, 94, 0.3);
+}
+.project-complete-btn-lg.project-complete-btn-active {
+  background: rgba(34, 197, 94, 0.12);
+  color: #22c55e;
+  border-color: rgba(34, 197, 94, 0.25);
+}
+.project-complete-btn-lg.project-complete-btn-active:hover {
+  background: rgba(239, 68, 68, 0.12);
+  color: #ef4444;
+  border-color: rgba(239, 68, 68, 0.25);
+}
+
+/* List header actions row */
+.list-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* Final Summary Table */
+.final-summary-section {
+  margin-top: 24px;
+  padding: 20px;
+  border: 2px solid rgba(34, 197, 94, 0.25);
+  border-radius: var(--radius-lg);
+  background: rgba(34, 197, 94, 0.03);
+}
+.final-summary-section .section-title {
+  margin-bottom: 16px;
+  color: #22c55e;
+}
+.final-summary-table-wrap {
+  overflow-x: auto;
+  margin: 0 -4px;
+}
+.final-summary-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.final-summary-table th {
+  text-align: left;
+  padding: 8px 10px;
+  border-bottom: 2px solid rgba(255, 255, 255, 0.1);
+  font-weight: 600;
+  color: var(--text-secondary);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  white-space: nowrap;
+}
+.final-summary-table th.num,
+.final-summary-table td.num {
+  text-align: right;
+}
+.final-summary-table td {
+  padding: 10px 10px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  white-space: nowrap;
+}
+.final-summary-row:hover {
+  background: rgba(255, 255, 255, 0.03);
+}
+.final-summary-name {
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.final-summary-total {
+  font-weight: 700;
+  color: #22c55e;
+}
+.final-summary-footer td {
+  padding-top: 12px;
+  border-top: 2px solid rgba(255, 255, 255, 0.1);
+  border-bottom: none;
+  font-size: 14px;
+}
+.final-summary-note {
+  margin-top: 12px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  opacity: 0.7;
+}
+
+/* Light theme overrides */
+[data-theme="light"] .project-tile-completed {
+  border-color: rgba(34, 197, 94, 0.3);
+}
+[data-theme="light"] .project-complete-btn {
+  border-color: rgba(0, 0, 0, 0.08);
+  background: rgba(0, 0, 0, 0.03);
+}
+[data-theme="light"] .project-complete-btn-lg {
+  border-color: rgba(0, 0, 0, 0.08);
+  background: rgba(0, 0, 0, 0.03);
+}
+[data-theme="light"] .final-summary-section {
+  background: rgba(34, 197, 94, 0.02);
+  border-color: rgba(34, 197, 94, 0.2);
+}
+[data-theme="light"] .final-summary-table th {
+  border-bottom-color: rgba(0, 0, 0, 0.1);
+}
+[data-theme="light"] .final-summary-table td {
+  border-bottom-color: rgba(0, 0, 0, 0.05);
+}
+[data-theme="light"] .final-summary-footer td {
+  border-top-color: rgba(0, 0, 0, 0.1);
+}
+[data-theme="light"] .final-summary-row:hover {
+  background: rgba(0, 0, 0, 0.02);
+}
+[data-theme="light"] .project-completed-badge {
+  background: rgba(34, 197, 94, 0.1);
+  color: #16a34a;
 }
 

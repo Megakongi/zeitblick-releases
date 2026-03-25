@@ -289,9 +289,11 @@ export function calculateTVFFS(timesheets, settings) {
   // Vertragszeit = erster Tag mit Aktivität bis letzter Tag pro Person
   // Führende freie Tage (vor erstem Arbeitstag) zählen nicht mit
   // Berechnung individuell pro Person, dann summiert
+  const nameAliases = settings.nameAliases || {};
+  const resolvePerson = (n) => nameAliases[n] || n;
   const contractDaysByPerson = {};
   for (const sheet of timesheets) {
-    const person = sheet.name || 'Unbekannt';
+    const person = resolvePerson(sheet.name || 'Unbekannt');
     if (!contractDaysByPerson[person]) contractDaysByPerson[person] = [];
     for (const day of sheet.days) {
       if (!day.datum) continue;
@@ -312,26 +314,47 @@ export function calculateTVFFS(timesheets, settings) {
   for (const [person, days] of Object.entries(contractDaysByPerson)) {
     if (days.length === 0) continue;
     days.sort((a, b) => a.date - b.date);
-    // Find first day with activity (skip leading free days)
-    const firstActive = days.find(d => d.active);
-    const startDate = firstActive ? firstActive.date : days[0].date;
-    const endDate = days[days.length - 1].date;
-    const tage = Math.round((endDate - startDate) / (1000 * 60 * 60 * 24)) + 1;
-    personAnstellungstage[person] = tage;
-    const wochen = Math.floor(tage / 7);
+
+    // Find continuous employment blocks:
+    // A block starts at the first active day and extends as long as there is
+    // no gap of more than 7 days between consecutive active days.
+    const activeDays = days.filter(d => d.active);
+    if (activeDays.length === 0) { personAnstellungstage[person] = 0; continue; }
+
+    let personTotalTage = 0;
+    let blockStart = activeDays[0].date;
+    let blockEnd = activeDays[0].date;
+
+    for (let i = 1; i < activeDays.length; i++) {
+      const gap = Math.round((activeDays[i].date - blockEnd) / (1000 * 60 * 60 * 24));
+      if (gap <= 7) {
+        // Still continuous — extend block
+        blockEnd = activeDays[i].date;
+      } else {
+        // Gap too large — close current block, start new one
+        personTotalTage += Math.round((blockEnd - blockStart) / (1000 * 60 * 60 * 24)) + 1;
+        blockStart = activeDays[i].date;
+        blockEnd = activeDays[i].date;
+      }
+    }
+    // Close last block
+    personTotalTage += Math.round((blockEnd - blockStart) / (1000 * 60 * 60 * 24)) + 1;
+
+    personAnstellungstage[person] = personTotalTage;
+    const wochen = Math.floor(personTotalTage / 7);
     totalWochen += wochen;
-    urlaubstage += wochen * VACATION_DAYS_PER_WEEK;
+    // Halbe Urlaubstage aufrunden (z.B. 2.5 → 3)
+    urlaubstage += Math.ceil(wochen * VACATION_DAYS_PER_WEEK);
   }
   // For single-person: show their individual value
-  // For multi-person: show max (representative) — urlaubstage are already summed correctly
+  // For multi-person: sum all person values
   const personCount = Object.keys(contractDaysByPerson).length;
   if (personCount === 1) {
     anstellungstage = Object.values(personAnstellungstage)[0] || 0;
     totalWochen = Math.floor(anstellungstage / 7);
-  } else {
-    // For multi-person summary, anstellungstage is not meaningful as a single number
-    // Set to 0 to signal "not applicable" — urlaubstage are the sum of per-person values
-    anstellungstage = 0;
+  } else if (personCount > 1) {
+    // Sum all person anstellungstage (e.g. same person with different name variants)
+    anstellungstage = Object.values(personAnstellungstage).reduce((s, v) => s + v, 0);
   }
 
   // === GAGE ===

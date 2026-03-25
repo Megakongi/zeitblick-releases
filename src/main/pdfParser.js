@@ -1,4 +1,6 @@
 const fs = require('fs');
+const path = require('path');
+const { execFile } = require('child_process');
 const PDFParser = require('pdf2json');
 
 /**
@@ -18,10 +20,10 @@ const PDFParser = require('pdf2json');
 const COLUMN_PATTERNS = [
   { key: 'tag',              patterns: [/^tag$/i, /^wochentag$/i, /^day$/i] },
   { key: 'datum',            patterns: [/^datum$/i, /^date$/i, /^dat\.?$/i] },
-  { key: 'start',            patterns: [/^start$/i, /^beginn$/i, /^anfang$/i, /^von$/i, /^dienstbeginn$/i, /^ab$/i] },
-  { key: 'ende',             patterns: [/^ende$/i, /^end$/i, /^bis$/i, /^dienstende$/i, /^schluss$/i] },
-  { key: 'pause',            patterns: [/^pause$/i, /^pausen?zeit$/i, /^p\.?$/i, /^break$/i] },
-  { key: 'stundenTotal',     patterns: [/^stunden/i, /^std\.?\s*total/i, /^total$/i, /^gesamt\s*std/i, /^arbeitszeit$/i, /^hours$/i, /^ges\.?\s*std/i, /^std\.?$/i, /^summe\s*std/i] },
+  { key: 'start',            patterns: [/^start$/i, /^beginn$/i, /^anfang$/i, /^von$/i, /^dienstbeginn$/i, /^arbeitsbeginn$/i, /^ab$/i] },
+  { key: 'ende',             patterns: [/^ende$/i, /^end$/i, /^bis$/i, /^dienstende$/i, /^arbeitsende$/i, /^schluss$/i] },
+  { key: 'pause',            patterns: [/^pause\s*\d*$/i, /^pausen?zeit$/i, /^p\.?$/i, /^break$/i] },
+  { key: 'stundenTotal',     patterns: [/^stunden/i, /^std\.?\s*total/i, /^total$/i, /^gesamt\s*std/i, /^gesamt$/i, /^arbeitszeit$/i, /^hours$/i, /^ges\.?\s*std/i, /^std\.?$/i, /^summe\s*std/i] },
   { key: 'ueberstunden25',   patterns: [/25\s*%/i, /^ü\s*25/i, /^25$/] },
   { key: 'ueberstunden50',   patterns: [/50\s*%/i, /^ü\s*50/i, /^50$/] },
   { key: 'ueberstunden100',  patterns: [/100\s*%/i, /^ü\s*100/i, /^100$/] },
@@ -32,7 +34,7 @@ const COLUMN_PATTERNS = [
 
 // Patterns for header metadata fields
 const HEADER_LABELS = [
-  { key: 'projekt',           patterns: [/^projekt:?$/i, /^production:?$/i, /^titel:?$/i, /^project:?$/i] },
+  { key: 'projekt',           patterns: [/^projekt:?$/i, /^produktion:?$/i, /^production:?$/i, /^titel:?$/i, /^project:?$/i] },
   { key: 'projektnummer',     patterns: [/^projektnr\.?:?$/i, /^projektnummer:?$/i, /^prod\.?\s*nr\.?:?$/i] },
   { key: 'produktionsfirma',  patterns: [/^produktionsfirma:?$/i, /^firma:?$/i, /^company:?$/i, /^auftraggeber:?$/i, /^herstellungsleitung:?$/i] },
   { key: 'name',              patterns: [/^name:?$/i, /^mitarbeiter:?$/i, /^employee:?$/i] },
@@ -46,8 +48,8 @@ const DAY_NAMES_FULL = ['Montag', 'Dienstag', 'Mittwoch', 'Donnerstag', 'Freitag
 const DAY_NAMES_SHORT = ['Mo', 'Di', 'Mi', 'Do', 'Fr', 'Sa', 'So'];
 const DAY_NAMES_ALL = [...DAY_NAMES_FULL, ...DAY_NAMES_SHORT, 'Mo.', 'Di.', 'Mi.', 'Do.', 'Fr.', 'Sa.', 'So.'];
 
-// Date pattern: dd.mm.yyyy or dd.mm.yy or dd.mm.
-const DATE_REGEX = /^\d{1,2}\.\d{1,2}\.(\d{2,4})?$/;
+// Date pattern: dd.mm.yyyy or dd.mm.yy or dd.mm. or dd.mm
+const DATE_REGEX = /^\d{1,2}\.\d{1,2}\.?(\d{2,4})?$/;
 // Time pattern: HH:MM or H:MM
 const TIME_REGEX = /^\d{1,2}:\d{2}$/;
 
@@ -59,9 +61,25 @@ function parsePDF(filePath) {
       reject(new Error(errData.parserError));
     });
 
-    pdfParser.on('pdfParser_dataReady', pdfData => {
+    pdfParser.on('pdfParser_dataReady', async pdfData => {
       try {
         const result = extractTimesheetData(pdfData, filePath);
+        
+        // Check if day rows are empty (handwritten PDF / broken font)
+        const hasData = result.days.some(d => d.start || d.ende || d.stundenTotal > 0 || d.datum);
+        if (!hasData && result.days.length > 0 && process.platform === 'darwin') {
+          try {
+            const ocrResult = await ocrFallbackExtract(filePath, result);
+            if (ocrResult) {
+              resolve(ocrResult);
+              return;
+            }
+          } catch (ocrErr) {
+            // OCR failed, return what we have from text extraction
+            console.warn('OCR fallback failed:', ocrErr.message);
+          }
+        }
+        
         resolve(result);
       } catch (error) {
         reject(error);
@@ -338,12 +356,23 @@ function extractHeader(rows, headerRowY) {
       
       // Also try concatenating adjacent items at similar x to reconstruct split labels
       // e.g. "Produktions" + "ﬁ" + "rma:" at x≈15
+      // Also handles Numbers PDF soft-hyphens: "Tä" + "=" + "gkeit:" → "Tätigkeit:"
       let combinedLabel = text;
       let lastLabelIdx = i;
       const labelX = row.items[i].x;
       for (let k = i + 1; k < row.items.length; k++) {
         if (Math.abs(row.items[k].x - labelX) < 1.5) {
-          combinedLabel += row.items[k].text.trim();
+          const fragment = row.items[k].text.trim();
+          // Skip "=" soft-hyphen and ";" ligature markers
+          if (fragment === '=' || fragment === ';') {
+            lastLabelIdx = k;
+            continue;
+          }
+          // Remove trailing "=" from previous fragment (soft-hyphen continuation)
+          if (combinedLabel.endsWith('=')) {
+            combinedLabel = combinedLabel.slice(0, -1);
+          }
+          combinedLabel += fragment;
           lastLabelIdx = k;
         } else {
           break;
@@ -406,6 +435,13 @@ function extractHeader(rows, headerRowY) {
     }
   }
 
+  // Clean up header values: strip surrounding quotes
+  for (const key of ['projekt', 'projektnummer', 'produktionsfirma', 'name', 'position', 'abteilung']) {
+    if (header[key]) {
+      header[key] = header[key].replace(/^[\u201C\u201E\u0022\u00AB\u2039]+|[\u201D\u201F\u0022\u00BB\u203A]+$/g, '').trim();
+    }
+  }
+
   return header;
 }
 
@@ -434,6 +470,8 @@ function isDayRow(row) {
     const text = item.text.trim();
     if (DAY_NAMES_ALL.some(d => text === d)) return true;
     if (DATE_REGEX.test(text)) return true;
+    // Fuzzy match for broken-font day names (e.g. "MiSwoch" from broken TT fonts)
+    if (text.length >= 5 && DAY_NAMES_FULL.some(d => fuzzyDayMatch(text, d))) return true;
   }
   return false;
 }
@@ -500,7 +538,7 @@ function parseRowValues(row, columns, isTotals) {
     if (!text) continue;
 
     // Check if it's a day name
-    if (DAY_NAMES_ALL.some(d => text === d)) {
+    if (DAY_NAMES_ALL.some(d => text === d) || (text.length >= 5 && DAY_NAMES_FULL.some(d => fuzzyDayMatch(text, d)))) {
       result.tag = normalizeDayName(text);
       continue;
     }
@@ -552,7 +590,13 @@ function parseRowValues(row, columns, isTotals) {
         result.nacht25 = parseNum(text);
         break;
       case 'fahrzeit':
-        result.fahrzeit = parseNum(text);
+        // If the text is non-numeric, it's likely an anmerkung misclassified as fahrzeit
+        // (common when "Anmerkungen" header is centered far right of actual content)
+        if (isNaN(parseFloat(text.replace(',', '.')))) {
+          result.anmerkungen = (result.anmerkungen ? result.anmerkungen + ' ' : '') + text;
+        } else {
+          result.fahrzeit = parseNum(text);
+        }
         break;
       case 'anmerkungen':
         result.anmerkungen = (result.anmerkungen ? result.anmerkungen + ' ' : '') + text;
@@ -602,7 +646,27 @@ function parseTimeValue(str) {
 function normalizeDayName(text) {
   const cleaned = text.replace('.', '').trim();
   const shortMap = { 'Mo': 'Montag', 'Di': 'Dienstag', 'Mi': 'Mittwoch', 'Do': 'Donnerstag', 'Fr': 'Freitag', 'Sa': 'Samstag', 'So': 'Sonntag' };
-  return shortMap[cleaned] || (DAY_NAMES_FULL.includes(cleaned) ? cleaned : text);
+  if (shortMap[cleaned]) return shortMap[cleaned];
+  if (DAY_NAMES_FULL.includes(cleaned)) return cleaned;
+  // Fuzzy match for broken-font day names
+  const fuzzyMatch = DAY_NAMES_FULL.find(d => fuzzyDayMatch(cleaned, d));
+  return fuzzyMatch || text;
+}
+
+/**
+ * Fuzzy match for day names where some characters may be wrong due to font decoding issues.
+ * Checks if the text has at least 60% character overlap with the expected day name.
+ */
+function fuzzyDayMatch(text, dayName) {
+  if (text.length < 4 || Math.abs(text.length - dayName.length) > 2) return false;
+  const lower = text.toLowerCase();
+  const target = dayName.toLowerCase();
+  let matches = 0;
+  const minLen = Math.min(lower.length, target.length);
+  for (let i = 0; i < minLen; i++) {
+    if (lower[i] === target[i]) matches++;
+  }
+  return matches / target.length >= 0.6;
 }
 
 /**
@@ -1224,7 +1288,17 @@ function mergeFragmentedTexts(items) {
     const y = items[i].y;
     let j = i + 1;
     while (j < items.length && Math.abs(items[j].x - x) < 0.05 && Math.abs(items[j].y - y) < 0.05) {
-      text += items[j].text;
+      const fragment = items[j].text;
+      // Numbers PDF export uses "=" as soft-hyphen continuation marker
+      // e.g. "Produk" + "=" + "onsleitung" → "Produktionsleitung"
+      if (fragment === '=' || fragment === ';') {
+        // Skip the soft-hyphen/ligature marker
+      } else if (text.endsWith('=')) {
+        // Previous fragment ended with "=", remove it and concatenate
+        text = text.slice(0, -1) + fragment;
+      } else {
+        text += fragment;
+      }
       j++;
     }
     merged.push({ x, y, text: text.trim() });
@@ -1475,6 +1549,449 @@ function formatTimeValue(decimal) {
   const h = Math.floor(decimal);
   const m = Math.round((decimal - h) * 60);
   return `${h}:${String(m).padStart(2, '0')}`;
+}
+
+/**
+ * OCR fallback for handwritten PDFs where text extraction yields empty cells.
+ * Uses macOS Vision framework via a compiled Swift helper binary.
+ * Returns a timesheet result or null if OCR is unavailable.
+ */
+async function ocrFallbackExtract(filePath, textResult) {
+  const ocrBinary = findOcrBinary();
+  if (!ocrBinary) return null;
+
+  const ocrData = await runOcrHelper(ocrBinary, filePath);
+  if (!ocrData || !ocrData.items || ocrData.items.length === 0) return null;
+
+  const ocrItems = ocrData.items
+    .filter(it => it.text && it.text.trim())
+    .map(it => ({ x: it.x, y: it.y, w: it.w || 0, h: it.h || 0, text: it.text.trim() }))
+    .sort((a, b) => a.y - b.y || a.x - b.x);
+
+  // Step 1: Build column map from printed headers (including garbled OCR reads)
+  const colMap = buildOcrColumnMap(ocrItems);
+  if (Object.keys(colMap).length < 3) return null;
+
+  // Build column boundaries using midpoints between adjacent column centers
+  const colBounds = buildColumnBoundaries(colMap);
+
+  // Step 2: Find day-name y-positions and interpolate missing ones
+  const daySlots = buildDaySlots(ocrItems);
+  if (daySlots.length === 0) return null;
+
+  // Step 3: For each day slot, collect handwritten data items and classify by column
+  const days = [];
+  for (let i = 0; i < daySlots.length; i++) {
+    const slot = daySlots[i];
+    const yStart = slot.yData;
+    const yEnd = (i < daySlots.length - 1) ? daySlots[i + 1].yData : slot.yName + 3;
+
+    // Collect handwritten items (h > 2.0) in this y-band
+    const rowItems = ocrItems.filter(it =>
+      it.y >= yStart && it.y < yEnd && it.h > 2.0
+    );
+
+    const day = {
+      tag: slot.tag,
+      datum: '', start: '', ende: '', pause: 0, stundenTotal: 0,
+      ueberstunden25: 0, ueberstunden50: 0, ueberstunden100: 0,
+      nacht25: 0, fahrzeit: 0, anmerkungen: '',
+    };
+    let rawStunden = 0;
+
+    // Assign items to columns by center x-position
+    for (const item of rowItems) {
+      const cx = item.x + (item.w || 0) / 2;
+      const col = classifyOcrX(cx, colBounds);
+      if (!col || col === 'wochentag') continue;
+      const text = item.text.trim();
+      // Skip non-data items (printed labels that leaked through)
+      if (/^(ja|nein)$/i.test(text)) continue; // teilnahme answers
+      switch (col) {
+        case 'datum': if (!day.datum) day.datum = text; break;
+        case 'start': if (!day.start) day.start = text; break;
+        case 'ende': if (!day.ende) day.ende = text; break;
+        case 'stunden': rawStunden = rawStunden || fixOcrNumber(text, 24); break;
+        case 'pause': day.pause = day.pause || fixOcrNumber(text, 3); break;
+        case 'fahrzeit': day.fahrzeit = day.fahrzeit || fixOcrNumber(text, 10); break;
+        case 'gesamt': day.stundenTotal = day.stundenTotal || fixOcrNumber(text, 24); break;
+        case 'anmerkungen': day.anmerkungen = (day.anmerkungen ? day.anmerkungen + ' ' : '') + text; break;
+        default: break;
+      }
+    }
+    // Prefer gesamt (net hours) over stunden (gross hours)
+    if (!day.stundenTotal && rawStunden > 0) day.stundenTotal = rawStunden;
+
+    // Post-process OCR values
+    if (day.datum) day.datum = fixOcrDate(day.datum);
+    if (day.start) day.start = fixOcrTime(day.start);
+    if (day.ende) day.ende = fixOcrTime(day.ende);
+    // If pause is absurdly high, OCR likely merged stunden+pause — clear it
+    if (day.pause > 5) day.pause = 0;
+
+    days.push(day);
+  }
+
+  // Compute totals
+  const totals = {
+    stundenTotal: Math.round(days.reduce((s, d) => s + (d.stundenTotal || 0), 0) * 100) / 100,
+    ueberstunden25: 0, ueberstunden50: 0, ueberstunden100: 0, nacht25: 0,
+    fahrzeit: Math.round(days.reduce((s, d) => s + (d.fahrzeit || 0), 0) * 100) / 100,
+  };
+
+  // Use header from text-layer (more reliable for printed labels) with OCR enrichment
+  const header = { ...pickHeader(textResult) };
+  enrichHeaderFromOcr(header, ocrItems, daySlots.length > 0 ? daySlots[0].yName : 30);
+  extractHeaderFromMetaAndFilename({}, filePath, header);
+
+  return {
+    id: generateId(),
+    importDate: new Date().toISOString(),
+    filePath: '',
+    ...header,
+    days,
+    totals,
+    ocrImport: true,
+  };
+}
+
+/** Extract header fields from a result object */
+function pickHeader(result) {
+  const h = {};
+  for (const key of ['projekt', 'projektnummer', 'produktionsfirma', 'name', 'position', 'abteilung', 'pause']) {
+    if (result[key]) h[key] = result[key];
+  }
+  return h;
+}
+
+/** Enrich header from OCR items — find name, position, project from handwritten text */
+function enrichHeaderFromOcr(header, ocrItems, dayRowStartY) {
+  // Look for header-area OCR items (above the day rows)
+  const headerItems = ocrItems
+    .filter(it => it.y < dayRowStartY - 5 && it.h > 2.0)  // Handwritten items above day area
+    .sort((a, b) => a.y - b.y || a.x - b.x);
+
+  // Find items near known labels
+  const labelItems = ocrItems.filter(it => it.h > 0 && it.h < 2.0 && it.y < dayRowStartY);
+
+  for (const label of labelItems) {
+    const lt = label.text.trim().toLowerCase().replace(/:$/, '');
+    // Find handwritten items to the right of or just below this label, within left half of page
+    const valueItems = headerItems.filter(it =>
+      Math.abs(it.y - label.y) < 5 && it.x > label.x - 2 && it.x < 55
+    );
+    const value = valueItems.map(it => it.text).join(' ').trim();
+
+    if (!value) continue;
+
+    if (/^name$/i.test(lt) && !header.name) {
+      header.name = value;
+    } else if (/^t[äa]tigkeit$|^position$|^funktion$|^gewerk$/i.test(lt) && !header.position) {
+      // Strip date-like patterns that leaked into position field
+      header.position = value.replace(/\b\d{1,2}\.\d{1,2}\.?\d{0,4}\b/g, '').trim();
+    } else if (/^produktion$|^projekt$/i.test(lt) && !header.projekt) {
+      header.projekt = value.replace(/^["'„"]+|["'"]+$/g, '').trim();
+    }
+  }
+}
+
+/**
+ * Build a column map from OCR items by finding the header row.
+ * Handles OCR-garbled column names (e.g., "Abeltbehn" for "Arbeitsbeginn").
+ * Returns { columnKey: xPosition, ... }
+ */
+function buildOcrColumnMap(ocrItems) {
+  // Column headers are in y ~ 28-35%, can be h up to ~4 (OCR garbles multi-line headers)
+  const candidateHeaders = ocrItems.filter(it => it.y >= 28 && it.y <= 35 && it.h < 5);
+
+  const colMap = {};
+  const knownPatterns = [
+    { key: 'wochentag', patterns: [/^wochentag$/i] },
+    { key: 'datum',    patterns: [/^datum$/i] },
+    { key: 'start',    patterns: [/^arbeitsbeginn$/i, /^beginn$/i, /^start$/i, /^a.{3,}b.{2,}$/i] },
+    { key: 'ende',     patterns: [/^arbeitsende$/i, /^ende$/i, /^a.{3,}e.de$/i] },
+    { key: 'stunden',  patterns: [/^stunden$/i, /^std\.?$/i, /^s.{2,}den$/i] },
+    { key: 'pause',    patterns: [/^pause/i, /^pas\.?$/i] },
+    { key: 'fahrzeit', patterns: [/^fahrt$/i, /^fahr/i] },
+    { key: 'gesamt',   patterns: [/^gesamt$/i] },
+    { key: 'anmerkungen', patterns: [/^bemerkungen$/i, /^anmerk/i] },
+  ];
+
+  for (const item of candidateHeaders) {
+    const text = item.text.trim();
+    for (const kp of knownPatterns) {
+      if (kp.patterns.some(p => p.test(text))) {
+        if (!colMap[kp.key]) colMap[kp.key] = item.x;
+        break;
+      }
+    }
+  }
+
+  // Fallback: if we found some headers but missing interior columns,
+  // try to fill them by x-position order from all header items in y=29-31 range
+  const headerRow = candidateHeaders.filter(it => it.y >= 29 && it.y <= 31).sort((a, b) => a.x - b.x);
+  const expectedOrder = ['wochentag', 'datum', 'start', 'ende', 'stunden', 'pause', 'fahrzeit', 'gesamt', 'anmerkungen'];
+  if (headerRow.length >= 5 && Object.keys(colMap).length < 7) {
+    for (let i = 0; i < Math.min(headerRow.length, expectedOrder.length); i++) {
+      const key = expectedOrder[i];
+      if (!colMap[key]) colMap[key] = headerRow[i].x;
+    }
+  }
+
+  return colMap;
+}
+
+/**
+ * Build column boundaries from column center positions.
+ * Returns sorted array of { key, xMin, xMax } ranges.
+ */
+function buildColumnBoundaries(colMap) {
+  const entries = Object.entries(colMap).sort((a, b) => a[1] - b[1]);
+  const bounds = [];
+  for (let i = 0; i < entries.length; i++) {
+    const [key, x] = entries[i];
+    const prevX = i > 0 ? entries[i - 1][1] : 0;
+    const nextX = i < entries.length - 1 ? entries[i + 1][1] : 100;
+    bounds.push({
+      key,
+      xMin: (prevX + x) / 2,
+      xMax: (x + nextX) / 2,
+    });
+  }
+  return bounds;
+}
+
+/**
+ * Build 7 day slots by finding printed day names and interpolating missing ones.
+ * Returns [{tag, yName, yData}, ...] — yName is day-name y, yData is where data starts above.
+ */
+function buildDaySlots(ocrItems) {
+  const foundDays = [];
+  for (const item of ocrItems) {
+    const text = item.text.trim();
+    for (let i = 0; i < DAY_NAMES_FULL.length; i++) {
+      if (text.toLowerCase() === DAY_NAMES_FULL[i].toLowerCase() && item.x < 15) {
+        foundDays.push({ idx: i, tag: DAY_NAMES_FULL[i], y: item.y });
+        break;
+      }
+    }
+  }
+  if (foundDays.length < 2) return foundDays.length === 1
+    ? [{ tag: foundDays[0].tag, yName: foundDays[0].y, yData: foundDays[0].y - 3 }]
+    : [];
+
+  // Sort by day index
+  foundDays.sort((a, b) => a.idx - b.idx);
+
+  // Calculate average y-spacing between consecutive found days
+  let totalSpacing = 0, spacingCount = 0;
+  for (let i = 1; i < foundDays.length; i++) {
+    const idxDiff = foundDays[i].idx - foundDays[i - 1].idx;
+    if (idxDiff > 0) {
+      totalSpacing += (foundDays[i].y - foundDays[i - 1].y) / idxDiff;
+      spacingCount++;
+    }
+  }
+  const avgSpacing = spacingCount > 0 ? totalSpacing / spacingCount : 5.2;
+
+  // Build all 7 day slots, interpolating missing ones
+  const slots = [];
+  for (let i = 0; i < 7; i++) {
+    const found = foundDays.find(d => d.idx === i);
+    let yName;
+    if (found) {
+      yName = found.y;
+    } else {
+      // Interpolate from nearest found day
+      const nearest = foundDays.reduce((best, d) => {
+        const dist = Math.abs(d.idx - i);
+        return dist < Math.abs(best.idx - i) ? d : best;
+      });
+      yName = nearest.y + (i - nearest.idx) * avgSpacing;
+    }
+    slots.push({
+      tag: DAY_NAMES_FULL[i],
+      yName,
+      yData: yName - 3,  // Handwritten data starts above the printed day name
+    });
+  }
+
+  return slots;
+}
+
+/**
+ * Classify an OCR x-position to a column using pre-computed boundaries.
+ * @param {number} x - The x position
+ * @param {Array<{key, xMin, xMax}>} colBounds - Sorted column boundaries
+ */
+function classifyOcrX(x, colBounds) {
+  for (const b of colBounds) {
+    if (x >= b.xMin && x < b.xMax) return b.key;
+  }
+  return null;
+}
+
+/**
+ * Fix OCR-misread numbers by restoring missing decimal points.
+ * Handwritten decimals often get lost in OCR (e.g., "1025" for 10.25).
+ * @param {string} text - The OCR text
+ * @param {number} maxExpected - Maximum expected value (e.g., 24 for hours, 3 for pause)
+ */
+function fixOcrNumber(text, maxExpected) {
+  if (!text) return 0;
+  const s = text.trim();
+  // Already has comma/dot separator — use normal parsing
+  if (/[,.]/.test(s)) return parseNum(s);
+  const digits = s.replace(/[^0-9]/g, '');
+  if (!digits) return 0;
+  const plain = parseFloat(digits);
+  if (plain <= maxExpected) return plain;
+  // Try inserting decimal point at each position from right to left
+  for (let i = digits.length - 1; i >= 1; i--) {
+    const val = parseFloat(digits.slice(0, i) + '.' + digits.slice(i));
+    if (val <= maxExpected && val >= 0) return val;
+  }
+  return plain;
+}
+
+/**
+ * Locate the OCR helper binary.
+ */
+function findOcrBinary() {
+  const candidates = [
+    // Development path
+    path.join(__dirname, '..', '..', 'scripts', 'build', 'ocr-helper'),
+    // Packaged app paths
+    path.join(process.resourcesPath || '', 'ocr-helper'),
+    path.join(__dirname, '..', 'ocr-helper'),
+  ];
+  for (const p of candidates) {
+    try {
+      if (fs.existsSync(p) && fs.statSync(p).isFile()) return p;
+    } catch (e) { /* skip */ }
+  }
+  return null;
+}
+
+/**
+ * Run the OCR helper binary and return parsed JSON.
+ */
+function runOcrHelper(binaryPath, pdfPath) {
+  return new Promise((resolve, reject) => {
+    execFile(binaryPath, [pdfPath], { timeout: 30000, maxBuffer: 10 * 1024 * 1024 }, (error, stdout, stderr) => {
+      if (error) {
+        reject(new Error(`OCR helper failed: ${error.message}`));
+        return;
+      }
+      try {
+        const data = JSON.parse(stdout);
+        if (data.error) {
+          reject(new Error(`OCR helper error: ${data.error}`));
+          return;
+        }
+        resolve(data);
+      } catch (e) {
+        reject(new Error(`OCR helper returned invalid JSON: ${e.message}`));
+      }
+    });
+  });
+}
+
+/**
+ * Fix OCR-misread dates. Common issues:
+ * - "1711" → "17.11"  (missing dots)
+ * - "21.M" → "21.11"  (letter M misread for 11)
+ * - "13.M1" → "23.11" (digit misread)
+ */
+function fixOcrDate(text) {
+  if (!text) return text;
+  let s = text.trim();
+  // Replace M/m with 1 (common OCR misread of "11")
+  s = s.replace(/[Mm]/g, '1');
+  // Remove trailing non-digit/dot chars
+  s = s.replace(/[^0-9.]+$/, '');
+  // If month is single "1" (from M→1 replacement), likely "11" (November)
+  if (/^\d{1,2}\.1$/.test(s)) s = s + '1';
+  // "1711" → "17.11" (4 digits without dot)
+  if (/^\d{4}$/.test(s) && !s.includes('.')) {
+    s = s.slice(0, 2) + '.' + s.slice(2);
+  }
+  // "17112025" → "17.11.2025"
+  if (/^\d{8}$/.test(s)) {
+    s = s.slice(0, 2) + '.' + s.slice(2, 4) + '.' + s.slice(4);
+  }
+  // "171125" → "17.11.25"
+  if (/^\d{6}$/.test(s)) {
+    s = s.slice(0, 2) + '.' + s.slice(2, 4) + '.' + s.slice(4);
+  }
+  // Validate: should now look like dd.mm or dd.mm.yy(yy)
+  if (DATE_REGEX.test(s)) return s;
+  return text;  // Return original if we can't fix it
+}
+
+/**
+ * Fix OCR-misread times. Common issues:
+ * - "3o" → "3:00" (letter o misread for 0)
+ * - "83" → "8:30" (2 digits > 23, treat as H:D0)
+ * - "1025" → "10:25" (4 digits)
+ * - "109" → "10:09" (3 digits, prefer HH:0D for work hours)
+ */
+function fixOcrTime(text) {
+  if (!text) return text;
+  let s = text.trim();
+  // Already valid time format
+  if (TIME_REGEX.test(s)) return s;
+  // Replace common letter→digit OCR misreads
+  s = s.replace(/[oO]/g, '0').replace(/[lI]/g, '1').replace(/[S]/g, '5');
+  // Remove remaining non-digit chars except : and .
+  s = s.replace(/[^0-9:.]/g, '');
+  // "10.25" → "10:25" (dot as separator)
+  s = s.replace('.', ':');
+  if (TIME_REGEX.test(s)) return s;
+  // Work with pure digits
+  const digits = s.replace(/[^0-9]/g, '');
+  // 4 digits: "1025" → "10:25", "1945" → "19:45"
+  if (digits.length === 4) {
+    const h = parseInt(digits.slice(0, 2), 10);
+    const m = parseInt(digits.slice(2), 10);
+    if (h >= 0 && h <= 23 && m >= 0 && m <= 59) {
+      return `${h}:${String(m).padStart(2, '0')}`;
+    }
+  }
+  // 3 digits: prefer HH:0D (work hours 6-23), fallback to H:MM
+  if (digits.length === 3) {
+    // Try HH:0D first (e.g., "109" → "10:09")
+    const h2 = parseInt(digits.slice(0, 2), 10);
+    const m2 = parseInt('0' + digits[2], 10);
+    if (h2 >= 5 && h2 <= 23 && m2 >= 0 && m2 <= 59) {
+      return `${h2}:${String(m2).padStart(2, '0')}`;
+    }
+    // Try H:MM (e.g., "830" → "8:30")
+    const h1 = parseInt(digits[0], 10);
+    const m1 = parseInt(digits.slice(1), 10);
+    if (h1 >= 0 && h1 <= 9 && m1 >= 0 && m1 <= 59) {
+      return `${h1}:${String(m1).padStart(2, '0')}`;
+    }
+    // Try HH:M0 (e.g., "183" → "18:30")
+    const m3Str = digits[2] + '0';
+    const m3 = parseInt(m3Str, 10);
+    if (h2 >= 0 && h2 <= 23 && m3 >= 0 && m3 <= 59) {
+      return `${h2}:${m3Str}`;
+    }
+  }
+  // 2 digits > 23: likely H:D0 (e.g., "83" → "8:30")
+  if (digits.length === 2) {
+    const val = parseInt(digits, 10);
+    if (val > 23) {
+      const h = parseInt(digits[0], 10);
+      const m = parseInt(digits[1] + '0', 10);
+      if (h >= 0 && h <= 9 && m >= 0 && m <= 59) {
+        return `${h}:${String(m).padStart(2, '0')}`;
+      }
+    }
+    if (val >= 0 && val <= 23) return `${val}:00`;
+  }
+  return text;  // Return original if we can't fix
 }
 
 function generateId() {

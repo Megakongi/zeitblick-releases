@@ -293,7 +293,7 @@ function generateCSV(timesheets, c, settings, personFilter) {
   return lines.join('\n');
 }
 
-export default function Dashboard({ timesheets, calculations, settings: propSettings, effectiveSettings: propEffectiveSettings, onSettings: propOnSettings, onViewDetail, onUpdateTimesheets, projects, projectFilter: propProjectFilter, onProjectFilter: propOnProjectFilter, personFilter: propPersonFilter, onPersonFilter: propOnPersonFilter, allTimesheets, personFilteredTimesheets, getPersonSettings: propGetPersonSettings, resolveName: propResolveName, getBaseProject: propGetBaseProject }) {
+export default function Dashboard({ timesheets, calculations, settings: propSettings, effectiveSettings: propEffectiveSettings, onSettings: propOnSettings, onViewDetail, onUpdateTimesheets, projects, projectFilter: propProjectFilter, onProjectFilter: propOnProjectFilter, personFilter: propPersonFilter, onPersonFilter: propOnPersonFilter, allTimesheets, personFilteredTimesheets, getPersonSettings: propGetPersonSettings, resolveName: propResolveName, getBaseProject: propGetBaseProject, completedProjects }) {
   // Use contexts with prop fallback for backward compatibility
   const filterCtx = useFilters();
   const settingsCtx = useSettings();
@@ -421,17 +421,42 @@ export default function Dashboard({ timesheets, calculations, settings: propSett
     }
   };
 
+  // Determine what gage value the input bar should show:
+  // When person+project selected → personProjectGagen
+  // When only person selected → personGagen
+  // Otherwise → global/effective
   useEffect(() => {
-    setGageInput(es.tagesgage || '');
-    setGageType(es.gageType || 'tag');
+    if (personFilter !== 'all' && projectFilter !== 'all') {
+      const ppg = ((settings.personProjectGagen || {})[personFilter] || {})[projectFilter] || {};
+      if (ppg.tagesgage > 0) {
+        setGageInput(ppg.tagesgage || '');
+        setGageType(ppg.gageType || settings.gageType || 'tag');
+      } else {
+        const pg = (settings.personGagen || {})[personFilter] || {};
+        setGageInput(pg.tagesgage || '');
+        setGageType(pg.gageType || settings.gageType || 'tag');
+      }
+    } else if (personFilter !== 'all') {
+      const pg = (settings.personGagen || {})[personFilter] || {};
+      setGageInput(pg.tagesgage || '');
+      setGageType(pg.gageType || settings.gageType || 'tag');
+    } else {
+      setGageInput(es.tagesgage || '');
+      setGageType(es.gageType || 'tag');
+    }
     setZeitkonto(settings.zeitkonto || false);
-  }, [settings, es]);
+  }, [settings, es, personFilter, projectFilter]);
 
-  // Save gage — per-person if a person is selected, otherwise global
+  // Save gage — per-person-per-project when both selected, per-person when only person, otherwise global
   const handleGageChange = (value) => {
     setGageInput(value);
     const numVal = parseFloat(String(value).replace(',', '.')) || 0;
-    if (personFilter !== 'all') {
+    if (personFilter !== 'all' && projectFilter !== 'all') {
+      const ppg = { ...(settings.personProjectGagen || {}) };
+      ppg[personFilter] = { ...(ppg[personFilter] || {}) };
+      ppg[personFilter][projectFilter] = { ...(ppg[personFilter][projectFilter] || {}), tagesgage: numVal, gageType: gageType };
+      onSettings({ ...settings, personProjectGagen: ppg });
+    } else if (personFilter !== 'all') {
       const pg = { ...(settings.personGagen || {}) };
       pg[personFilter] = { ...(pg[personFilter] || {}), tagesgage: numVal, gageType: gageType };
       onSettings({ ...settings, personGagen: pg });
@@ -442,7 +467,12 @@ export default function Dashboard({ timesheets, calculations, settings: propSett
 
   const handleGageTypeChange = (type) => {
     setGageType(type);
-    if (personFilter !== 'all') {
+    if (personFilter !== 'all' && projectFilter !== 'all') {
+      const ppg = { ...(settings.personProjectGagen || {}) };
+      ppg[personFilter] = { ...(ppg[personFilter] || {}) };
+      ppg[personFilter][projectFilter] = { ...(ppg[personFilter][projectFilter] || {}), gageType: type, tagesgage: parseFloat(String(gageInput).replace(',', '.')) || 0 };
+      onSettings({ ...settings, personProjectGagen: ppg });
+    } else if (personFilter !== 'all') {
       const pg = { ...(settings.personGagen || {}) };
       pg[personFilter] = { ...(pg[personFilter] || {}), gageType: type, tagesgage: parseFloat(String(gageInput).replace(',', '.')) || 0 };
       onSettings({ ...settings, personGagen: pg });
@@ -502,7 +532,7 @@ export default function Dashboard({ timesheets, calculations, settings: propSett
 
     // Calculate per-person stats
     const stats = Object.entries(byPerson).map(([name, sheets]) => {
-      const personSettings = getPersonSettings ? getPersonSettings(name) : settings;
+      const personSettings = getPersonSettings ? getPersonSettings(name, projectFilter !== 'all' ? projectFilter : undefined) : settings;
       const pc = calcTVFFS(sheets, personSettings);
 
       // Collect unique work dates for this person
@@ -516,15 +546,20 @@ export default function Dashboard({ timesheets, calculations, settings: propSett
       }
 
       // Detect if person is a "Vertretung" or has any sick days
-      let isVertretung = false;
+      // Only mark as Vertretung if majority of work days have "Vertretung" annotation
+      let vertretungDays = 0;
+      let totalWorkDays = 0;
       let hasKrank = false;
       for (const s of sheets) {
         for (const d of s.days) {
           const a = (d.anmerkungen || '').toLowerCase().trim();
-          if (a.includes('vertretung')) isVertretung = true;
+          const hasWork = Number(d.stundenTotal) > 0 || (d.start && String(d.start).trim().includes(':'));
+          if (hasWork) totalWorkDays++;
+          if (a.includes('vertretung')) vertretungDays++;
           if (a.includes('krank')) hasKrank = true;
         }
       }
+      const isVertretung = totalWorkDays > 0 && vertretungDays > totalWorkDays / 2;
 
       return {
         name,
@@ -541,6 +576,7 @@ export default function Dashboard({ timesheets, calculations, settings: propSett
         urlaubstageGenommen: pc.urlaubstageGenommen,
         dates,
         isVertretung,
+        vertretungDays,
         hasKrank,
       };
     });
@@ -565,6 +601,8 @@ export default function Dashboard({ timesheets, calculations, settings: propSett
   // Calculate Zusatztage: for people not present every day
   const zusatztageInfo = useMemo(() => {
     if (!isAllPersons || personStats.length <= 1) return null;
+    // Only calculate when a specific project is selected
+    if (!projectFilter || projectFilter === 'all') return null;
 
     // Collect all unique work dates across everyone
     const allDates = new Set();
@@ -599,7 +637,7 @@ export default function Dashboard({ timesheets, calculations, settings: propSett
       .filter(ps => !crewNames.has(ps.name))
       .filter(ps => !ps.isVertretung)
       .filter(ps => !hiddenZusatzPersonen.includes(ps.name))
-      .map(ps => ({ name: ps.name, tage: ps.arbeitstage }));
+      .map(ps => ({ name: ps.name, tage: ps.arbeitstage - (ps.vertretungDays || 0) }));
     const totalZusatztage = zusatzPersonen.reduce((sum, zp) => sum + zp.tage, 0);
 
     // Total person-days (all people combined)
@@ -627,14 +665,30 @@ export default function Dashboard({ timesheets, calculations, settings: propSett
       byProject[proj].push(ts);
     }
     return Object.entries(byProject).map(([projektName, sheets]) => {
-      const uniquePersons = new Set(sheets.map(s => resolve(s.name || 'Unbekannt')));
+      const uniquePersons = [...new Set(sheets.map(s => resolve(s.name || 'Unbekannt')))].sort();
+      let totalHours = 0, totalOvertime = 0;
+      for (const s of sheets) {
+        for (const d of s.days) {
+          totalHours += Number(d.stundenTotal) || 0;
+          totalOvertime += Number(d.ueberstunden) || 0;
+        }
+      }
       return {
         projekt: projektName,
         sheets: sheets.length,
-        personen: uniquePersons.size,
+        personen: uniquePersons.length,
+        people: uniquePersons,
+        totalHours,
+        totalOvertime,
       };
-    }).sort((a, b) => b.sheets - a.sheets);
-  }, [timesheets, allTimesheets, personFilteredTimesheets, isAllPersons, settings, baseProject, resolve]);
+    }).sort((a, b) => {
+      // Nicht abgeschlossene Projekte zuerst, dann nach Zettelanzahl
+      const aCompleted = !!(completedProjects && completedProjects[a.projekt]);
+      const bCompleted = !!(completedProjects && completedProjects[b.projekt]);
+      if (aCompleted !== bCompleted) return aCompleted ? 1 : -1;
+      return b.sheets - a.sheets;
+    });
+  }, [timesheets, allTimesheets, personFilteredTimesheets, isAllPersons, settings, baseProject, resolve, completedProjects]);
 
   // === Full per-project stats for individual person view (with TVFFS calculations) ===
   const personProjectStats = useMemo(() => {
@@ -648,7 +702,8 @@ export default function Dashboard({ timesheets, calculations, settings: propSett
       byProject[proj].push(ts);
     }
     return Object.entries(byProject).map(([projektName, sheets]) => {
-      const pc = calcTVFFS(sheets, es || settings);
+      const projSettings = getPersonSettings ? getPersonSettings(personFilter, projektName) : (es || settings);
+      const pc = calcTVFFS(sheets, projSettings);
       return {
         projekt: projektName,
         sheets: sheets.length,
@@ -662,7 +717,7 @@ export default function Dashboard({ timesheets, calculations, settings: propSett
         verdienst: pc.gesamtVerdienst,
       };
     }).sort((a, b) => b.stunden - a.stunden);
-  }, [timesheets, personFilteredTimesheets, isAllPersons, es, settings, baseProject]);
+  }, [timesheets, personFilteredTimesheets, isAllPersons, es, settings, baseProject, getPersonSettings, personFilter]);
 
   // Build chart data: hours per week, sorted by date
   const sortedTimesheets = useMemo(() => {
@@ -705,6 +760,14 @@ export default function Dashboard({ timesheets, calculations, settings: propSett
   const uniquePersons = [...new Set((allTimesheets || timesheets).map(t => resolve(t.name || 'Unbekannt')))];
   const showCrewOverview = isAllPersons && uniquePersons.length > 1;
 
+  // Auto-select first project when person is selected with no project
+  useEffect(() => {
+    const personLabel = personFilter !== 'all' ? personFilter : null;
+    if (personLabel && projectFilter === 'all' && projects && projects.length > 0) {
+      onProjectFilter && onProjectFilter(projects[0]);
+    }
+  }, [personFilter, projectFilter, projects, onProjectFilter]);
+
   // --- CREW OVERVIEW (clean, standalone) ---
   if (showCrewOverview) {
     return (
@@ -737,26 +800,60 @@ export default function Dashboard({ timesheets, calculations, settings: propSett
         </div>
 
         {/* Projektübersicht in Crew View */}
-        {projectStats.length > 1 && (
-          <div className="stats-section">
-            <h3 className="section-title">Projektübersicht</h3>
-            <div className="project-breakdown-grid">
-              {projectStats.map(ps => (
-                <button
+        {projectStats.length > 1 && projectFilter === 'all' && (
+          <div className="project-tiles-grid">
+            {projectStats.map(ps => {
+              const isCompleted = !!(completedProjects && completedProjects[ps.projekt]);
+              const getInitials = (name) => name.split(' ').map(w => w[0]).join('').toUpperCase().slice(0, 2);
+              return (
+                <div
                   key={ps.projekt}
-                  className={`project-breakdown-card project-breakdown-card-compact ${projectFilter === ps.projekt ? 'project-breakdown-card-active' : ''}`}
-                  onClick={() => onProjectFilter && onProjectFilter(projectFilter === ps.projekt ? 'all' : ps.projekt)}
+                  className={`project-tile${isCompleted ? ' project-tile-completed' : ''}`}
+                  onClick={() => onProjectFilter && onProjectFilter(ps.projekt)}
+                  role="button"
+                  tabIndex={0}
+                  onKeyDown={(e) => { if (e.key === 'Enter') onProjectFilter && onProjectFilter(ps.projekt); }}
+                  aria-label={`Projekt ${ps.projekt} öffnen`}
                 >
-                  <span className="project-breakdown-name">{ps.projekt}</span>
-                  <span className="project-breakdown-meta">{ps.sheets} Zettel · {ps.personen} {ps.personen === 1 ? 'Person' : 'Personen'}</span>
-                </button>
-              ))}
-            </div>
-            {projectFilter !== 'all' && (
-              <button className="project-filter-reset-btn" onClick={() => onProjectFilter && onProjectFilter('all')}>
-                ✕ Projektfilter zurücksetzen — alle Projekte anzeigen
-              </button>
-            )}
+                  <div className="project-tile-header">
+                    <span className="project-tile-name">
+                      {isCompleted && <span className="project-completed-icon" title="Abgeschlossen">✅</span>}
+                      {ps.projekt}
+                    </span>
+                    <span className="project-tile-badge">{ps.sheets}</span>
+                  </div>
+                  <div className="project-tile-stats">
+                    <div className="project-tile-stat">
+                      <span className="project-tile-stat-value">{ps.totalHours.toFixed(1)}</span>
+                      <span className="project-tile-stat-label">Stunden</span>
+                    </div>
+                    <div className="project-tile-stat">
+                      <span className="project-tile-stat-value">{ps.totalOvertime.toFixed(1)}</span>
+                      <span className="project-tile-stat-label">Überstunden</span>
+                    </div>
+                    <div className="project-tile-stat">
+                      <span className="project-tile-stat-value">{ps.personen}</span>
+                      <span className="project-tile-stat-label">Personen</span>
+                    </div>
+                  </div>
+                  <div className="project-tile-footer">
+                    <div className="project-tile-people">
+                      {ps.people.slice(0, 5).map(p => (
+                        <span key={p} className="project-tile-avatar" title={p}>{getInitials(p)}</span>
+                      ))}
+                      {ps.people.length > 5 && <span className="project-tile-avatar project-tile-avatar-more">+{ps.people.length - 5}</span>}
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+        {projectFilter !== 'all' && projectStats.length > 1 && (
+          <div className="stats-section">
+            <button className="project-filter-reset-btn" onClick={() => onProjectFilter && onProjectFilter('all')}>
+              ← Zurück zur Projektübersicht
+            </button>
           </div>
         )}
 
@@ -933,22 +1030,104 @@ export default function Dashboard({ timesheets, calculations, settings: propSett
             return renderProjectCrew(activeProject);
           }
 
-          // No project filter and multiple projects — show all persons without Stammteam split
-          // (user must select a project to manage Stammteam)
+          // No project filter and multiple projects — tiles above handle navigation
+          return null;
+        })()}
+
+        {/* Finale Abrechnung — nur bei abgeschlossenem Projekt */}
+        {(() => {
+          const activeProj = projectFilter !== 'all' ? projectFilter
+            : projectStats.length === 1 ? projectStats[0].projekt
+            : null;
+          const isCompleted = activeProj && completedProjects && completedProjects[activeProj];
+          if (!isCompleted) return null;
+
+          // Compute detailed per-person calculations — only for Stammteam members
+          const baseTS = allTimesheets || timesheets;
+          const projectSheets = baseTS.filter(t => baseProject(t.projekt) === activeProj);
+          const stammNames = new Set(((settings.projectCrews || {})[activeProj] || []).map(n => resolve(n)));
+          const byPerson = {};
+          for (const ts of projectSheets) {
+            const name = resolve(ts.name || 'Unbekannt');
+            if (stammNames.size > 0 && !stammNames.has(name)) continue;
+            if (!byPerson[name]) byPerson[name] = [];
+            byPerson[name].push(ts);
+          }
+          const personCalcs = Object.entries(byPerson).map(([name, sheets]) => {
+            const ps = getPersonSettings ? getPersonSettings(name, activeProj) : settings;
+            const pc = calcTVFFS(sheets, ps);
+            // Find date range
+            let minDate = null, maxDate = null;
+            for (const s of sheets) {
+              for (const d of s.days) {
+                if (!d.datum) continue;
+                const [dd, mm, yy] = d.datum.split('.').map(Number);
+                if (!dd || !mm || !yy) continue;
+                const dt = new Date(yy < 100 ? 2000 + yy : yy, mm - 1, dd);
+                const hrs = Number(d.stundenTotal) || 0;
+                const hasStart = d.start && String(d.start).includes(':');
+                const anm = (d.anmerkungen || '').toLowerCase().trim();
+                const active = hrs > 0 || hasStart || anm.includes('krank') || anm.includes('urlaub') || anm === 'u' || anm.includes('azv');
+                if (active) {
+                  if (!minDate || dt < minDate) minDate = dt;
+                  if (!maxDate || dt > maxDate) maxDate = dt;
+                }
+              }
+            }
+            const fmtDate = (d) => d ? d.toLocaleDateString('de-DE', { day: '2-digit', month: '2-digit', year: 'numeric' }) : '–';
+            return { name, pc, minDate, maxDate, fmtMin: fmtDate(minDate), fmtMax: fmtDate(maxDate) };
+          }).sort((a, b) => (b.pc.totalArbeitstage || 0) - (a.pc.totalArbeitstage || 0));
+
+          const totalVerdienst = personCalcs.reduce((s, p) => s + (p.pc.gesamtVerdienst || 0), 0);
+          const fmtC = (v) => (v || 0).toLocaleString('de-DE', { style: 'currency', currency: 'EUR' });
+
           return (
-            <>
-              <div className="crew-section-hint">
-                Wähle ein Projekt aus, um das Stammteam per Drag & Drop zu verwalten
+            <div className="stats-section final-summary-section">
+              <h3 className="section-title">✅ Finale Abrechnung — {activeProj}</h3>
+              <div className="final-summary-table-wrap">
+                <table className="final-summary-table">
+                  <thead>
+                    <tr>
+                      <th>Person</th>
+                      <th>Anstellungszeitraum</th>
+                      <th className="num">Tage</th>
+                      <th className="num">Arbeitstage</th>
+                      <th className="num">Stunden</th>
+                      <th className="num">Überstunden</th>
+                      <th className="num">Zeitkonto</th>
+                      <th className="num">Urlaub</th>
+                      <th className="num">Grundgage</th>
+                      <th className="num">Zuschläge</th>
+                      <th className="num">Gesamtverdienst</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {personCalcs.map(({ name, pc, fmtMin, fmtMax }) => (
+                      <tr key={name} className="final-summary-row" onClick={() => onPersonFilter && onPersonFilter(name)} style={{ cursor: 'pointer' }}>
+                        <td className="final-summary-name">{name}</td>
+                        <td>{fmtMin} – {fmtMax}</td>
+                        <td className="num">{pc.anstellungstage || '–'}</td>
+                        <td className="num">{pc.totalArbeitstage}</td>
+                        <td className="num">{pc.totalStunden.toLocaleString('de-DE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+                        <td className="num">{pc.totalUeberstunden.toLocaleString('de-DE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+                        <td className="num">{pc.zeitkontoStunden ? pc.zeitkontoStunden.toLocaleString('de-DE', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '–'}</td>
+                        <td className="num">{pc.urlaubstage} / {pc.urlaubstageGenommen}</td>
+                        <td className="num">{fmtC(pc.grundgage)}</td>
+                        <td className="num">{fmtC((pc.totalUeberstundenZuschlag || 0) + (pc.nachtZuschlag || 0) + (pc.samstagZuschlag || 0) + (pc.sonntagZuschlag || 0) + (pc.feiertagZuschlag || 0) + (pc.weeklyOTZuschlag25 || 0) + (pc.weeklyOTZuschlag50 || 0))}</td>
+                        <td className="num final-summary-total">{fmtC(pc.gesamtVerdienst)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+
+                </table>
               </div>
-              <div className="crew-grid">
-                {personStats.map(ps => renderCard(ps, false, null))}
-              </div>
-            </>
+              <p className="final-summary-note">Klick auf eine Person für die detaillierte Einzelansicht. Urlaub: gesammelt / genommen.</p>
+            </div>
           );
         })()}
 
-        {/* Zusatztage */}
-        {zusatztageInfo && zusatztageInfo.zusatzPersonen.length > 0 && (
+        {/* Zusatztage — nur wenn ein Projekt ausgewählt ist */}
+        {projectFilter !== 'all' && zusatztageInfo && zusatztageInfo.zusatzPersonen.length > 0 && (
           <div className="zusatztage-card">
             <div className="zusatztage-header">
               <div className="zusatztage-title">📋 Zusatztage</div>
@@ -992,6 +1171,8 @@ export default function Dashboard({ timesheets, calculations, settings: propSett
   // --- INDIVIDUAL PERSON or single-person view ---
   const personLabel = personFilter !== 'all' ? personFilter : null;
   const showBackToCrew = personLabel && uniquePersons.length > 1;
+  const personHasMultipleProjects = personLabel && projects && projects.length > 1;
+
 
   return (
     <div className="dashboard">
@@ -1008,9 +1189,8 @@ export default function Dashboard({ timesheets, calculations, settings: propSett
           </span>
         </div>
         <div className="dashboard-header-right">
-          {projects && projects.length > 1 && (
+          {personHasMultipleProjects && (
             <select className="project-filter" value={projectFilter} onChange={e => onProjectFilter(e.target.value)}>
-              <option value="all">Alle Projekte</option>
               {projects.map(p => <option key={p} value={p}>{p}</option>)}
             </select>
           )}
@@ -1029,12 +1209,19 @@ export default function Dashboard({ timesheets, calculations, settings: propSett
         </div>
       </div>
 
+      {/* Alles unterhalb nur zeigen wenn Projekt gewählt (oder nur ein Projekt existiert) */}
+      {(<>
+
       {/* Gage Eingabe Bar */}
       <div className="gage-bar">
         <div className="gage-bar-left">
-          {personFilter !== 'all' && (
+          {personFilter !== 'all' && projectFilter !== 'all' ? (
+            <span className="gage-person-label">💰 {personFilter} · 🎬 {projectFilter}</span>
+          ) : personFilter !== 'all' ? (
             <span className="gage-person-label">💰 {personFilter}</span>
-          )}
+          ) : projectFilter !== 'all' ? (
+            <span className="gage-person-label">🎬 {projectFilter}</span>
+          ) : null}
           <div className="gage-type-toggle">
             <button
               className={`toggle-btn ${gageType === 'tag' ? 'active' : ''}`}
@@ -1399,6 +1586,8 @@ export default function Dashboard({ timesheets, calculations, settings: propSett
         </div>
         )}
       </div>
+
+      </>)}
 
       {/* Letzte Einträge */}
       <div className="stats-section">

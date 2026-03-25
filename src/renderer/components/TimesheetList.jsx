@@ -20,7 +20,7 @@ function getSheetNacht(sheet) {
   return sheet.days ? sheet.days.reduce((sum, d) => sum + (Number(d.nacht25) || 0), 0) : 0;
 }
 
-export default function TimesheetList({ timesheets, onViewDetail, onDelete, onBulkDelete, personFilter, resolveName, getBaseProject, onRenameProject }) {
+export default function TimesheetList({ timesheets, onViewDetail, onDelete, onBulkDelete, personFilter, resolveName, getBaseProject, onRenameProject, completedProjects, onToggleProjectComplete }) {
   const [confirmId, setConfirmId] = useState(null);
   const [bulkConfirm, setBulkConfirm] = useState(null);
   const [collapsedPersons, setCollapsedPersons] = useState({});
@@ -242,11 +242,12 @@ export default function TimesheetList({ timesheets, onViewDetail, onDelete, onBu
     const map = {};
     for (const sheet of timesheets) {
       const project = getBaseProject ? getBaseProject(sheet.projekt) : (sheet.projekt || 'Sonstiges');
-      if (!map[project]) map[project] = { name: project, sheets: [], people: new Set(), totalHours: 0, totalOvertime: 0 };
+      if (!map[project]) map[project] = { name: project, sheets: [], people: new Set(), totalHours: 0, totalOvertime: 0, firma: '' };
       map[project].sheets.push(sheet);
       map[project].people.add(resolve(sheet.name || 'Unbekannt'));
       map[project].totalHours += getSheetHours(sheet);
       map[project].totalOvertime += getSheetOvertime(sheet);
+      if (!map[project].firma && sheet.produktionsfirma) map[project].firma = sheet.produktionsfirma;
     }
     return Object.values(map).sort((a, b) => {
       // Sort by most recent sheet date (descending)
@@ -299,10 +300,11 @@ export default function TimesheetList({ timesheets, onViewDetail, onDelete, onBu
             const dateRange = getProjectDateRange(proj.sheets);
             const kwRange = getProjectKWRange(proj.sheets);
             const people = [...proj.people].sort();
+            const isCompleted = !!(completedProjects && completedProjects[proj.name]);
             return (
               <div
                 key={proj.name}
-                className="project-tile"
+                className={`project-tile${isCompleted ? ' project-tile-completed' : ''}`}
                 onClick={() => { if (renamingProject !== proj.name) drillIntoProject(proj.name); }}
                 role="button"
                 tabIndex={0}
@@ -334,7 +336,10 @@ export default function TimesheetList({ timesheets, onViewDetail, onDelete, onBu
                     </form>
                   ) : (
                     <>
-                      <span className="project-tile-name">{proj.name}</span>
+                      <span className="project-tile-name">
+                        {isCompleted && <span className="project-completed-icon" title="Abgeschlossen">✅</span>}
+                        {proj.name}
+                      </span>
                       {onRenameProject && (
                         <button
                           className="project-rename-btn"
@@ -351,28 +356,25 @@ export default function TimesheetList({ timesheets, onViewDetail, onDelete, onBu
                   <span className="project-tile-badge">{proj.sheets.length}</span>
                 </div>
                 <div className="project-tile-meta">
-                  {kwRange && <span className="project-tile-kw">{kwRange}</span>}
+                  {proj.firma && <span className="project-tile-firma">{proj.firma}</span>}
                   {dateRange && <span className="project-tile-dates">{dateRange}</span>}
                 </div>
-                <div className="project-tile-stats">
-                  <div className="project-tile-stat">
-                    <span className="project-tile-stat-value">{proj.totalHours.toFixed(1)}</span>
-                    <span className="project-tile-stat-label">Stunden</span>
+                <div className="project-tile-footer">
+                  <div className="project-tile-people">
+                    {people.slice(0, 5).map(p => (
+                      <span key={p} className="project-tile-avatar" title={p}>{getInitials(p)}</span>
+                    ))}
+                    {people.length > 5 && <span className="project-tile-avatar project-tile-avatar-more">+{people.length - 5}</span>}
                   </div>
-                  <div className="project-tile-stat">
-                    <span className="project-tile-stat-value">{proj.totalOvertime.toFixed(1)}</span>
-                    <span className="project-tile-stat-label">Überstunden</span>
-                  </div>
-                  <div className="project-tile-stat">
-                    <span className="project-tile-stat-value">{proj.sheets.length}</span>
-                    <span className="project-tile-stat-label">Zettel</span>
-                  </div>
-                </div>
-                <div className="project-tile-people">
-                  {people.slice(0, 5).map(p => (
-                    <span key={p} className="project-tile-avatar" title={p}>{getInitials(p)}</span>
-                  ))}
-                  {people.length > 5 && <span className="project-tile-avatar project-tile-avatar-more">+{people.length - 5}</span>}
+                  {onToggleProjectComplete && (
+                    <button
+                      className={`project-complete-btn${isCompleted ? ' project-complete-btn-active' : ''}`}
+                      title={isCompleted ? 'Projekt wieder öffnen' : 'Projekt abschließen'}
+                      onClick={(e) => { e.stopPropagation(); onToggleProjectComplete(proj.name); }}
+                    >
+                      {isCompleted ? '🔓 Öffnen' : '✅ Abschließen'}
+                    </button>
+                  )}
                 </div>
               </div>
             );
@@ -465,6 +467,7 @@ export default function TimesheetList({ timesheets, onViewDetail, onDelete, onBu
             </form>
           ) : (
             <h2 style={{ display: 'inline' }}>
+              {!!(completedProjects && completedProjects[activeProject]) && <span className="project-completed-icon" title="Abgeschlossen">✅</span>}
               {activeProject}
               {onRenameProject && (
                 <button
@@ -477,14 +480,25 @@ export default function TimesheetList({ timesheets, onViewDetail, onDelete, onBu
           )}
           <span className="subtitle">
             {activeSheetCount} Stundenzettel · {personNames.length} {personNames.length === 1 ? 'Person' : 'Personen'}
+            {!!(completedProjects && completedProjects[activeProject]) && <span className="project-completed-badge">Abgeschlossen</span>}
           </span>
         </div>
-        <button className="bulk-delete-btn" onClick={() => {
+        <div className="list-header-actions">
+          {onToggleProjectComplete && (
+            <button
+              className={`project-complete-btn-lg${!!(completedProjects && completedProjects[activeProject]) ? ' project-complete-btn-active' : ''}`}
+              onClick={() => onToggleProjectComplete(activeProject)}
+            >
+              {!!(completedProjects && completedProjects[activeProject]) ? '🔓 Wieder öffnen' : '✅ Projekt abschließen'}
+            </button>
+          )}
+          <button className="bulk-delete-btn" onClick={() => {
           const ids = activeProjectSheets.map(s => s.id);
           setBulkConfirm({ type: 'project', project: activeProject, ids, label: `Alle ${ids.length} Einträge von „${activeProject}"` });
         }} title="Alle Einträge dieses Projekts löschen" aria-label="Alle Einträge dieses Projekts löschen">
           🗑 Alle löschen
         </button>
+        </div>
       </div>
 
       {/* Sort Controls */}
