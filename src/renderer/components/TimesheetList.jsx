@@ -2,6 +2,7 @@ import React, { useState, useMemo, useCallback, useEffect } from 'react';
 import { getTimesheetKW, getTimesheetYear, formatKW } from '../utils/calendarWeek';
 import { generateTimesheetHTML } from '../utils/pdfExport';
 import { getInitials } from '../utils/helpers';
+import { sendTimesheetToStdWeb } from '../utils/stdweb';
 
 /* Hash → Projektfarbe (konsistent mit Sidebar) */
 const PROJECT_PALETTE = ['#5159E8','#1FB97A','#E0A82E','#E83A3A','#06B6D4','#8B5CF6','#EC4899','#14B8A6','#F97316'];
@@ -31,6 +32,18 @@ function getSheetNacht(sheet) {
 export default function TimesheetList({ timesheets, onViewDetail, onDelete, onBulkDelete, personFilter, resolveName, getBaseProject, onRenameProject, completedProjects, onToggleProjectComplete, projectCrews }) {
   const [confirmId, setConfirmId] = useState(null);
   const [bulkConfirm, setBulkConfirm] = useState(null);
+  const [stdwebMsg, setStdwebMsg] = useState('');
+
+  const handleSendStdWeb = useCallback(async (sheet, e) => {
+    if (e) e.stopPropagation();
+    setStdwebMsg('Übertrage an StdWeb…');
+    try {
+      const res = await sendTimesheetToStdWeb(sheet);
+      setStdwebMsg(res.message);
+    } catch (err) {
+      setStdwebMsg('Fehler bei der StdWeb-Übertragung.');
+    }
+  }, []);
   const [collapsedPersons, setCollapsedPersons] = useState({});
   const [sortBy, setSortBy] = useState('date'); // 'date' | 'name' | 'kw' | 'projekt'
   const [sortDir, setSortDir] = useState('desc'); // 'asc' | 'desc'
@@ -500,6 +513,11 @@ export default function TimesheetList({ timesheets, onViewDetail, onDelete, onBu
 
   return (
     <div className="timesheet-list" role="region" aria-label="Stundenzettel-Liste">
+      {stdwebMsg && (
+        <div className="stdweb-banner" onClick={() => setStdwebMsg('')} title="Ausblenden">
+          {stdwebMsg}
+        </div>
+      )}
       <div className="list-header">
         <div>
           <button className="back-to-projects-btn" onClick={() => { setActiveProject(null); setSelectedIds(new Set()); setKwFilter(''); setRenamingProject(null); }}>
@@ -714,6 +732,13 @@ export default function TimesheetList({ timesheets, onViewDetail, onDelete, onBu
                           {ot > 0 && <div className="v3-sheet-ot">+{ot.toFixed(1)} ÜS</div>}
                         </div>
                         <div style={{ display: 'flex', gap: 4 }} onClick={e => e.stopPropagation()}>
+                          <button
+                            className="icon-btn"
+                            onClick={(e) => handleSendStdWeb(sheet, e)}
+                            title="An StdWeb vorausfüllen (sendet nicht ab)"
+                          >
+                            📤
+                          </button>
                           <button
                             className="icon-btn"
                             onClick={(e) => handleExportSinglePDF(sheet, e)}

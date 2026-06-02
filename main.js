@@ -5,7 +5,7 @@ const { parsePDF } = require('./src/main/pdfParser');
 const { loadData, saveData, createBackup, restoreBackup, listBackups, exportData, importData } = require('./src/main/storage');
 const { extractDispoAddresses } = require('./src/main/dispoText');
 const { computeDistance } = require('./src/main/geo');
-const { buildStdWebFillScript, buildStdWebDiagnoseScript } = require('./src/main/stdwebFill');
+const { buildStdWebFillScript, buildStdWebDiagnoseScript, buildStdWebNavigateScript } = require('./src/main/stdwebFill');
 
 // Auto-updater
 let autoUpdater = null;
@@ -1028,6 +1028,29 @@ ipcMain.handle('stdweb-fill', async (event, days) => {
     const script = buildStdWebFillScript(days);
     const report = await stdwebWindow.webContents.executeJavaScript(script, true);
     return { success: true, report };
+  } catch (e) {
+    return { success: false, error: e.message };
+  }
+});
+
+// Steuert in StdWeb die Woche mit dem gegebenen Montag-Datum an (wählt/erstellt).
+ipcMain.handle('stdweb-navigate', async (event, mondayDate) => {
+  try {
+    if (!stdwebWindow || stdwebWindow.isDestroyed()) return { success: false, error: 'StdWeb-Fenster ist nicht offen' };
+    const report = await stdwebWindow.webContents.executeJavaScript(buildStdWebNavigateScript(mondayDate), true);
+    return { success: true, report };
+  } catch (e) {
+    return { success: false, error: e.message };
+  }
+});
+
+// Liest die aktuell im StdWeb-Fenster geöffnete Woche (Label "KW XX / JJJJ …").
+ipcMain.handle('stdweb-weekinfo', async () => {
+  try {
+    if (!stdwebWindow || stdwebWindow.isDestroyed()) return { success: false, error: 'StdWeb-Fenster ist nicht offen' };
+    const label = await stdwebWindow.webContents.executeJavaScript(
+      "(function(){var el=document.getElementById('LABELZEITRAUMTEXT_FRAME');return el?(el.textContent||'').trim():'';})()", true);
+    return { success: true, label };
   } catch (e) {
     return { success: false, error: e.message };
   }

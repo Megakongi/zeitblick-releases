@@ -187,4 +187,73 @@ function buildStdWebDiagnoseScript() {
   })();`;
 }
 
-module.exports = { buildStdWebFillScript, buildStdWebDiagnoseScript };
+/**
+ * Steuert in StdWeb die Woche an, deren Montag = `mondayDate` ("DD.MM.YYYY").
+ * Wählt eine vorhandene Woche aus der linken Liste (BROWSE_FRAME) oder legt
+ * sie über „Neu" (BTNNEU → KW-Dialog BROWSE_KWAUSWAHL → OK) an.
+ * Gibt einen Report mit den gelesenen Grid-Zeilen zurück (auch fürs Debugging).
+ */
+function buildStdWebNavigateScript(mondayDate) {
+  const target = JSON.stringify(String(mondayDate || ''));
+  return `(async () => {
+    const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+    const until = async (fn, t = 6000, s = 120) => { const t0 = Date.now(); while (Date.now()-t0 < t) { try { if (fn()) return true; } catch(_){} await sleep(s); } return false; };
+    const target = ${target};
+    const rep = { target, prereq: {}, browseRows: [], kwRows: [], action: '', ok: false, note: '' };
+
+    rep.prereq = {
+      executeAjaxEvent: typeof window.executeAjaxEvent,
+      CGSetHiddenInputVal: typeof window.CGSetHiddenInputVal,
+      BROWSE_FRAMEIWCL: typeof window.BROWSE_FRAMEIWCL,
+      BTNNEU_FRAMEIWCL: typeof window.BTNNEU_FRAMEIWCL,
+    };
+    if (typeof window.executeAjaxEvent !== 'function' || typeof window.CGSetHiddenInputVal !== 'function') {
+      rep.note = 'Seiten-Funktionen fehlen – eingeloggt & Woche offen?'; return rep;
+    }
+    if (!target) { rep.note = 'Kein Zieldatum'; return rep; }
+
+    // Liest die Datenzeilen eines jqGrids: [{id, cells:[...]}]
+    function readRows(containerId) {
+      const c = document.getElementById(containerId);
+      if (!c) return [];
+      return Array.from(c.querySelectorAll('tr.jqgrow'))
+        .filter(tr => tr.id)
+        .map(tr => ({ id: tr.id, cells: Array.from(tr.querySelectorAll('td')).map(td => (td.textContent || '').trim()).filter(Boolean) }));
+    }
+    const rowMatches = (row) => row.cells.some(c => c === target);
+
+    // 1) Vorhandene Woche in der linken Liste?
+    rep.browseRows = readRows('BROWSE_FRAME');
+    let hit = rep.browseRows.find(rowMatches);
+    if (hit) {
+      window.CGSetHiddenInputVal('BROWSE_FRAME_SELROW', hit.id);
+      window.executeAjaxEvent('&ajaxevent=JQGridOptions.OnSelectRow', window.BROWSE_FRAMEIWCL, 'BROWSE_FRAME.DoAjaxRequest', true, null, true);
+      await sleep(1200);
+      rep.action = 'selected-existing'; rep.ok = true; rep.note = 'Vorhandene Woche gewählt (' + hit.id + ')';
+      return rep;
+    }
+
+    // 2) Neue Woche anlegen
+    if (typeof window.BTNNEU_FRAMEIWCL === 'undefined') { rep.note = 'BTNNEU_FRAMEIWCL fehlt'; return rep; }
+    window.executeAjaxEvent('&ajaxevent=JQButtonOptions.OnClick', window.BTNNEU_FRAMEIWCL, 'BTNNEU_FRAME.DoAjaxRequest', true, null, true);
+    await until(() => readRows('BROWSE_KWAUSWAHL').length > 0, 6000);
+    await sleep(400);
+    rep.kwRows = readRows('BROWSE_KWAUSWAHL');
+    hit = rep.kwRows.find(rowMatches);
+    if (!hit) { rep.action = 'kw-not-available'; rep.note = 'KW nicht im Dialog (zu alt/zu weit in der Zukunft?)'; return rep; }
+
+    window.CGSetHiddenInputVal('BROWSE_KWAUSWAHL_SELROW', hit.id);
+    const kwIWCL = window['BROWSE_KWAUSWAHLIWCL'];
+    if (typeof kwIWCL === 'undefined') { rep.note = 'BROWSE_KWAUSWAHLIWCL fehlt'; return rep; }
+    window.executeAjaxEvent('&ajaxevent=JQGridOptions.OnSelectRow', kwIWCL, 'BROWSE_KWAUSWAHL.DoAjaxRequest', true, null, true);
+    await sleep(700);
+    const dlgIWCL = window['IWFRAMEREGION_KWAUSWAHLIWCL'];
+    if (typeof dlgIWCL === 'undefined') { rep.note = 'IWFRAMEREGION_KWAUSWAHLIWCL fehlt'; return rep; }
+    window.executeAjaxEvent('&ajaxevent=JQDialogOptions.Buttons.Items[1].OnClick', dlgIWCL, 'IWFRAMEREGION_KWAUSWAHL.DoAjaxRequest', true, null, true);
+    await sleep(1400);
+    rep.action = 'created'; rep.ok = true; rep.note = 'Neue Woche angelegt (' + hit.id + ')';
+    return rep;
+  })();`;
+}
+
+module.exports = { buildStdWebFillScript, buildStdWebDiagnoseScript, buildStdWebNavigateScript };

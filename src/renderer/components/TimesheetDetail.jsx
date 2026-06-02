@@ -1,6 +1,7 @@
-import React, { useMemo } from 'react';
+import React, { useMemo, useState } from 'react';
 import { calculateSheetTVFFS } from '../utils/tvffsCalculator';
 import { isHoliday } from '../utils/holidays';
+import { sendTimesheetToStdWeb } from '../utils/stdweb';
 
 /* Hilfsfunktion: Initialen aus Name */
 function getInitials(name = '') {
@@ -37,6 +38,19 @@ function dayLabel(datum = '') {
 export default function TimesheetDetail({ sheet, settings, onBack, onEdit, allTimesheets, onSelectSheet }) {
   const calc = calculateSheetTVFFS(sheet, settings);
   const hasGage = settings.tagesgage > 0;
+  const [stdwebSending, setStdwebSending] = useState(false);
+  const [stdwebMsg, setStdwebMsg] = useState('');
+
+  const handleSendStdWeb = async () => {
+    setStdwebSending(true);
+    setStdwebMsg('');
+    try {
+      const res = await sendTimesheetToStdWeb(sheet);
+      setStdwebMsg(res.message);
+    } finally {
+      setStdwebSending(false);
+    }
+  };
 
   /* Vorheriger / nächster Zettel derselben Person */
   const { prevSheet, nextSheet } = useMemo(() => {
@@ -121,8 +135,17 @@ export default function TimesheetDetail({ sheet, settings, onBack, onEdit, allTi
                 Bearbeiten
               </button>
             )}
+            <button className="btn-secondary" onClick={handleSendStdWeb} disabled={stdwebSending} title="Stunden ins offene StdWeb-Fenster vorausfüllen (sendet nicht ab)">
+              📤 {stdwebSending ? 'Sende…' : 'An StdWeb'}
+            </button>
           </div>
         </div>
+
+        {stdwebMsg && (
+          <div className="stdweb-banner" onClick={() => setStdwebMsg('')} title="Ausblenden">
+            {stdwebMsg}
+          </div>
+        )}
 
         {/* KPI-Zeile */}
         <div className="v3-detail-kpis">

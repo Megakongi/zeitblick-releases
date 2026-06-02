@@ -10551,6 +10551,13 @@ tr:hover .row-actions { opacity: 1; }
 .shortcut-name { font-weight: 700; font-size: 14px; }
 .shortcut-desc { font-size: 12px; color: var(--text-secondary); margin-top: 2px; }
 .shortcut-actions { display: flex; gap: 8px; flex-shrink: 0; }
+
+/* StdWeb-Übertragungs-Banner (Feedback nach „An StdWeb") */
+.stdweb-banner {
+  margin: 0 0 12px; padding: 10px 14px; border-radius: 9px;
+  background: rgba(20,184,166,0.12); border: 1px solid rgba(20,184,166,0.4);
+  color: var(--text-primary); font-size: 13px; cursor: pointer;
+}
 @media (max-width: 640px) {
   .shortcut-row { flex-wrap: wrap; }
   .shortcut-actions { width: 100%; }

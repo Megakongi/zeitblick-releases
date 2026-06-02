@@ -157,6 +157,20 @@ function StdWebTestCard() {
   const [status, setStatus] = useState('');
   const [output, setOutput] = useState('');
   const [busy, setBusy] = useState(false);
+  const [navDate, setNavDate] = useState('01.06.2026');
+
+  const navigate = async () => {
+    if (!window.electronAPI || !window.electronAPI.navigateStdWeb) return;
+    setBusy(true);
+    setStatus(`Steuere Woche an (Montag ${navDate})…`);
+    try {
+      const res = await window.electronAPI.navigateStdWeb(navDate);
+      setStatus(res && res.success ? 'Navigation ausgeführt.' : `Fehler: ${res && res.error}`);
+      setOutput(JSON.stringify(res && res.report, null, 2));
+    } finally {
+      setBusy(false);
+    }
+  };
 
   const open = async () => {
     if (!window.electronAPI || !window.electronAPI.openStdWeb) return;
@@ -201,6 +215,11 @@ function StdWebTestCard() {
         <button className="backup-btn" onClick={open}>🌐 StdWeb öffnen</button>
         <button className="backup-btn" onClick={diagnose} disabled={busy}>🔍 Diagnose (Montag-Feld)</button>
         <button className="backup-btn" onClick={fillTest} disabled={busy}>🧪 Test-Tag füllen (Mo)</button>
+      </div>
+      <div className="backup-actions" style={{ marginTop: 8, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+        <span style={{ fontSize: 12, color: 'var(--muted)' }}>Montag-Datum:</span>
+        <input type="text" value={navDate} onChange={e => setNavDate(e.target.value)} placeholder="DD.MM.YYYY" style={{ width: 110, padding: '5px 8px', borderRadius: 7, border: '1px solid var(--border)' }} />
+        <button className="backup-btn" onClick={navigate} disabled={busy}>🗓️ Woche ansteuern</button>
       </div>
       {status && <p className="settings-description" style={{ marginTop: 8, wordBreak: 'break-word' }}>{status}</p>}
       {output && (

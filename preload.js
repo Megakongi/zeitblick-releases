@@ -40,6 +40,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   openStdWeb: () => ipcRenderer.invoke('stdweb-open'),
   fillStdWeb: (days) => ipcRenderer.invoke('stdweb-fill', days),
   diagnoseStdWeb: () => ipcRenderer.invoke('stdweb-diagnose'),
+  stdwebWeekInfo: () => ipcRenderer.invoke('stdweb-weekinfo'),
+  navigateStdWeb: (mondayDate) => ipcRenderer.invoke('stdweb-navigate', mondayDate),
   onN8NChanged: (callback) => {
     const handler = (_event, data) => callback(data);
     ipcRenderer.on('n8n-files-changed', handler);
