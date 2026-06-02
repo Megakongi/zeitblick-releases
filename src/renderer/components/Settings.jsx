@@ -149,6 +149,72 @@ function AppleShortcutsCard() {
   );
 }
 
+/**
+ * StdWeb-Test (Stufe 1): öffnet das eingebettete StdWeb-Fenster und füllt
+ * testweise einen Tag, um die Klick-Choreografie live zu prüfen.
+ */
+function StdWebTestCard() {
+  const [status, setStatus] = useState('');
+  const [output, setOutput] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  const open = async () => {
+    if (!window.electronAPI || !window.electronAPI.openStdWeb) return;
+    setStatus('Öffne StdWeb…');
+    const res = await window.electronAPI.openStdWeb();
+    setStatus(res && res.success ? 'StdWeb geöffnet – bitte einloggen und eine leere Woche öffnen.' : `Fehler: ${res && res.error}`);
+  };
+
+  const fillTest = async () => {
+    if (!window.electronAPI || !window.electronAPI.fillStdWeb) return;
+    setBusy(true);
+    setStatus('Fülle Test-Tag (Mo 09:00–18:00, Pause 00:45)…');
+    try {
+      const res = await window.electronAPI.fillStdWeb([{ tag: 1, von: '09:00', bis: '18:00', pause: '00:45' }]);
+      setStatus(res && res.success ? 'Test ausgeführt.' : `Fehler: ${res && res.error}`);
+      setOutput(JSON.stringify(res && res.report, null, 2));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const diagnose = async () => {
+    if (!window.electronAPI || !window.electronAPI.diagnoseStdWeb) return;
+    setBusy(true);
+    setStatus('Diagnose läuft (klickt das „von"-Feld von Montag)…');
+    try {
+      const res = await window.electronAPI.diagnoseStdWeb();
+      setStatus(res && res.success ? 'Diagnose fertig – bitte den Text unten kopieren und mir schicken.' : `Fehler: ${res && res.error}`);
+      setOutput(JSON.stringify(res && res.info, null, 2));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="settings-card">
+      <h3>📤 StdWeb-Übertragung <span style={{ fontSize: 12, color: 'var(--muted)', fontWeight: 400 }}>(Test)</span></h3>
+      <p className="settings-description">
+        Experimentell: ZeitBlick öffnet StdWeb in einem Fenster und füllt die Stunden über die echte Oberfläche vor (sendet <strong>nicht</strong> ab – „Beantragen" klickst du selbst). Erst <strong>StdWeb öffnen</strong>, dort einloggen und eine <strong>leere</strong> Woche öffnen, dann Diagnose/Test starten.
+      </p>
+      <div className="backup-actions" style={{ marginTop: 12, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+        <button className="backup-btn" onClick={open}>🌐 StdWeb öffnen</button>
+        <button className="backup-btn" onClick={diagnose} disabled={busy}>🔍 Diagnose (Montag-Feld)</button>
+        <button className="backup-btn" onClick={fillTest} disabled={busy}>🧪 Test-Tag füllen (Mo)</button>
+      </div>
+      {status && <p className="settings-description" style={{ marginTop: 8, wordBreak: 'break-word' }}>{status}</p>}
+      {output && (
+        <textarea
+          readOnly
+          value={output}
+          onFocus={e => e.target.select()}
+          style={{ marginTop: 8, width: '100%', minHeight: 180, fontFamily: 'ui-monospace, Menlo, monospace', fontSize: 11, whiteSpace: 'pre', overflow: 'auto' }}
+        />
+      )}
+    </div>
+  );
+}
+
 export default function Settings({ settings, onSave, timesheets, setTimesheets, onSyncN8N, onRestartTour }) {
   const [newPosition, setNewPosition] = useState('');
   const [newPositionGage, setNewPositionGage] = useState('');
@@ -388,6 +454,8 @@ export default function Settings({ settings, onSave, timesheets, setTimesheets, 
         <N8NSetupGuide folder={n8nFolderInput || n8nDefaultFolder} />
 
         <AppleShortcutsCard />
+
+        <StdWebTestCard />
       </div>
       )}
       {settingsTab === 'projekte' && (

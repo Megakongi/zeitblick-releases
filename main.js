@@ -5,6 +5,7 @@ const { parsePDF } = require('./src/main/pdfParser');
 const { loadData, saveData, createBackup, restoreBackup, listBackups, exportData, importData } = require('./src/main/storage');
 const { extractDispoAddresses } = require('./src/main/dispoText');
 const { computeDistance } = require('./src/main/geo');
+const { buildStdWebFillScript, buildStdWebDiagnoseScript } = require('./src/main/stdwebFill');
 
 // Auto-updater
 let autoUpdater = null;
@@ -994,6 +995,50 @@ ipcMain.handle('dispo-reveal', async (event, folder, filename) => {
     const err = await shell.openPath(root);
     if (err) return { success: false, error: err };
     return { success: true, path: root, fallback: true };
+  } catch (e) {
+    return { success: false, error: e.message };
+  }
+});
+
+// ===== StdWeb (Sesam) – Vorausfüllen über eingebettetes Fenster =====
+const STDWEB_URL = 'https://www.sesam-software-gmbh.de/isapi/StdWebMiete.dll/';
+let stdwebWindow = null;
+
+// Öffnet (oder fokussiert) das StdWeb-Fenster. Login macht der Nutzer selbst.
+ipcMain.handle('stdweb-open', async () => {
+  try {
+    if (stdwebWindow && !stdwebWindow.isDestroyed()) { stdwebWindow.focus(); return { success: true }; }
+    stdwebWindow = new BrowserWindow({
+      width: 1280, height: 860, title: 'StdWeb – Sesam',
+      webPreferences: { contextIsolation: true, nodeIntegration: false },
+    });
+    stdwebWindow.on('closed', () => { stdwebWindow = null; });
+    await stdwebWindow.loadURL(STDWEB_URL);
+    return { success: true };
+  } catch (e) {
+    return { success: false, error: e.message };
+  }
+});
+
+// Füllt die aktuell im StdWeb-Fenster geöffnete Woche mit den übergebenen Tagen.
+// days: [{ tag:1..7, von, bis, pause }] als "HH:MM". Sendet NICHT ab.
+ipcMain.handle('stdweb-fill', async (event, days) => {
+  try {
+    if (!stdwebWindow || stdwebWindow.isDestroyed()) return { success: false, error: 'StdWeb-Fenster ist nicht offen' };
+    const script = buildStdWebFillScript(days);
+    const report = await stdwebWindow.webContents.executeJavaScript(script, true);
+    return { success: true, report };
+  } catch (e) {
+    return { success: false, error: e.message };
+  }
+});
+
+// Diagnose: meldet die echte Picker-Struktur zurück (zum Verstehen der UI).
+ipcMain.handle('stdweb-diagnose', async () => {
+  try {
+    if (!stdwebWindow || stdwebWindow.isDestroyed()) return { success: false, error: 'StdWeb-Fenster ist nicht offen' };
+    const info = await stdwebWindow.webContents.executeJavaScript(buildStdWebDiagnoseScript(), true);
+    return { success: true, info };
   } catch (e) {
     return { success: false, error: e.message };
   }

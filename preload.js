@@ -36,6 +36,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
   openDispoFolder: (folder) => ipcRenderer.invoke('dispo-open-folder', folder),
   revealDispo: (folder, filename) => ipcRenderer.invoke('dispo-reveal', folder, filename),
   openExternal: (url) => ipcRenderer.invoke('open-external', url),
+  // StdWeb (Sesam) – Vorausfüllen
+  openStdWeb: () => ipcRenderer.invoke('stdweb-open'),
+  fillStdWeb: (days) => ipcRenderer.invoke('stdweb-fill', days),
+  diagnoseStdWeb: () => ipcRenderer.invoke('stdweb-diagnose'),
   onN8NChanged: (callback) => {
     const handler = (_event, data) => callback(data);
     ipcRenderer.on('n8n-files-changed', handler);
