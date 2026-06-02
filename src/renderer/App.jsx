@@ -1,13 +1,20 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo, Component } from 'react';
 import Sidebar from './components/Sidebar';
+import Topbar from './components/Topbar';
+import FilterSidebar from './components/FilterSidebar';
+import FilterChips from './components/FilterChips';
 import Dashboard from './components/Dashboard';
 import TimesheetList from './components/TimesheetList';
 import TimesheetDetail from './components/TimesheetDetail';
 import TimesheetCreate from './components/TimesheetCreate';
 import Settings from './components/Settings';
+import TeamManager from './components/TeamManager';
+import Dispos from './components/Dispos';
 import ImportOverlay from './components/ImportOverlay';
 import OnboardingTour from './components/OnboardingTour';
 import UpdateOverlay from './components/UpdateOverlay';
+import N8NImportOverlay from './components/N8NImportOverlay';
+import { processN8N, applyDeviation, applySubstitution } from './utils/n8nImport';
 import { calculateTVFFS } from './utils/tvffsCalculator';
 import { getTimesheetKW } from './utils/calendarWeek';
 import { FilterContext, SettingsContext } from './contexts';
@@ -50,13 +57,14 @@ class SectionErrorBoundary extends Component {
   }
   componentDidCatch(error, info) {
     console.error(`SectionErrorBoundary [${this.props.label || '?'}]:`, error, info.componentStack);
+
   }
   render() {
     if (this.state.hasError) {
       return (
         <div style={{ padding: 32, textAlign: 'center', color: 'var(--text-secondary, #888)' }}>
-          <p style={{ fontSize: 15, marginBottom: 8 }}>Fehler in {this.props.label || 'diesem Bereich'}</p>
-          <pre style={{ whiteSpace: 'pre-wrap', fontSize: 12, color: '#ff6666', marginBottom: 12 }}>{this.state.error?.message}</pre>
+          <p style={{ fontSize: 15, marginBottom: 8, color: '#ff6666', fontWeight: 600 }}>⚠ Fehler in {this.props.label || 'diesem Bereich'}</p>
+          <pre style={{ whiteSpace: 'pre-wrap', fontSize: 12, color: '#ff6666', marginBottom: 12, background: 'rgba(255,0,0,.05)', padding: 12, borderRadius: 8, textAlign: 'left', maxHeight: 200, overflow: 'auto' }}>{this.state.error?.stack || this.state.error?.message}</pre>
           <button onClick={() => this.setState({ hasError: false, error: null })} style={{ padding: '6px 14px', cursor: 'pointer' }}>
             Erneut versuchen
           </button>
@@ -82,12 +90,13 @@ export default function App() {
   const [view, setView] = useState('dashboard');
   const [timesheets, setTimesheets] = useState([]);
   const [selectedSheet, setSelectedSheet] = useState(null);
-  const [settings, setSettings] = useState({ tagesgage: 0, gageType: 'tag', zeitkonto: false, theme: 'light', spesen: [], personGagen: {}, positionGagen: {}, nameAliases: {}, crews: {}, projectCrews: {}, projects: {} });
+  const [settings, setSettings] = useState({ tagesgage: 0, gageType: 'tag', zeitkonto: false, theme: 'light', spesen: [], personGagen: {}, positionGagen: {}, nameAliases: {}, team: [], projectStaffing: {}, projects: {}, projectCrews: {}, calendarEntries: {}, n8nFolder: '', n8nEnabled: false, dispos: [], kmRate: 0.30, kmRoundTrip: false });
   const [isImporting, setIsImporting] = useState(false);
   const [isDragOver, setIsDragOver] = useState(false);
   const [importMessage, setImportMessage] = useState(null);
   const [projectFilter, setProjectFilter] = useState('all');
   const [personFilter, setPersonFilter] = useState('all');
+  const [timeFilter, setTimeFilter] = useState('all');
   const [searchQuery, setSearchQuery] = useState('');
   const [searchOpen, setSearchOpen] = useState(false);
   const searchInputRef = useRef(null);
@@ -97,11 +106,14 @@ export default function App() {
   const dragCounter = useRef(0);
   const saveTimeout = useRef(null);
   const dataLoaded = useRef(false);
+  const [n8nOverlay, setN8nOverlay] = useState(null); // { sheets, deviations, unknownNames, files, folder }
+  const n8nRunning = useRef(false);
 
   // Load data on startup
   useEffect(() => {
     async function load() {
       const data = await window.electronAPI.loadData();
+      console.log('[ZeitBlick] Loaded data:', data.timesheets?.length, 'timesheets,', data._loadError ? 'ERROR: ' + data._loadError : 'OK');
       if (data.timesheets) {
         // Migrate stored timesheets: fix totals and project names
         let migrated = false;
@@ -173,7 +185,9 @@ export default function App() {
       }
       dataLoaded.current = true;
     }
-    load();
+    load().catch(err => {
+      console.error('[ZeitBlick] load() failed:', err);
+    });
   }, []);
 
   // Debounced save — waits 500ms after last change before saving
@@ -252,20 +266,20 @@ export default function App() {
       
       // Show import result message (including failed filenames)
       const parts = [];
-      if (added > 0) parts.push(`${added} importiert`);
+      if (added > 0) parts.push(`${added} Stundenzettel importiert`);
       if (duplicates > 0) parts.push(`${duplicates} Duplikat${duplicates > 1 ? 'e' : ''} übersprungen`);
       if (errors.length > 0) {
         const failedNames = errors.map(e => e.filePath ? e.filePath.split('/').pop().split('\\').pop() : '?').join(', ');
-        parts.push(`${errors.length} fehlgeschlagen: ${failedNames}`);
+        parts.push(`${errors.length} konnte${errors.length > 1 ? 'n' : ''} nicht gelesen werden: ${failedNames}`);
       }
       if (parts.length > 0) {
-        setImportMessage(parts.join(', '));
-        setTimeout(() => setImportMessage(null), 4000);
+        setImportMessage(parts.join('. '));
+        setTimeout(() => setImportMessage(null), 6000);
       }
     } catch (error) {
       console.error('Import failed:', error);
-      setImportMessage('Import fehlgeschlagen');
-      setTimeout(() => setImportMessage(null), 4000);
+      setImportMessage('Import abgebrochen — keine Datei konnte gelesen werden.');
+      setTimeout(() => setImportMessage(null), 6000);
     }
     setIsImporting(false);
   }, [timesheets]);
@@ -289,6 +303,58 @@ export default function App() {
       }
       return prev;
     });
+  }, [getBaseProject]);
+
+  // Projekte zusammenführen: alle Zettel/Crews/Einstellungen von source → target, source entfernen
+  const handleMergeProjects = useCallback((sourceName, targetName) => {
+    if (!sourceName || !targetName || sourceName === targetName) return;
+    setTimesheets(prev => prev.map(t => {
+      const base = getBaseProject ? getBaseProject(t.projekt) : (t.projekt || 'Sonstiges');
+      return base === sourceName ? { ...t, projekt: targetName } : t;
+    }));
+    setProjectFilter(prev => prev === sourceName ? targetName : prev);
+    setSettings(prev => {
+      const next = { ...prev };
+      // projects: source entfernen, fehlende Felder ggf. an target übernehmen
+      const projs = { ...(prev.projects || {}) };
+      if (projs[sourceName]) {
+        const src = projs[sourceName];
+        const tgt = { ...(projs[targetName] || {}) };
+        for (const k of ['kuerzel', 'projektnummer', 'produktionsfirma', 'drehStartDatum']) {
+          if (!tgt[k] && src[k]) tgt[k] = src[k];
+        }
+        projs[targetName] = tgt;
+        delete projs[sourceName];
+        next.projects = projs;
+      }
+      // projectCrews: zusammenführen (Union, target-Reihenfolge zuerst)
+      const crews = { ...(prev.projectCrews || {}) };
+      if (crews[sourceName]) {
+        const merged = [...(crews[targetName] || [])];
+        for (const n of crews[sourceName]) if (!merged.some(m => m.toLowerCase() === n.toLowerCase())) merged.push(n);
+        crews[targetName] = merged;
+        delete crews[sourceName];
+        next.projectCrews = crews;
+      }
+      // completedProjects: source-Key entfernen
+      const cp = { ...(prev.completedProjects || {}) };
+      if (cp[sourceName]) { delete cp[sourceName]; next.completedProjects = cp; }
+      // personProjectGagen: source-Einträge auf target verschieben (falls target noch leer)
+      const ppg = { ...(prev.personProjectGagen || {}) };
+      let ppgChanged = false;
+      for (const person of Object.keys(ppg)) {
+        if (ppg[person] && ppg[person][sourceName]) {
+          ppg[person] = { ...ppg[person] };
+          if (!ppg[person][targetName]) ppg[person][targetName] = ppg[person][sourceName];
+          delete ppg[person][sourceName];
+          ppgChanged = true;
+        }
+      }
+      if (ppgChanged) next.personProjectGagen = ppg;
+      return next;
+    });
+    setImportMessage(`Projekt „${sourceName}" mit „${targetName}" zusammengeführt`);
+    setTimeout(() => setImportMessage(null), 5000);
   }, [getBaseProject]);
 
   const handleToggleProjectComplete = useCallback((projectName) => {
@@ -454,6 +520,140 @@ export default function App() {
     return nameAliases[name] || name;
   }, [nameAliases]);
 
+  // ===== n8n Import =====
+  const runN8NImport = useCallback(async () => {
+    if (n8nRunning.current) return;
+    if (!window.electronAPI || !window.electronAPI.scanN8N) return;
+    n8nRunning.current = true;
+    try {
+      const folder = settings.n8nFolder || (window.electronAPI.getDefaultN8NFolder ? await window.electronAPI.getDefaultN8NFolder() : '');
+      const res = await window.electronAPI.scanN8N(folder);
+      if (!res || !res.success || !res.entries || res.entries.length === 0) { n8nRunning.current = false; return; }
+      const { sheets, deviations, substitutions, unknownNames, newProjects, calendarAdds } = processN8N(res.entries, {
+        resolveName,
+        projectCrews: settings.projectCrews || {},
+        team: settings.team || [],
+        projects: settings.projects || {},
+        calendarEntries: settings.calendarEntries || {},
+      });
+      const files = res.entries.map(e => e.file);
+      const needsOverlay = sheets.length > 0 || deviations.length > 0 || substitutions.length > 0 || unknownNames.length > 0 || newProjects.length > 0;
+      if (!needsOverlay) {
+        // Nur Kalender-Einträge (Zusatz/Vertretung) → direkt einpflegen, ohne Dialog
+        if (calendarAdds && calendarAdds.length) writeCalendarAdds(calendarAdds);
+        await window.electronAPI.archiveN8N(folder, files);
+        n8nRunning.current = false;
+        return;
+      }
+      setN8nOverlay({ sheets, deviations, substitutions, unknownNames, newProjects, calendarAdds, files, folder });
+    } catch (e) {
+      console.error('[n8n] import failed:', e);
+      n8nRunning.current = false;
+    }
+  }, [settings.n8nFolder, settings.projectCrews, settings.team, settings.projects, resolveName]);
+
+  // Schreibt Kalender-Einträge (Zusatz/Vertretung) in settings.calendarEntries
+  const writeCalendarAdds = useCallback((calendarAdds) => {
+    if (!calendarAdds || !calendarAdds.length) return;
+    const genId = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+    setSettings(prev => {
+      const cal = { ...(prev.calendarEntries || {}) };
+      for (const a of calendarAdds) {
+        const list = cal[a.dateISO] ? [...cal[a.dateISO]] : [];
+        const existing = list.find(e => e.name === a.name && (e.projekt || '') === (a.projekt || ''));
+        if (existing) {
+          if (a.kind === 'vertretung' && existing.kind !== 'vertretung') existing.kind = 'vertretung';
+        } else {
+          list.push({ id: genId(), memberId: '', name: a.name, position: a.position || '', projekt: a.projekt || '', kind: a.kind || 'zusatz', source: 'n8n' });
+        }
+        cal[a.dateISO] = list;
+      }
+      return { ...prev, calendarEntries: cal };
+    });
+  }, []);
+
+  const finalizeN8N = useCallback(({ devChoices, subChoices, newPeople, projectData }) => {
+    setN8nOverlay(current => {
+      if (!current) return null;
+      const { sheets, deviations, substitutions, files, folder, calendarAdds } = current;
+      const cloned = sheets.map(s => ({ ...s, days: s.days.map(d => ({ ...d })), totals: { ...s.totals } }));
+      for (const dev of deviations) {
+        const chosen = devChoices[dev.id];
+        if (chosen) applyDeviation(cloned, dev, chosen);
+      }
+      for (const sub of (substitutions || [])) {
+        const choice = subChoices && subChoices[sub.id];
+        if (choice) applySubstitution(cloned, sub, choice);
+      }
+      const hasCal = calendarAdds && calendarAdds.length;
+      if ((newPeople && newPeople.length) || (projectData && Object.keys(projectData).length) || hasCal) {
+        const genId = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+        setSettings(prev => {
+          const next = { ...prev };
+          if (newPeople && newPeople.length) {
+            next.team = [...(prev.team || []), ...newPeople.map(p => ({
+              id: genId(), name: p.name, position: p.position || '', email: p.email || '',
+              phone: p.phone || '', spezials: p.spezials || '', notizen: '',
+            }))];
+          }
+          if (projectData && Object.keys(projectData).length) {
+            const projs = { ...(prev.projects || {}) };
+            for (const [pName, pData] of Object.entries(projectData)) {
+              projs[pName] = { ...(projs[pName] || {}), ...(pData || {}) };
+            }
+            next.projects = projs;
+          }
+          if (hasCal) {
+            const cal = { ...(prev.calendarEntries || {}) };
+            for (const a of calendarAdds) {
+              const list = cal[a.dateISO] ? [...cal[a.dateISO]] : [];
+              const existing = list.find(e => e.name === a.name && (e.projekt || '') === (a.projekt || ''));
+              if (existing) {
+                if (a.kind === 'vertretung' && existing.kind !== 'vertretung') existing.kind = 'vertretung';
+              } else {
+                list.push({ id: genId(), memberId: '', name: a.name, position: a.position || '', projekt: a.projekt || '', kind: a.kind || 'zusatz', source: 'n8n' });
+              }
+              cal[a.dateISO] = list;
+            }
+            next.calendarEntries = cal;
+          }
+          return next;
+        });
+      }
+      setTimesheets(prev => {
+        const toAdd = cloned.filter(ns => {
+          const nsDates = ns.days.filter(d => d.datum).map(d => d.datum).join(',');
+          const nsKey = `${ns.projekt || ''}|${ns.name || ''}|${nsDates}`;
+          return !prev.some(ex => {
+            const exDates = ex.days.filter(d => d.datum).map(d => d.datum).join(',');
+            return `${ex.projekt || ''}|${ex.name || ''}|${exDates}` === nsKey;
+          });
+        });
+        if (toAdd.length > 0) {
+          setImportMessage(`n8n: ${toAdd.length} Stundenzettel importiert`);
+          setTimeout(() => setImportMessage(null), 5000);
+        }
+        return [...prev, ...toAdd];
+      });
+      if (window.electronAPI.archiveN8N) window.electronAPI.archiveN8N(folder, files);
+      n8nRunning.current = false;
+      return null;
+    });
+  }, []);
+
+  // Start n8n watch + initial scan when enabled
+  useEffect(() => {
+    if (!settings.n8nEnabled) return;
+    let cleanup;
+    (async () => {
+      const folder = settings.n8nFolder || (window.electronAPI.getDefaultN8NFolder ? await window.electronAPI.getDefaultN8NFolder() : '');
+      if (folder && window.electronAPI.watchN8N) window.electronAPI.watchN8N(folder);
+      runN8NImport();
+    })();
+    if (window.electronAPI.onN8NChanged) cleanup = window.electronAPI.onN8NChanged(() => runN8NImport());
+    return () => { if (cleanup) cleanup(); };
+  }, [settings.n8nEnabled, settings.n8nFolder, runN8NImport]);
+
   // Search results — match timesheets by name, project, KW, position, abteilung, firma
   const searchResults = useMemo(() => {
     if (!searchQuery.trim()) return [];
@@ -492,6 +692,14 @@ export default function App() {
   const projects = [...new Set(timesheets.map(t => getBaseProject(t.projekt)))].sort();
   const persons = [...new Set(timesheets.map(t => resolveName(t.name || 'Unbekannt')))].sort();
 
+  // Persons that have timesheets for the currently selected project (for sidebar display)
+  const personsInProject = projectFilter === 'all'
+    ? persons
+    : [...new Set(timesheets
+        .filter(t => getBaseProject(t.projekt) === projectFilter)
+        .map(t => resolveName(t.name || 'Unbekannt'))
+      )].sort();
+
   // Reset stale filters (e.g. after rename or delete)
   useEffect(() => {
     if (personFilter !== 'all' && !persons.includes(personFilter)) setPersonFilter('all');
@@ -505,9 +713,53 @@ export default function App() {
     ? timesheets
     : timesheets.filter(t => resolveName(t.name || 'Unbekannt') === personFilter);
   
-  const filteredTimesheets = projectFilter === 'all'
+  const projectFiltered = projectFilter === 'all'
     ? personFiltered
     : personFiltered.filter(t => getBaseProject(t.projekt) === projectFilter);
+
+  // Time filter
+  const now = new Date();
+  const timeFiltered = (() => {
+    if (timeFilter === 'all') return projectFiltered;
+    const startOfWeek = new Date(now);
+    startOfWeek.setDate(now.getDate() - now.getDay() + (now.getDay() === 0 ? -6 : 1));
+    startOfWeek.setHours(0, 0, 0, 0);
+    if (timeFilter === 'week') {
+      const end = new Date(startOfWeek); end.setDate(startOfWeek.getDate() + 6);
+      return projectFiltered.filter(t => {
+        const d = new Date(t.periodStart || t.datum || t.startDate || t.weekStart || 0);
+        return d >= startOfWeek && d <= end;
+      });
+    }
+    if (timeFilter === '4weeks') {
+      const start = new Date(now); start.setDate(now.getDate() - 27); start.setHours(0, 0, 0, 0);
+      return projectFiltered.filter(t => {
+        const d = new Date(t.periodStart || t.datum || t.startDate || t.weekStart || 0);
+        return d >= start;
+      });
+    }
+    if (timeFilter === 'month') {
+      const start = new Date(now.getFullYear(), now.getMonth(), 1);
+      return projectFiltered.filter(t => {
+        const d = new Date(t.periodStart || t.datum || t.startDate || t.weekStart || 0);
+        return d >= start;
+      });
+    }
+    return projectFiltered;
+  })();
+
+  // Eigene Heim-Adresse (Karteikarte „Das bin ich") als Startpunkt für die Motiv-Entfernung.
+  const homeAddress = (() => {
+    const me = (settings.team || []).find(m => m.isMe);
+    if (!me) return '';
+    return [me.strasse, [me.plz, me.ort].filter(Boolean).join(' ')].filter(Boolean).join(', ');
+  })();
+
+  // When viewing all persons, restrict to Stammteam members (settings.team)
+  const teamNames = new Set((settings.team || []).map(m => resolveName(m.name)));
+  const filteredTimesheets = (personFilter === 'all' && teamNames.size > 0)
+    ? timeFiltered.filter(t => teamNames.has(resolveName(t.name || 'Unbekannt')))
+    : timeFiltered;
 
   // Filtered projects (only projects available for selected person)
   const filteredProjects = [...new Set(personFiltered.map(t => getBaseProject(t.projekt)))].sort();
@@ -550,17 +802,41 @@ export default function App() {
     personCounts[name] = (personCounts[name] || 0) + 1;
   }
 
+  // Project sheet counts (using base project names) — respects active person filter
+  const projectCounts = {};
+  for (const t of personFiltered) {
+    const proj = getBaseProject(t.projekt);
+    projectCounts[proj] = (projectCounts[proj] || 0) + 1;
+  }
+
   const handlePersonFilter = useCallback((person) => {
     setPersonFilter(person);
     setView('dashboard');
   }, []);
 
+  const handleProjectFilter = useCallback((proj) => {
+    setProjectFilter(proj);
+    setPersonFilter('all');
+  }, []);
+
   const renderView = () => {
     switch (view) {
       case 'dashboard':
-        return <SectionErrorBoundary label="Übersicht"><Dashboard timesheets={filteredTimesheets} calculations={calculations} settings={settings} effectiveSettings={effectiveSettings} onSettings={setSettings} onViewDetail={handleViewDetail} onUpdateTimesheets={setTimesheets} projects={filteredProjects} projectFilter={projectFilter} onProjectFilter={setProjectFilter} personFilter={personFilter} onPersonFilter={handlePersonFilter} allTimesheets={timesheets} personFilteredTimesheets={personFiltered} getPersonSettings={getPersonSettings} resolveName={resolveName} getBaseProject={getBaseProject} completedProjects={settings.completedProjects || {}} /></SectionErrorBoundary>;
+        return <SectionErrorBoundary label="Übersicht"><Dashboard timesheets={filteredTimesheets} calculations={calculations} settings={settings} effectiveSettings={effectiveSettings} onSettings={setSettings} onViewDetail={handleViewDetail} onUpdateTimesheets={setTimesheets} projects={filteredProjects} projectFilter={projectFilter} onProjectFilter={handleProjectFilter} personFilter={personFilter} onPersonFilter={handlePersonFilter} allTimesheets={timesheets} personFilteredTimesheets={personFiltered} getPersonSettings={getPersonSettings} resolveName={resolveName} getBaseProject={getBaseProject} completedProjects={settings.completedProjects || {}} /></SectionErrorBoundary>;
       case 'timesheets':
-        return <SectionErrorBoundary label="Stundenzettel-Liste"><TimesheetList timesheets={timesheets} onViewDetail={handleViewDetail} onDelete={handleDelete} onBulkDelete={handleBulkDelete} personFilter={personFilter} resolveName={resolveName} getBaseProject={getBaseProject} onRenameProject={handleRenameProject} completedProjects={settings.completedProjects || {}} onToggleProjectComplete={handleToggleProjectComplete} /></SectionErrorBoundary>;
+        return <SectionErrorBoundary label="Stundenzettel-Liste"><TimesheetList timesheets={timesheets} onViewDetail={handleViewDetail} onDelete={handleDelete} onBulkDelete={handleBulkDelete} personFilter={personFilter} resolveName={resolveName} getBaseProject={getBaseProject} onRenameProject={handleRenameProject} completedProjects={settings.completedProjects || {}} onToggleProjectComplete={handleToggleProjectComplete} projectCrews={settings.projectCrews || {}} /></SectionErrorBoundary>;
+      case 'dispos':
+        return <SectionErrorBoundary label="Dispos"><Dispos
+          dispos={settings.dispos || []}
+          onChange={(dispos) => setSettings(s => ({ ...s, dispos }))}
+          projects={settings.projects || {}}
+          n8nFolder={settings.n8nFolder || ''}
+          homeAddress={homeAddress}
+          kmRate={settings.kmRate ?? 0.30}
+          kmRoundTrip={settings.kmRoundTrip === true}
+          onKmSettingsChange={(patch) => setSettings(s => ({ ...s, ...patch }))}
+          onGoToSettings={() => setView('settings')}
+        /></SectionErrorBoundary>;
       case 'detail':
         return selectedSheet ? <SectionErrorBoundary label="Stundenzettel-Detail"><TimesheetDetail sheet={selectedSheet} settings={getPersonSettings(selectedSheet.name, getBaseProject(selectedSheet.projekt))} onBack={() => setView(prevView.current || 'timesheets')} onEdit={handleEditSheet} allTimesheets={timesheets} onSelectSheet={(s) => { setSelectedSheet(s); }} /></SectionErrorBoundary> : null;
       case 'create':
@@ -570,22 +846,43 @@ export default function App() {
           onCancel={() => { setSelectedSheet(null); setView('timesheets'); }}
           editSheet={view === 'create' ? selectedSheet : null}
           existingTimesheets={timesheets}
-          crews={settings.crews || {}}
+          projectStaffing={settings.projectStaffing || {}}
           projects={settings.projects || {}}
+          team={settings.team || []}
           onCreateNext={(weekStart) => { setSelectedSheet(null); setView('create'); }}
         /></SectionErrorBoundary>;
+      case 'team':
+        return <SectionErrorBoundary label="Team"><TeamManager
+          team={settings.team || []}
+          onTeamChange={(team) => setSettings(s => ({ ...s, team }))}
+          timesheets={timesheets}
+          resolveName={resolveName}
+          projects={settings.projects || {}}
+          onProjectsChange={(projects) => setSettings(s => ({ ...s, projects }))}
+          onMergeProjects={handleMergeProjects}
+          projectCrews={settings.projectCrews || {}}
+          onProjectCrewsChange={(projectCrews) => setSettings(s => ({ ...s, projectCrews }))}
+          staffing={settings.projectStaffing || {}}
+          onStaffingChange={(staffing) => setSettings(s => ({ ...s, projectStaffing: staffing }))}
+          onCreateTimesheets={handleBatchCreateSheets}
+          calendarEntries={settings.calendarEntries || {}}
+          onCalendarChange={(calendarEntries) => setSettings(s => ({ ...s, calendarEntries }))}
+          settings={settings}
+          onSettings={setSettings}
+          onSyncN8N={runN8NImport}
+        /></SectionErrorBoundary>;
       case 'settings':
-        return <SectionErrorBoundary label="Einstellungen"><Settings settings={settings} onSave={setSettings} timesheets={timesheets} setTimesheets={setTimesheets} /></SectionErrorBoundary>;
+        return <SectionErrorBoundary label="Einstellungen"><Settings settings={settings} onSave={setSettings} timesheets={timesheets} setTimesheets={setTimesheets} onSyncN8N={runN8NImport} onRestartTour={() => { try { localStorage.removeItem('zeitblick-tour-completed'); } catch (e) {} setShowTour(true); }} /></SectionErrorBoundary>;
       default:
-        return <SectionErrorBoundary label="Übersicht"><Dashboard timesheets={filteredTimesheets} calculations={calculations} settings={settings} effectiveSettings={effectiveSettings} onSettings={setSettings} onViewDetail={handleViewDetail} onUpdateTimesheets={setTimesheets} projects={filteredProjects} projectFilter={projectFilter} onProjectFilter={setProjectFilter} personFilter={personFilter} onPersonFilter={handlePersonFilter} allTimesheets={timesheets} personFilteredTimesheets={personFiltered} getPersonSettings={getPersonSettings} resolveName={resolveName} getBaseProject={getBaseProject} completedProjects={settings.completedProjects || {}} /></SectionErrorBoundary>;
+        return <SectionErrorBoundary label="Übersicht"><Dashboard timesheets={filteredTimesheets} calculations={calculations} settings={settings} effectiveSettings={effectiveSettings} onSettings={setSettings} onViewDetail={handleViewDetail} onUpdateTimesheets={setTimesheets} projects={filteredProjects} projectFilter={projectFilter} onProjectFilter={handleProjectFilter} personFilter={personFilter} onPersonFilter={handlePersonFilter} allTimesheets={timesheets} personFilteredTimesheets={personFiltered} getPersonSettings={getPersonSettings} resolveName={resolveName} getBaseProject={getBaseProject} completedProjects={settings.completedProjects || {}} /></SectionErrorBoundary>;
     }
   };
 
   const filterCtx = useMemo(() => ({
     projectFilter, personFilter,
-    onProjectFilter: setProjectFilter,
+    onProjectFilter: handleProjectFilter,
     onPersonFilter: handlePersonFilter,
-  }), [projectFilter, personFilter, handlePersonFilter]);
+  }), [projectFilter, personFilter, handleProjectFilter, handlePersonFilter]);
 
   const settingsCtx = useMemo(() => ({
     settings, effectiveSettings, onSettings: setSettings,
@@ -597,7 +894,7 @@ export default function App() {
     <FilterContext.Provider value={filterCtx}>
     <SettingsContext.Provider value={settingsCtx}>
     <div
-      className="app-container"
+      className="app-container app-shell"
       onDragEnter={handleDragEnter}
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
@@ -606,19 +903,49 @@ export default function App() {
       <Sidebar
         currentView={view}
         onNavigate={(v) => { if (v !== 'create') setSelectedSheet(null); setView(v); }}
-        onImport={handleOpenDialog}
-        onImportFolder={handleOpenFolderDialog}
-        onCreate={() => { setSelectedSheet(null); setView('create'); }}
-        onSearch={() => { setSearchOpen(true); setTimeout(() => searchInputRef.current?.focus(), 50); }}
         timesheetCount={timesheets.length}
+        projects={filteredProjects}
+        projectCounts={projectCounts}
+        projectFilter={projectFilter}
+        onProjectFilter={handleProjectFilter}
+        onSearch={() => { setSearchOpen(true); setTimeout(() => searchInputRef.current?.focus(), 50); }}
         theme={settings.theme || 'light'}
         onToggleTheme={() => setSettings(s => ({ ...s, theme: s.theme === 'dark' ? 'light' : 'dark' }))}
-        persons={persons}
+      />
+      <Topbar
+        currentView={view}
+        contextLabel={
+          [
+            personFilter !== 'all' ? `Person: ${personFilter}` : null,
+            projectFilter !== 'all' ? `Projekt: ${projectFilter}` : null,
+          ].filter(Boolean).join(' · ') || null
+        }
+        onCreate={() => { setSelectedSheet(null); setView('create'); }}
+        onImport={handleOpenDialog}
+        onImportFolder={handleOpenFolderDialog}
+        onSearch={() => { setSearchOpen(true); setTimeout(() => searchInputRef.current?.focus(), 50); }}
+        theme={settings.theme || 'light'}
+        onToggleTheme={() => setSettings(s => ({ ...s, theme: s.theme === 'dark' ? 'light' : 'dark' }))}
+      />
+      <FilterSidebar
+        persons={personsInProject}
         personCounts={personCounts}
         personFilter={personFilter}
         onPersonFilter={handlePersonFilter}
+        projects={filteredProjects}
+        projectCounts={projectCounts}
+        projectFilter={projectFilter}
+        onProjectFilter={handleProjectFilter}
+        timeFilter={timeFilter}
+        onTimeFilter={setTimeFilter}
       />
-      <main className="main-content">
+      <main id="main-content" className="main-content app-main">
+        <FilterChips
+          personFilter={personFilter}
+          onPersonFilter={handlePersonFilter}
+          projectFilter={projectFilter}
+          onProjectFilter={handleProjectFilter}
+        />
         {renderView()}
       </main>
 
@@ -632,7 +959,7 @@ export default function App() {
                 ref={searchInputRef}
                 type="text"
                 className="search-input"
-                placeholder="Name, Projekt, KW oder Datum suchen…"
+                placeholder='Suche: Person, Projekt, KW (z.B. "KW 18") oder Datum'
                 value={searchQuery}
                 onChange={e => setSearchQuery(e.target.value)}
                 autoFocus
@@ -645,7 +972,7 @@ export default function App() {
             {searchQuery.trim() && (
               <div className="search-results">
                 {searchResults.length === 0 && (
-                  <div className="search-empty">Keine Ergebnisse für „{searchQuery}"</div>
+                  <div className="search-empty">Nichts gefunden für „{searchQuery}". Tipp: Suche nach Name, Projektnummer oder KW (z.B. „KW 18").</div>
                 )}                {searchResults.length >= 50 && (
                   <div className="search-empty" style={{ color: 'var(--text-secondary)', fontSize: 12 }}>Weitere Ergebnisse vorhanden — Suche verfeinern</div>
                 )}                {searchResults.map(sheet => {
@@ -680,7 +1007,7 @@ export default function App() {
       {isImporting && (
         <div className="importing-overlay">
           <div className="importing-spinner" />
-          <p>PDFs werden importiert...</p>
+          <p>Stundenzettel werden importiert — bitte einen Moment…</p>
         </div>
       )}
       {importMessage && (
@@ -690,7 +1017,7 @@ export default function App() {
       )}
       {saveError && (
         <div className="import-toast import-toast-error">
-          ⚠ Speicherfehler: {saveError}
+          Konnte nicht speichern. Letzte Änderung wird beim nächsten Versuch erneut gesichert. ({saveError})
         </div>
       )}
       {trash.length > 0 && (
@@ -698,7 +1025,17 @@ export default function App() {
           ↩ Rückgängig ({trash.length})
         </button>
       )}
-      {showTour && <OnboardingTour onComplete={() => setShowTour(false)} />}
+      {showTour && <OnboardingTour onComplete={() => setShowTour(false)} onEnableN8N={(yes) => setSettings(s => ({ ...s, n8nEnabled: !!yes }))} />}
+      {n8nOverlay && (
+        <N8NImportOverlay
+          deviations={n8nOverlay.deviations}
+          substitutions={n8nOverlay.substitutions}
+          unknownNames={n8nOverlay.unknownNames}
+          newProjects={n8nOverlay.newProjects}
+          onComplete={finalizeN8N}
+          onCancel={() => { setN8nOverlay(null); n8nRunning.current = false; }}
+        />
+      )}
       <UpdateOverlay />
     </div>
     </SettingsContext.Provider>

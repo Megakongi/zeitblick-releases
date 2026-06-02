@@ -21,6 +21,23 @@ contextBridge.exposeInMainWorld('electronAPI', {
   exportPDFsToFolder: (htmlContentArray) => ipcRenderer.invoke('export-pdfs-to-folder', htmlContentArray),
   // Excel export
   exportXLSX: (data, defaultName) => ipcRenderer.invoke('export-xlsx', data, defaultName),
+  // n8n integration
+  getDefaultN8NFolder: () => ipcRenderer.invoke('get-default-n8n-folder'),
+  scanN8N: (folder) => ipcRenderer.invoke('n8n-scan', folder),
+  archiveN8N: (folder, files) => ipcRenderer.invoke('n8n-archive', folder, files),
+  watchN8N: (folder) => ipcRenderer.invoke('n8n-watch', folder),
+  // Dispos (PDF-Dispositionen)
+  scanDispos: (folder) => ipcRenderer.invoke('dispo-scan', folder),
+  importDispo: (folder, filename) => ipcRenderer.invoke('dispo-import', folder, filename),
+  readDispo: (storedName) => ipcRenderer.invoke('dispo-read', storedName),
+  deleteDispo: (storedName) => ipcRenderer.invoke('dispo-delete', storedName),
+  computeDistance: (homeAddress, motivAddress) => ipcRenderer.invoke('compute-distance', homeAddress, motivAddress),
+  organizeDispo: (folder, filename, year, project) => ipcRenderer.invoke('dispo-organize', folder, filename, year, project),
+  onN8NChanged: (callback) => {
+    const handler = (_event, data) => callback(data);
+    ipcRenderer.on('n8n-files-changed', handler);
+    return () => ipcRenderer.removeListener('n8n-files-changed', handler);
+  },
   // Auto-Updater
   checkForUpdates: () => ipcRenderer.invoke('check-for-updates'),
   downloadUpdate: () => ipcRenderer.invoke('download-update'),

@@ -3,6 +3,14 @@ import { getTimesheetKW, getTimesheetYear, formatKW } from '../utils/calendarWee
 import { generateTimesheetHTML } from '../utils/pdfExport';
 import { getInitials } from '../utils/helpers';
 
+/* Hash → Projektfarbe (konsistent mit Sidebar) */
+const PROJECT_PALETTE = ['#5159E8','#1FB97A','#E0A82E','#E83A3A','#06B6D4','#8B5CF6','#EC4899','#14B8A6','#F97316'];
+function colorFor(name = '') {
+  let h = 0;
+  for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) >>> 0;
+  return PROJECT_PALETTE[h % PROJECT_PALETTE.length];
+}
+
 function getSheetHours(sheet) {
   // Use totals if available, else compute from individual days
   if (sheet.totals?.stundenTotal > 0) return sheet.totals.stundenTotal;
@@ -20,7 +28,7 @@ function getSheetNacht(sheet) {
   return sheet.days ? sheet.days.reduce((sum, d) => sum + (Number(d.nacht25) || 0), 0) : 0;
 }
 
-export default function TimesheetList({ timesheets, onViewDetail, onDelete, onBulkDelete, personFilter, resolveName, getBaseProject, onRenameProject, completedProjects, onToggleProjectComplete }) {
+export default function TimesheetList({ timesheets, onViewDetail, onDelete, onBulkDelete, personFilter, resolveName, getBaseProject, onRenameProject, completedProjects, onToggleProjectComplete, projectCrews }) {
   const [confirmId, setConfirmId] = useState(null);
   const [bulkConfirm, setBulkConfirm] = useState(null);
   const [collapsedPersons, setCollapsedPersons] = useState({});
@@ -133,6 +141,49 @@ export default function TimesheetList({ timesheets, onViewDetail, onDelete, onBu
     }
   }, [availableKWs]);
 
+  // PDF export for a single sheet (quick export, no selection needed)
+  const handleExportSinglePDF = useCallback(async (sheet, e) => {
+    e && e.stopPropagation();
+    try {
+      const htmlContent = generateTimesheetHTML(sheet);
+      const dateRange = getDateRange(sheet).replace(/\s/g, '');
+      const defaultName = `Stundenzettel_${sheet.name || 'Unbekannt'}_${sheet.projekt || 'Projekt'}_${dateRange}.pdf`;
+      await window.electronAPI.exportTimesheetPDF(htmlContent, defaultName);
+    } catch (err) {
+      console.error('PDF export failed:', err);
+      alert('PDF-Export fehlgeschlagen: ' + (err.message || err));
+    }
+  }, []);
+
+  // PDF export for all sheets of a project at once
+  const handleExportAllPDF = useCallback(async (sheets) => {
+    if (!sheets || sheets.length === 0) return;
+    setExporting(true);
+    try {
+      if (sheets.length > 1 && window.electronAPI.exportPDFsToFolder) {
+        const htmlArray = sheets.map(sheet => {
+          const dateRange = getDateRange(sheet).replace(/\s/g, '');
+          return {
+            html: generateTimesheetHTML(sheet),
+            filename: `Stundenzettel_${sheet.name || 'Unbekannt'}_${sheet.projekt || 'Projekt'}_${dateRange}.pdf`,
+          };
+        });
+        await window.electronAPI.exportPDFsToFolder(htmlArray);
+      } else {
+        for (const sheet of sheets) {
+          const htmlContent = generateTimesheetHTML(sheet);
+          const dateRange = getDateRange(sheet).replace(/\s/g, '');
+          const defaultName = `Stundenzettel_${sheet.name || 'Unbekannt'}_${sheet.projekt || 'Projekt'}_${dateRange}.pdf`;
+          await window.electronAPI.exportTimesheetPDF(htmlContent, defaultName);
+        }
+      }
+    } catch (err) {
+      console.error('PDF export failed:', err);
+      alert('PDF-Export fehlgeschlagen: ' + (err.message || err));
+    }
+    setExporting(false);
+  }, []);
+
   // PDF export for selected sheets
   const handleExportSelectedPDF = useCallback(async () => {
     const selected = timesheets.filter(t => selectedIds.has(t.id));
@@ -165,6 +216,7 @@ export default function TimesheetList({ timesheets, onViewDetail, onDelete, onBu
   }, [timesheets, selectedIds]);
 
   const togglePerson = (name) => {
+    // Default = collapsed (undefined). false = aufgeklappt, true = zugeklappt.
     setCollapsedPersons(prev => ({ ...prev, [name]: prev[name] === false ? true : false }));
   };
 
@@ -430,7 +482,19 @@ export default function TimesheetList({ timesheets, onViewDetail, onDelete, onBu
     }
   }
 
-  const personNames = Object.keys(byPerson).sort();
+  // Stammcrew des aktiven Projekts zuerst (in Crew-Reihenfolge), danach alphabetisch
+  const crewList = (projectCrews && activeProject && Array.isArray(projectCrews[activeProject]))
+    ? projectCrews[activeProject].map(n => resolve(n))
+    : [];
+  const crewIndex = (name) => {
+    const i = crewList.indexOf(name);
+    return i === -1 ? Infinity : i;
+  };
+  const personNames = Object.keys(byPerson).sort((a, b) => {
+    const ca = crewIndex(a), cb = crewIndex(b);
+    if (ca !== cb) return ca - cb;
+    return a.localeCompare(b, 'de');
+  });
   const showPersonHeaders = personNames.length > 1;
   const activeSheetCount = Object.values(byPerson).reduce((sum, arr) => sum + arr.length, 0);
 
@@ -492,6 +556,14 @@ export default function TimesheetList({ timesheets, onViewDetail, onDelete, onBu
               {!!(completedProjects && completedProjects[activeProject]) ? '🔓 Wieder öffnen' : '✅ Projekt abschließen'}
             </button>
           )}
+          <button
+            className="export-all-btn"
+            onClick={() => handleExportAllPDF(activeProjectSheets)}
+            disabled={exporting || activeProjectSheets.length === 0}
+            title={`Alle ${activeProjectSheets.length} Stundenzettel als PDF exportieren`}
+          >
+            {exporting ? '⏳ Exportiere…' : `📄 Alle ${activeProjectSheets.length} als PDF`}
+          </button>
           <button className="bulk-delete-btn" onClick={() => {
           const ids = activeProjectSheets.map(s => s.id);
           setBulkConfirm({ type: 'project', project: activeProject, ids, label: `Alle ${ids.length} Einträge von „${activeProject}"` });
@@ -585,7 +657,8 @@ export default function TimesheetList({ timesheets, onViewDetail, onDelete, onBu
 
       {personNames.map(person => {
         const sheets = byPerson[person];
-        const isCollapsed = collapsedPersons[person] !== false;
+        // Default zugeklappt — außer wenn es keine Personen-Header gibt (einzelne Person)
+        const isCollapsed = showPersonHeaders ? (collapsedPersons[person] !== false) : false;
         const totalHours = sheets.reduce((sum, s) => sum + getSheetHours(s), 0);
 
         return (
@@ -610,51 +683,64 @@ export default function TimesheetList({ timesheets, onViewDetail, onDelete, onBu
             )}
 
             {!isCollapsed && (
-              <div className="sheets-grid">
-                {sheets.map(sheet => (
-                  <div key={sheet.id} className={`sheet-card ${selectedIds.has(sheet.id) ? 'sheet-card-selected' : ''}`}>
-                    <div className="sheet-card-header" onClick={() => onViewDetail(sheet)}>
-                      <label className="sheet-card-checkbox" onClick={e => e.stopPropagation()}>
-                        <input
-                          type="checkbox"
-                          checked={selectedIds.has(sheet.id)}
-                          onChange={() => toggleSelect(sheet.id)}
-                        />
-                      </label>
-                      <div className="sheet-card-info">
-                        <span className="sheet-card-name">{sheet.name || 'Unbekannt'}</span>
-                        <span className="sheet-card-position">{sheet.position} — {sheet.abteilung}</span>
-                        <span className="sheet-card-firma">{sheet.produktionsfirma}</span>
+              <div>
+                {sheets.map(sheet => {
+                  const hours = getSheetHours(sheet);
+                  const ot = getSheetOvertime(sheet);
+                  const personColor = colorFor(sheet.name || '');
+                  return (
+                    <div
+                      key={sheet.id}
+                      className={`v3-sheet-card${selectedIds.has(sheet.id) ? ' sheet-card-selected' : ''}`}
+                      onClick={() => onViewDetail(sheet)}
+                    >
+                      {/* Avatar */}
+                      <div className="v3-sheet-avatar" style={{ background: personColor }}>
+                        {getInitials(sheet.name || '?')}
                       </div>
-                      <div className="sheet-card-right">
-                        <span className="sheet-card-kw">{formatKW(sheet)}</span>
-                        <span className="sheet-card-dates">{getDateRange(sheet)}</span>
+                      {/* Info */}
+                      <div className="v3-sheet-info">
+                        <div className="v3-sheet-name">{sheet.name || 'Unbekannt'}</div>
+                        <div className="v3-sheet-meta">
+                          <span>{formatKW(sheet)} · {getDateRange(sheet)}</span>
+                          {sheet.position && <span style={{ color: 'var(--hint)' }}>·</span>}
+                          {sheet.position && <span>{sheet.position}</span>}
+                        </div>
+                      </div>
+                      {/* Zahlen + Aktionen */}
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                        <div className="v3-sheet-nums">
+                          <div className="v3-sheet-hours">{hours.toFixed(1)} h</div>
+                          {ot > 0 && <div className="v3-sheet-ot">+{ot.toFixed(1)} ÜS</div>}
+                        </div>
+                        <div style={{ display: 'flex', gap: 4 }} onClick={e => e.stopPropagation()}>
+                          <button
+                            className="icon-btn"
+                            onClick={(e) => handleExportSinglePDF(sheet, e)}
+                            title="Als PDF exportieren"
+                          >
+                            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                              <polyline points="7 10 12 15 17 10"/>
+                              <line x1="12" y1="15" x2="12" y2="3"/>
+                            </svg>
+                          </button>
+                          <button
+                            className="icon-btn"
+                            style={{ color: 'var(--rose-500)' }}
+                            onClick={() => handleDelete(sheet.id)}
+                            title="Löschen"
+                          >
+                            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                              <polyline points="3 6 5 6 21 6"/>
+                              <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/>
+                            </svg>
+                          </button>
+                        </div>
                       </div>
                     </div>
-                    <div className="sheet-card-stats">
-                      <div className="mini-stat">
-                        <span className="mini-stat-value">{getSheetHours(sheet).toFixed(2)}</span>
-                        <span className="mini-stat-label">Stunden</span>
-                      </div>
-                      <div className="mini-stat">
-                        <span className="mini-stat-value">{getWorkDays(sheet)}</span>
-                        <span className="mini-stat-label">Tage</span>
-                      </div>
-                      <div className="mini-stat">
-                        <span className="mini-stat-value">{getSheetOvertime(sheet).toFixed(2)}</span>
-                        <span className="mini-stat-label">Überstunden</span>
-                      </div>
-                      <div className="mini-stat">
-                        <span className="mini-stat-value">{getSheetNacht(sheet).toFixed(2)}</span>
-                        <span className="mini-stat-label">Nacht</span>
-                      </div>
-                    </div>
-                    <div className="sheet-card-actions">
-                      <button className="btn-view" onClick={() => onViewDetail(sheet)}>Details →</button>
-                      <button className="btn-delete" onClick={() => handleDelete(sheet.id)}>✕</button>
-                    </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             )}
           </div>
@@ -667,6 +753,7 @@ export default function TimesheetList({ timesheets, onViewDetail, onDelete, onBu
 
 
 function getFirstDate(sheet) {
+  if (!sheet.days) return new Date(0);
   for (const day of sheet.days) {
     if (day.datum) {
       const parts = day.datum.split('.');
@@ -679,6 +766,7 @@ function getFirstDate(sheet) {
 }
 
 function getDateRange(sheet) {
+  if (!sheet.days) return 'Kein Datum';
   const dates = sheet.days.filter(d => d.datum).map(d => d.datum);
   if (dates.length === 0) return 'Kein Datum';
   if (dates.length === 1) return dates[0];
@@ -686,12 +774,14 @@ function getDateRange(sheet) {
 }
 
 function getWorkDays(sheet) {
+  if (!sheet.days) return 0;
   return sheet.days.filter(d => Number(d.stundenTotal) > 0 || (d.start && String(d.start).trim().includes(':'))).length;
 }
 
 function getProjectDateRange(sheets) {
   const allDates = [];
   for (const sheet of sheets) {
+    if (!sheet.days) continue;
     for (const day of sheet.days) {
       if (day.datum) {
         const parts = day.datum.split('.');

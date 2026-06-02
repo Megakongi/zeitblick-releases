@@ -3,6 +3,8 @@ const path = require('path');
 const fs = require('fs');
 const { parsePDF } = require('./src/main/pdfParser');
 const { loadData, saveData, createBackup, restoreBackup, listBackups, exportData, importData } = require('./src/main/storage');
+const { extractDispoAddresses } = require('./src/main/dispoText');
+const { computeDistance } = require('./src/main/geo');
 
 // Auto-updater
 let autoUpdater = null;
@@ -764,6 +766,242 @@ ipcMain.handle('export-pdfs-to-folder', async (event, htmlContentArray) => {
 });
 
 // ===== Excel Export =====
+
+// ===== n8n Integration =====
+
+function getDefaultN8NFolder() {
+  return path.join(app.getPath('home'), 'Library', 'Mobile Documents', 'com~apple~CloudDocs', 'ZeitBlick');
+}
+
+let n8nWatcher = null;
+let n8nWatchDebounce = null;
+
+function startN8NWatch(folder) {
+  try {
+    if (n8nWatcher) { try { n8nWatcher.close(); } catch (_) {} n8nWatcher = null; }
+    if (!folder || !fs.existsSync(folder)) return { success: false, error: 'Ordner nicht gefunden' };
+    n8nWatcher = fs.watch(folder, { persistent: false }, (eventType, filename) => {
+      if (filename) {
+        const lower = filename.toLowerCase();
+        if (!lower.endsWith('.txt') && !lower.endsWith('.pdf')) return;
+      }
+      if (n8nWatchDebounce) clearTimeout(n8nWatchDebounce);
+      n8nWatchDebounce = setTimeout(() => {
+        sendUpdateStatus('n8n-files-changed', { folder });
+      }, 1000);
+    });
+    return { success: true };
+  } catch (e) {
+    console.error('[n8n] watch failed:', e.message);
+    return { success: false, error: e.message };
+  }
+}
+
+ipcMain.handle('get-default-n8n-folder', () => getDefaultN8NFolder());
+
+ipcMain.handle('n8n-watch', (event, folder) => startN8NWatch(folder));
+
+ipcMain.handle('n8n-scan', async (event, folder) => {
+  try {
+    const dir = folder || getDefaultN8NFolder();
+    if (!fs.existsSync(dir)) return { success: false, error: 'Ordner nicht gefunden', entries: [], errors: [] };
+    const files = fs.readdirSync(dir).filter(f => f.toLowerCase().endsWith('.txt'));
+    const entries = [];
+    const errors = [];
+    for (const file of files) {
+      try {
+        const raw = fs.readFileSync(path.join(dir, file), 'utf-8');
+        entries.push({ file, data: JSON.parse(raw) });
+      } catch (e) {
+        errors.push({ file, error: e.message });
+      }
+    }
+    return { success: true, entries, errors };
+  } catch (e) {
+    return { success: false, error: e.message, entries: [], errors: [] };
+  }
+});
+
+ipcMain.handle('n8n-archive', async (event, folder, filenames) => {
+  try {
+    const dir = folder || getDefaultN8NFolder();
+    const processedDir = path.join(dir, '_verarbeitet');
+    if (!fs.existsSync(processedDir)) fs.mkdirSync(processedDir, { recursive: true });
+    for (const file of (filenames || [])) {
+      const src = path.join(dir, file);
+      if (!fs.existsSync(src)) continue;
+      try { fs.renameSync(src, path.join(processedDir, `${Date.now()}-${file}`)); } catch (_) {}
+    }
+    return { success: true };
+  } catch (e) {
+    return { success: false, error: e.message };
+  }
+});
+
+// ===== Dispos (PDF-Dispositionen) =====
+
+// Dispo-PDFs werden in einen App-eigenen Ordner kopiert, damit sie auch
+// nach dem Archivieren der Quelle erhalten bleiben.
+function getDispoDir() {
+  const dir = path.join(app.getPath('userData'), 'dispos');
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
+// Quell-Ordner für Dispo-PDFs. Bevorzugt einen Unterordner „Dispos" im
+// ZeitBlick-/n8n-Ordner, falls vorhanden (für mehr Übersicht) – sonst der
+// Ordner selbst. So funktioniert es mit und ohne Unterordner.
+function resolveDispoSourceDir(folder) {
+  const base = folder || getDefaultN8NFolder();
+  if (!base) return base;
+  const sub = path.join(base, 'Dispos');
+  try { if (fs.existsSync(sub) && fs.statSync(sub).isDirectory()) return sub; } catch (_) {}
+  return base;
+}
+
+/** Macht einen String als Ordnernamen sicher (entfernt /, \, :, … und trimmt). */
+function sanitizeFolderName(s) {
+  return String(s || '')
+    .replace(/[\\/:*?"<>|]/g, '-')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 80) || 'Unbenannt';
+}
+
+/** Sucht eine Datei (per Basename) rekursiv im Dispo-Baum. Begrenzte Tiefe. */
+function findDispoFile(root, filename, depth = 4) {
+  const base = path.basename(filename);
+  let entries;
+  try { entries = fs.readdirSync(root, { withFileTypes: true }); } catch (_) { return null; }
+  for (const e of entries) {
+    const full = path.join(root, e.name);
+    if (e.isFile() && e.name === base) return full;
+  }
+  if (depth > 0) {
+    for (const e of entries) {
+      if (e.isDirectory()) {
+        const found = findDispoFile(path.join(root, e.name), base, depth - 1);
+        if (found) return found;
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * Sortiert eine bereits importierte Dispo-PDF in die Struktur
+ *   Dispos/<Jahr>/<Projekt>/<datei.pdf>
+ * ein. Findet die Datei, egal ob sie noch im Eingang oder bereits in einem
+ * (alten) Unterordner liegt – so wird auch bei nachträglicher Projekt-
+ * Zuordnung korrekt umsortiert. Best effort: Fehler sind unkritisch.
+ */
+ipcMain.handle('dispo-organize', async (event, folder, filename, year, project) => {
+  try {
+    const root = resolveDispoSourceDir(folder);
+    if (!root || !fs.existsSync(root)) return { success: false, error: 'Ordner nicht gefunden' };
+
+    const current = findDispoFile(root, filename);
+    if (!current) return { success: false, error: 'Datei nicht gefunden' };
+
+    const targetDir = path.join(root, sanitizeFolderName(year || 'Ohne Datum'), sanitizeFolderName(project || 'Ohne Projekt'));
+    const target = path.join(targetDir, path.basename(filename));
+    if (path.resolve(current) === path.resolve(target)) return { success: true, path: target, moved: false };
+
+    fs.mkdirSync(targetDir, { recursive: true });
+    try {
+      fs.renameSync(current, target);
+    } catch (err) {
+      if (err.code === 'EXDEV') { fs.copyFileSync(current, target); fs.unlinkSync(current); }
+      else throw err;
+    }
+    // Leere Restordner aufräumen (z. B. alter Projekt-Ordner nach Umsortierung).
+    try {
+      const oldDir = path.dirname(current);
+      if (oldDir !== root && fs.existsSync(oldDir) && fs.readdirSync(oldDir).length === 0) fs.rmdirSync(oldDir);
+    } catch (_) {}
+    return { success: true, path: target, moved: true };
+  } catch (e) {
+    return { success: false, error: e.message };
+  }
+});
+
+// Listet alle PDF-Dateien im Dispo-Quellordner (für die Dispo-Erkennung).
+ipcMain.handle('dispo-scan', async (event, folder) => {
+  try {
+    const dir = resolveDispoSourceDir(folder);
+    if (!dir || !fs.existsSync(dir)) return { success: false, error: 'Ordner nicht gefunden', files: [] };
+    const files = fs.readdirSync(dir)
+      .filter(f => f.toLowerCase().endsWith('.pdf'))
+      .map(f => {
+        const full = path.join(dir, f);
+        let mtime = 0, size = 0;
+        try { const st = fs.statSync(full); mtime = st.mtimeMs; size = st.size; } catch (_) {}
+        return { file: f, mtime, size };
+      });
+    return { success: true, files };
+  } catch (e) {
+    return { success: false, error: e.message, files: [] };
+  }
+});
+
+// Kopiert ein PDF aus dem n8n-Ordner in den App-Dispo-Ordner.
+// Gibt den gespeicherten Dateinamen + absoluten Pfad zurück.
+ipcMain.handle('dispo-import', async (event, folder, filename) => {
+  try {
+    const dir = resolveDispoSourceDir(folder);
+    const src = path.join(dir, filename);
+    if (!fs.existsSync(src)) return { success: false, error: 'Datei nicht gefunden' };
+    const dispoDir = getDispoDir();
+    // eindeutiger Name, Originalname erhalten
+    const base = path.basename(filename);
+    let dest = path.join(dispoDir, base);
+    if (fs.existsSync(dest)) {
+      const ext = path.extname(base);
+      const stem = base.slice(0, -ext.length);
+      dest = path.join(dispoDir, `${stem}-${Date.now().toString(36)}${ext}`);
+    }
+    fs.copyFileSync(src, dest);
+    // Motiv-Adressen aus dem PDF-Text auslesen (best effort – Fehler sind unkritisch).
+    let addresses = { motive: [], suggested: '' };
+    try { addresses = await extractDispoAddresses(dest); } catch (_) { /* ignore */ }
+    return { success: true, storedName: path.basename(dest), storedPath: dest, addresses };
+  } catch (e) {
+    return { success: false, error: e.message };
+  }
+});
+
+// Berechnet die Fahrstrecke (km) zwischen Heim- und Motiv-Adresse.
+ipcMain.handle('compute-distance', async (event, homeAddress, motivAddress) => {
+  try {
+    const r = await computeDistance(homeAddress, motivAddress);
+    return { success: true, ...r };
+  } catch (e) {
+    return { success: false, error: e.message };
+  }
+});
+
+// Liest ein gespeichertes Dispo-PDF (per storedName) als base64.
+ipcMain.handle('dispo-read', async (event, storedName) => {
+  try {
+    const full = path.join(getDispoDir(), path.basename(storedName));
+    if (!fs.existsSync(full)) return { success: false, error: 'Datei nicht gefunden' };
+    const buffer = fs.readFileSync(full);
+    return { success: true, data: buffer.toString('base64') };
+  } catch (e) {
+    return { success: false, error: e.message };
+  }
+});
+
+// Löscht ein gespeichertes Dispo-PDF.
+ipcMain.handle('dispo-delete', async (event, storedName) => {
+  try {
+    const full = path.join(getDispoDir(), path.basename(storedName));
+    if (fs.existsSync(full)) fs.unlinkSync(full);
+    return { success: true };
+  } catch (e) {
+    return { success: false, error: e.message };
+  }
+});
 
 ipcMain.handle('export-xlsx', async (event, data, defaultName) => {
   const result = await dialog.showSaveDialog(mainWindow, {

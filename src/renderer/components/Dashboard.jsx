@@ -3,25 +3,20 @@ import { calculateTVFFS as calcTVFFS, calculateSheetTVFFS } from '../utils/tvffs
 import { parseDateDE } from '../utils/helpers';
 import { useFilters, useSettings } from '../contexts';
 
-function generatePDFHTML(timesheets, c, settings, personFilter) {
-  const hasGage = settings.tagesgage > 0;
+function generatePDFHTML(timesheets, c, settings, personFilter, { getPersonSettings, resolveName, projectFilter } = {}) {
+  const resolve = resolveName || ((n) => n);
   const fmt = (n) => typeof n === 'number' ? n.toFixed(2).replace('.', ',') : '0,00';
   const fmtC = (n) => new Intl.NumberFormat('de-DE', { style: 'currency', currency: 'EUR' }).format(n || 0);
 
-  const sorted = [...timesheets].sort((a, b) => {
-    const dA = a.days.find(d => d.datum)?.datum || '';
-    const dB = b.days.find(d => d.datum)?.datum || '';
-    return parseDateDE(dA) - parseDateDE(dB);
-  });
+  const isMultiPerson = !personFilter || personFilter === 'all';
 
-  const gageLabel = settings.gageType === 'woche' ? 'Wochengage' : 'Tagesgage';
-
-  let html = `<!DOCTYPE html><html><head><meta charset="utf-8"><style>
+  const css = `
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body { font-family: -apple-system, 'Helvetica Neue', Arial, sans-serif; font-size: 11px; color: #1a1a1a; padding: 24px 20px; background: #fff; }
     h1 { font-size: 18px; margin-bottom: 2px; }
     .subtitle { color: #666; font-size: 11px; margin-bottom: 16px; display: block; }
     h2 { font-size: 13px; margin: 18px 0 6px 0; padding-bottom: 3px; border-bottom: 2px solid #333; }
+    h3 { font-size: 12px; margin: 14px 0 4px 0; color: #444; }
     table { width: 100%; border-collapse: collapse; margin-bottom: 10px; }
     th, td { padding: 4px 8px; text-align: left; border: 1px solid #ccc; }
     th { background: #f0f0f0; font-weight: 600; font-size: 10px; text-transform: uppercase; }
@@ -34,130 +29,219 @@ function generatePDFHTML(timesheets, c, settings, personFilter) {
     .meta-table td { border: none; padding: 2px 12px 2px 0; }
     .meta-table td:first-child { font-weight: 600; }
     .section-note { color: #666; font-size: 10px; margin-top: 2px; margin-bottom: 10px; }
+    .person-section { margin-top: 24px; padding-top: 16px; border-top: 3px solid #333; }
+    .person-section:first-of-type { border-top: none; margin-top: 10px; padding-top: 0; }
+    .page-break { page-break-before: always; }
     @media print { body { padding: 10px; } }
-  </style></head><body>`;
+  `;
 
-  // Header
-  const projekt = timesheets[0]?.projekt || '';
-  const name = personFilter && personFilter !== 'all' ? personFilter : (timesheets[0]?.name || '');
-  html += `<h1>ZeitBlick Übersicht${name ? ' — ' + name : ''}</h1>`;
-  html += `<span class="subtitle">Exportiert am ${new Date().toLocaleDateString('de-DE')}${projekt ? ' · Projekt: ' + projekt : ''}${name && !(personFilter && personFilter !== 'all') ? ' · ' + name : ''}</span>`;
+  // Helper: generate one person's complete section
+  function generatePersonSection(personTimesheets, personCalc, personSettings, personName, isFirst) {
+    const hasGage = personSettings.tagesgage > 0;
+    const gageLabel = personSettings.gageType === 'woche' ? 'Wochengage' : 'Tagesgage';
+    const sc_sorted = [...personTimesheets].sort((a, b) => {
+      const dA = a.days.find(d => d.datum)?.datum || '';
+      const dB = b.days.find(d => d.datum)?.datum || '';
+      return parseDateDE(dA) - parseDateDE(dB);
+    });
 
-  // Meta info
-  html += `<table class="meta-table">`;
-  if (hasGage) html += `<tr><td>${gageLabel}:</td><td>${fmtC(settings.tagesgage)}</td></tr>`;
-  if (hasGage) html += `<tr><td>Stundensatz:</td><td>${fmtC(c.stundensatz)}</td></tr>`;
-  if (settings.zeitkonto) html += `<tr><td>Zeitkonto:</td><td>aktiv</td></tr>`;
-  html += `<tr><td>Anstellungstage:</td><td>${c.anstellungstage}</td></tr>`;
-  html += `</table>`;
-
-  // === ZUSAMMENFASSUNG ===
-  html += `<h2>Zusammenfassung</h2>`;
-  html += `<table><thead><tr>
-    <th>Kennzahl</th><th class="num">Wert</th>
-  </tr></thead><tbody>`;
-  html += `<tr><td>Arbeitstage</td><td class="num">${c.totalArbeitstage}</td></tr>`;
-  if (c.totalKranktage > 0) html += `<tr><td>Krankheitstage</td><td class="num">${c.totalKranktage}</td></tr>`;
-  if (c.totalAZVTage > 0) html += `<tr><td>AZV-Tage</td><td class="num">${c.totalAZVTage}</td></tr>`;
-  html += `<tr><td>Bezahlte Tage</td><td class="num">${c.totalBezahlteTage}</td></tr>`;
-  html += `<tr><td>Gesamtstunden</td><td class="num">${fmt(c.totalStunden)}</td></tr>`;
-  html += `<tr><td>Überstunden gesamt</td><td class="num">${fmt(c.totalUeberstunden)}</td></tr>`;
-  html += `<tr><td>&nbsp;&nbsp;davon 25%</td><td class="num">${fmt(c.totalUeberstunden25)}</td></tr>`;
-  html += `<tr><td>&nbsp;&nbsp;davon 50%</td><td class="num">${fmt(c.totalUeberstunden50)}</td></tr>`;
-  if (c.totalUeberstunden100 > 0) html += `<tr><td>&nbsp;&nbsp;davon 100% (Feiertag)</td><td class="num">${fmt(c.totalUeberstunden100)}</td></tr>`;
-  html += `<tr><td>Nachtstunden</td><td class="num">${fmt(c.totalNacht)}</td></tr>`;
-  html += `<tr><td>Fahrzeit</td><td class="num">${fmt(c.totalFahrzeit)}</td></tr>`;
-  html += `<tr><td>Samstage</td><td class="num">${fmt(c.totalSamstagsstunden || 0)} Std.</td></tr>`;
-  html += `<tr><td>Sonntage</td><td class="num">${fmt(c.totalSonntagsstunden || 0)} Std.</td></tr>`;
-  html += `<tr><td>Urlaubstage</td><td class="num">${fmt(c.urlaubstage)}</td></tr>`;
-  html += `</tbody></table>`;
-
-  // === WOCHENÜBERSICHT ===
-  html += `<h2>Wochenübersicht</h2>`;
-  html += `<table><thead><tr>
-    <th>Zeitraum</th><th>Projekt</th><th class="num">Tage</th><th class="num">Stunden</th>
-    <th class="num">Überstd.</th><th class="num">Nacht</th><th class="num">Sa</th><th class="num">So</th>`;
-  if (hasGage) html += `<th class="num">Brutto</th>`;
-  html += `</tr></thead><tbody>`;
-
-  sorted.forEach(sheet => {
-    const sc = calculateSheetTVFFS(sheet, settings);
-    const firstDate = sheet.days.find(d => d.datum)?.datum || '';
-    const lastDate = [...sheet.days].reverse().find(d => d.datum)?.datum || '';
-    const label = firstDate ? `${firstDate} – ${lastDate}` : (sheet.kw ? `KW ${sheet.kw}` : '?');
-    html += `<tr>
-      <td>${label}</td><td>${sheet.projekt || ''}</td>
-      <td class="num">${sc.totalBezahlteTage}</td><td class="num">${fmt(sc.totalStunden)}</td>
-      <td class="num">${fmt(sc.totalUeberstunden)}</td><td class="num">${fmt(sc.totalNacht)}</td>
-      <td class="num">${fmt(sc.totalSamstagsstunden || 0)}</td><td class="num">${fmt(sc.totalSonntagsstunden || 0)}</td>`;
-    if (hasGage) html += `<td class="num">${fmtC(sc.gesamtVerdienst)}</td>`;
-    html += `</tr>`;
-  });
-
-  // Summe row
-  html += `<tr class="total-row">
-    <td>Summe</td><td></td>
-    <td class="num">${c.totalBezahlteTage}</td><td class="num">${fmt(c.totalStunden)}</td>
-    <td class="num">${fmt(c.totalUeberstunden)}</td><td class="num">${fmt(c.totalNacht)}</td>
-    <td class="num">${fmt(c.totalSamstagsstunden || 0)}</td><td class="num">${fmt(c.totalSonntagsstunden || 0)}</td>`;
-  if (hasGage) html += `<td class="num">${fmtC(c.gesamtVerdienst)}</td>`;
-  html += `</tr></tbody></table>`;
-
-  // === VERDIENST ===
-  if (hasGage) {
-    html += `<h2>Verdienst (TV-FFS 2025)</h2>`;
-    html += `<table><thead><tr><th>Position</th><th>Berechnung</th><th class="num">Betrag</th></tr></thead><tbody>`;
-
-    html += `<tr><td>Grundgage</td><td>${c.totalBezahlteTage} Tage × ${fmtC(c.tagesgageEffective)}${c.totalKranktage > 0 ? ` (inkl. ${c.totalKranktage} Kranktag${c.totalKranktage > 1 ? 'e' : ''})` : ''}${c.totalAZVTage > 0 ? ` (inkl. ${c.totalAZVTage} AZV-Tag${c.totalAZVTage > 1 ? 'e' : ''})` : ''}</td><td class="num">${fmtC(c.grundgage)}</td></tr>`;
-
-    if (!settings.zeitkonto && c.ueberstundenGrundverguetung > 0) {
-      html += `<tr><td>Ü-Grundvergütung</td><td>${fmt(c.totalUeberstunden)} Std. × ${fmtC(c.stundensatz)}</td><td class="num">${fmtC(c.ueberstundenGrundverguetung)}</td></tr>`;
-    }
-    if (settings.zeitkonto && c.totalUeberstunden > 0) {
-      html += `<tr><td>Überstunden → Zeitkonto</td><td>${fmt(c.zeitkontoStunden)} Std. → ${fmt(c.zeitkontoTage)} Anstellungstage</td><td class="num">—</td></tr>`;
-    }
-    if (c.zuschlag25 > 0) html += `<tr><td>Ü-Zuschlag 25% (TZ 5.4.3.2)</td><td>${fmt(c.totalUeberstunden25)} Std.</td><td class="num">${fmtC(c.zuschlag25)}</td></tr>`;
-    if (c.zuschlag50 > 0) html += `<tr><td>Ü-Zuschlag 50% (TZ 5.4.3.2)</td><td>${fmt(c.totalUeberstunden50)} Std.</td><td class="num">${fmtC(c.zuschlag50)}</td></tr>`;
-    if (c.zuschlag100 > 0) html += `<tr><td>Ü-Zuschlag 100%</td><td>${fmt(c.totalUeberstunden100)} Std.</td><td class="num">${fmtC(c.zuschlag100)}</td></tr>`;
-    if (c.nachtZuschlag > 0) html += `<tr><td>Nachtzuschlag 25% (TZ 5.5.2)</td><td>${fmt(c.totalNacht)} Std.</td><td class="num">${fmtC(c.nachtZuschlag)}</td></tr>`;
-    if (c.samstagZuschlag > 0) html += `<tr><td>Sa-Zuschlag 25% (TZ 5.6.4)</td><td>${fmt(c.totalSamstagsstunden || 0)} Std.</td><td class="num">${fmtC(c.samstagZuschlag)}</td></tr>`;
-    if (c.sonntagZuschlag > 0) html += `<tr><td>So-Zuschlag 75% (TZ 5.6.3)</td><td>${fmt(c.totalSonntagsstunden || 0)} Std.</td><td class="num">${fmtC(c.sonntagZuschlag)}</td></tr>`;
-    if (c.feiertagZuschlag > 0) html += `<tr><td>Feiertags-Zuschlag 100% (TZ 5.6.3)</td><td>${fmt(c.totalFeiertagsstunden || 0)} Std.</td><td class="num">${fmtC(c.feiertagZuschlag)}</td></tr>`;
-    if (c.weeklyOTGrundverguetung > 0) html += `<tr><td>Wöch. Ü Grundvergütung (TZ 5.4.3.3)</td><td>${fmt((c.weeklyOT25 || 0) + (c.weeklyOT50 || 0))} Std.</td><td class="num">${fmtC(c.weeklyOTGrundverguetung)}</td></tr>`;
-    if (c.weeklyOTZuschlag25 > 0) html += `<tr><td>Wöch. Ü-Zuschlag 25% (TZ 5.4.3.3)</td><td>${fmt(c.weeklyOT25 || 0)} Std.</td><td class="num">${fmtC(c.weeklyOTZuschlag25)}</td></tr>`;
-    if (c.weeklyOTZuschlag50 > 0) html += `<tr><td>Wöch. Ü-Zuschlag 50% (TZ 5.4.3.3)</td><td>${fmt(c.weeklyOT50 || 0)} Std.</td><td class="num">${fmtC(c.weeklyOTZuschlag50)}</td></tr>`;
-
-    if (c.urlaubstageOffen > 0) {
-      html += `<tr><td>Urlaubstage (nicht genommen)</td><td>${c.urlaubstageOffen} Tage × ${fmtC(c.tagesgageEffective)}</td><td class="num">${fmtC(c.urlaubstageAuszahlung)}</td></tr>`;
-    }
-    if (settings.zeitkonto && c.zeitkontoTage > 0) {
-      html += `<tr><td>Zeitkonto-Tage</td><td>${fmt(c.zeitkontoTage)} Tage × ${fmtC(c.tagesgageEffective)}</td><td class="num">${fmtC(c.zeitkontoTageAuszahlung)}</td></tr>`;
+    let html = '';
+    if (isMultiPerson) {
+      const sectionClass = isFirst ? 'person-section' : 'person-section page-break';
+      html += `<div class="${sectionClass}">`;
+      html += `<h2 style="font-size:15px; border-bottom: 2px solid #333; margin-bottom: 8px;">${personName}</h2>`;
     }
 
-    html += `<tr class="divider-row"><td colspan="3"></td></tr>`;
-    html += `<tr class="total-row"><td>Gesamtverdienst</td><td></td><td class="num">${fmtC(c.gesamtVerdienst)}</td></tr>`;
+    // Meta info
+    html += `<table class="meta-table">`;
+    if (hasGage) html += `<tr><td>${gageLabel}:</td><td>${fmtC(personSettings.tagesgage)}</td></tr>`;
+    if (hasGage) html += `<tr><td>Stundensatz:</td><td>${fmtC(personCalc.stundensatz)}</td></tr>`;
+    if (personSettings.zeitkonto) html += `<tr><td>Zeitkonto:</td><td>aktiv</td></tr>`;
+    html += `<tr><td>Anstellungstage:</td><td>${personCalc.anstellungstage}</td></tr>`;
+    html += `</table>`;
+
+    // Zusammenfassung
+    html += `<h3>Zusammenfassung</h3>`;
+    html += `<table><thead><tr><th>Kennzahl</th><th class="num">Wert</th></tr></thead><tbody>`;
+    html += `<tr><td>Arbeitstage</td><td class="num">${personCalc.totalArbeitstage}</td></tr>`;
+    if (personCalc.totalKranktage > 0) html += `<tr><td>Krankheitstage</td><td class="num">${personCalc.totalKranktage}</td></tr>`;
+    if (personCalc.totalAZVTage > 0) html += `<tr><td>AZV-Tage</td><td class="num">${personCalc.totalAZVTage}</td></tr>`;
+    html += `<tr><td>Bezahlte Tage</td><td class="num">${personCalc.totalBezahlteTage}</td></tr>`;
+    html += `<tr><td>Gesamtstunden</td><td class="num">${fmt(personCalc.totalStunden)}</td></tr>`;
+    html += `<tr><td>Überstunden gesamt</td><td class="num">${fmt(personCalc.totalUeberstunden)}</td></tr>`;
+    html += `<tr><td>&nbsp;&nbsp;davon 25%</td><td class="num">${fmt(personCalc.totalUeberstunden25)}</td></tr>`;
+    html += `<tr><td>&nbsp;&nbsp;davon 50%</td><td class="num">${fmt(personCalc.totalUeberstunden50)}</td></tr>`;
+    if (personCalc.totalUeberstunden100 > 0) html += `<tr><td>&nbsp;&nbsp;davon 100% (Feiertag)</td><td class="num">${fmt(personCalc.totalUeberstunden100)}</td></tr>`;
+    html += `<tr><td>Nachtstunden</td><td class="num">${fmt(personCalc.totalNacht)}</td></tr>`;
+    html += `<tr><td>Fahrzeit</td><td class="num">${fmt(personCalc.totalFahrzeit)}</td></tr>`;
+    html += `<tr><td>Samstage</td><td class="num">${fmt(personCalc.totalSamstagsstunden || 0)} Std.</td></tr>`;
+    html += `<tr><td>Sonntage</td><td class="num">${fmt(personCalc.totalSonntagsstunden || 0)} Std.</td></tr>`;
+    html += `<tr><td>Urlaubstage</td><td class="num">${fmt(personCalc.urlaubstage)}</td></tr>`;
     html += `</tbody></table>`;
 
-    // Zeitkonto
-    if (settings.zeitkonto && c.zeitkontoStunden > 0) {
-      html += `<h2>Zeitkonto (Anlage A.1.1)</h2>`;
-      html += `<table><thead><tr><th>Position</th><th class="num">Stunden</th><th class="num">Anstellungstage</th><th class="num">Wert</th></tr></thead><tbody>`;
-      html += `<tr><td>Überstunden 25%</td><td class="num">${fmt(c.totalUeberstunden25)}</td><td class="num">${fmt(c.totalUeberstunden25 / 10)}</td><td class="num"></td></tr>`;
-      html += `<tr><td>Überstunden 50%</td><td class="num">${fmt(c.totalUeberstunden50)}</td><td class="num">${fmt(c.totalUeberstunden50 / 10)}</td><td class="num"></td></tr>`;
-      if (c.totalUeberstunden100 > 0) html += `<tr><td>Überstunden 100%</td><td class="num">${fmt(c.totalUeberstunden100)}</td><td class="num">${fmt(c.totalUeberstunden100 / 10)}</td><td class="num"></td></tr>`;
-      html += `<tr class="total-row"><td>Zeitkonto Gesamt</td><td class="num">${fmt(c.zeitkontoStunden)}</td><td class="num">${fmt(c.zeitkontoTage)}</td><td class="num">${fmtC(c.zeitkontoWert)}</td></tr>`;
+    // Wochenübersicht
+    html += `<h3>Wochenübersicht</h3>`;
+    html += `<table><thead><tr>
+      <th>Zeitraum</th><th>Projekt</th><th class="num">Tage</th><th class="num">Stunden</th>
+      <th class="num">Überstd.</th><th class="num">Nacht</th><th class="num">Sa</th><th class="num">So</th>`;
+    if (hasGage) html += `<th class="num">Brutto</th>`;
+    html += `</tr></thead><tbody>`;
+
+    sc_sorted.forEach(sheet => {
+      const sc = calculateSheetTVFFS(sheet, personSettings);
+      const firstDate = sheet.days.find(d => d.datum)?.datum || '';
+      const lastDate = [...sheet.days].reverse().find(d => d.datum)?.datum || '';
+      const label = firstDate ? `${firstDate} – ${lastDate}` : (sheet.kw ? `KW ${sheet.kw}` : '?');
+      html += `<tr>
+        <td>${label}</td><td>${sheet.projekt || ''}</td>
+        <td class="num">${sc.totalBezahlteTage}</td><td class="num">${fmt(sc.totalStunden)}</td>
+        <td class="num">${fmt(sc.totalUeberstunden)}</td><td class="num">${fmt(sc.totalNacht)}</td>
+        <td class="num">${fmt(sc.totalSamstagsstunden || 0)}</td><td class="num">${fmt(sc.totalSonntagsstunden || 0)}</td>`;
+      if (hasGage) html += `<td class="num">${fmtC(sc.gesamtVerdienst)}</td>`;
+      html += `</tr>`;
+    });
+
+    html += `<tr class="total-row">
+      <td>Summe</td><td></td>
+      <td class="num">${personCalc.totalBezahlteTage}</td><td class="num">${fmt(personCalc.totalStunden)}</td>
+      <td class="num">${fmt(personCalc.totalUeberstunden)}</td><td class="num">${fmt(personCalc.totalNacht)}</td>
+      <td class="num">${fmt(personCalc.totalSamstagsstunden || 0)}</td><td class="num">${fmt(personCalc.totalSonntagsstunden || 0)}</td>`;
+    if (hasGage) html += `<td class="num">${fmtC(personCalc.gesamtVerdienst)}</td>`;
+    html += `</tr></tbody></table>`;
+
+    // Verdienst
+    if (hasGage) {
+      html += `<h3>Verdienst (TV-FFS 2025)</h3>`;
+      html += `<table><thead><tr><th>Position</th><th>Berechnung</th><th class="num">Betrag</th></tr></thead><tbody>`;
+      html += `<tr><td>Grundgage</td><td>${personCalc.totalBezahlteTage} Tage × ${fmtC(personCalc.tagesgageEffective)}${personCalc.totalKranktage > 0 ? ` (inkl. ${personCalc.totalKranktage} Kranktag${personCalc.totalKranktage > 1 ? 'e' : ''})` : ''}${personCalc.totalAZVTage > 0 ? ` (inkl. ${personCalc.totalAZVTage} AZV-Tag${personCalc.totalAZVTage > 1 ? 'e' : ''})` : ''}</td><td class="num">${fmtC(personCalc.grundgage)}</td></tr>`;
+      if (!personSettings.zeitkonto && personCalc.ueberstundenGrundverguetung > 0) html += `<tr><td>Ü-Grundvergütung</td><td>${fmt(personCalc.totalUeberstunden)} Std. × ${fmtC(personCalc.stundensatz)}</td><td class="num">${fmtC(personCalc.ueberstundenGrundverguetung)}</td></tr>`;
+      if (personSettings.zeitkonto && personCalc.totalUeberstunden > 0) html += `<tr><td>Überstunden → Zeitkonto</td><td>${fmt(personCalc.zeitkontoStunden)} Std. → ${fmt(personCalc.zeitkontoTage)} Anstellungstage</td><td class="num">—</td></tr>`;
+      if (personCalc.zuschlag25 > 0) html += `<tr><td>Ü-Zuschlag 25% (TZ 5.4.3.2)</td><td>${fmt(personCalc.totalUeberstunden25)} Std.</td><td class="num">${fmtC(personCalc.zuschlag25)}</td></tr>`;
+      if (personCalc.zuschlag50 > 0) html += `<tr><td>Ü-Zuschlag 50% (TZ 5.4.3.2)</td><td>${fmt(personCalc.totalUeberstunden50)} Std.</td><td class="num">${fmtC(personCalc.zuschlag50)}</td></tr>`;
+      if (personCalc.zuschlag100 > 0) html += `<tr><td>Ü-Zuschlag 100%</td><td>${fmt(personCalc.totalUeberstunden100)} Std.</td><td class="num">${fmtC(personCalc.zuschlag100)}</td></tr>`;
+      if (personCalc.nachtZuschlag > 0) html += `<tr><td>Nachtzuschlag 25% (TZ 5.5.2)</td><td>${fmt(personCalc.totalNacht)} Std.</td><td class="num">${fmtC(personCalc.nachtZuschlag)}</td></tr>`;
+      if (personCalc.samstagZuschlag > 0) html += `<tr><td>Sa-Zuschlag 25% (TZ 5.6.4)</td><td>${fmt(personCalc.totalSamstagsstunden || 0)} Std.</td><td class="num">${fmtC(personCalc.samstagZuschlag)}</td></tr>`;
+      if (personCalc.sonntagZuschlag > 0) html += `<tr><td>So-Zuschlag 75% (TZ 5.6.3)</td><td>${fmt(personCalc.totalSonntagsstunden || 0)} Std.</td><td class="num">${fmtC(personCalc.sonntagZuschlag)}</td></tr>`;
+      if (personCalc.feiertagZuschlag > 0) html += `<tr><td>Feiertags-Zuschlag 100% (TZ 5.6.3)</td><td>${fmt(personCalc.totalFeiertagsstunden || 0)} Std.</td><td class="num">${fmtC(personCalc.feiertagZuschlag)}</td></tr>`;
+      if (personCalc.weeklyOTGrundverguetung > 0) html += `<tr><td>Wöch. Ü Grundvergütung (TZ 5.4.3.3)</td><td>${fmt((personCalc.weeklyOT25 || 0) + (personCalc.weeklyOT50 || 0))} Std.</td><td class="num">${fmtC(personCalc.weeklyOTGrundverguetung)}</td></tr>`;
+      if (personCalc.weeklyOTZuschlag25 > 0) html += `<tr><td>Wöch. Ü-Zuschlag 25% (TZ 5.4.3.3)</td><td>${fmt(personCalc.weeklyOT25 || 0)} Std.</td><td class="num">${fmtC(personCalc.weeklyOTZuschlag25)}</td></tr>`;
+      if (personCalc.weeklyOTZuschlag50 > 0) html += `<tr><td>Wöch. Ü-Zuschlag 50% (TZ 5.4.3.3)</td><td>${fmt(personCalc.weeklyOT50 || 0)} Std.</td><td class="num">${fmtC(personCalc.weeklyOTZuschlag50)}</td></tr>`;
+      if (personCalc.urlaubstageOffen > 0) html += `<tr><td>Urlaubstage (nicht genommen)</td><td>${personCalc.urlaubstageOffen} Tage × ${fmtC(personCalc.tagesgageEffective)}</td><td class="num">${fmtC(personCalc.urlaubstageAuszahlung)}</td></tr>`;
+      if (personSettings.zeitkonto && personCalc.zeitkontoTage > 0) html += `<tr><td>Zeitkonto-Tage</td><td>${fmt(personCalc.zeitkontoTage)} Tage × ${fmtC(personCalc.tagesgageEffective)}</td><td class="num">${fmtC(personCalc.zeitkontoTageAuszahlung)}</td></tr>`;
+      html += `<tr class="divider-row"><td colspan="3"></td></tr>`;
+      html += `<tr class="total-row"><td>Gesamtverdienst</td><td></td><td class="num">${fmtC(personCalc.gesamtVerdienst)}</td></tr>`;
       html += `</tbody></table>`;
-      html += `<p class="section-note">${fmt(c.zeitkontoStunden)} Std. ÷ 10 = ${fmt(c.zeitkontoTage)} Anstellungstage · Auflösung: 1/10 Tagesgage (${fmtC(c.stundensatz)}) pro Stunde zzgl. Zeitzuschläge</p>`;
+
+      // Zeitkonto
+      if (personSettings.zeitkonto && personCalc.zeitkontoStunden > 0) {
+        html += `<h3>Zeitkonto (Anlage A.1.1)</h3>`;
+        html += `<table><thead><tr><th>Position</th><th class="num">Stunden</th><th class="num">Anstellungstage</th><th class="num">Wert</th></tr></thead><tbody>`;
+        html += `<tr><td>Überstunden 25%</td><td class="num">${fmt(personCalc.totalUeberstunden25)}</td><td class="num">${fmt(personCalc.totalUeberstunden25 / 10)}</td><td class="num"></td></tr>`;
+        html += `<tr><td>Überstunden 50%</td><td class="num">${fmt(personCalc.totalUeberstunden50)}</td><td class="num">${fmt(personCalc.totalUeberstunden50 / 10)}</td><td class="num"></td></tr>`;
+        if (personCalc.totalUeberstunden100 > 0) html += `<tr><td>Überstunden 100%</td><td class="num">${fmt(personCalc.totalUeberstunden100)}</td><td class="num">${fmt(personCalc.totalUeberstunden100 / 10)}</td><td class="num"></td></tr>`;
+        html += `<tr class="total-row"><td>Zeitkonto Gesamt</td><td class="num">${fmt(personCalc.zeitkontoStunden)}</td><td class="num">${fmt(personCalc.zeitkontoTage)}</td><td class="num">${fmtC(personCalc.zeitkontoWert)}</td></tr>`;
+        html += `</tbody></table>`;
+        html += `<p class="section-note">${fmt(personCalc.zeitkontoStunden)} Std. ÷ 10 = ${fmt(personCalc.zeitkontoTage)} Anstellungstage · Auflösung: 1/10 Tagesgage (${fmtC(personCalc.stundensatz)}) pro Stunde zzgl. Zeitzuschläge</p>`;
+      }
+
+      // Urlaub
+      html += `<h3>Urlaub (TZ 14.1 TV-FFS)</h3>`;
+      html += `<table><tbody>`;
+      html += `<tr><td>Gesammelte Urlaubstage</td><td class="num">${personCalc.urlaubstage} Tage</td></tr>`;
+      if (personCalc.urlaubstageGenommen > 0) html += `<tr><td>Genommene Urlaubstage</td><td class="num">${personCalc.urlaubstageGenommen} Tage</td></tr>`;
+      html += `<tr><td>Offene Urlaubstage</td><td class="num">${personCalc.urlaubstageOffen} Tage</td></tr>`;
+      html += `</tbody></table>`;
+      html += `<p class="section-note">${personCalc.anstellungstage > 0 ? `0,5 Urlaubstag pro 7 zusammenhängende Anstellungstage (${personCalc.anstellungstage} Tage ÷ 7 = ${personCalc.totalWochen} × 0,5 = ${personCalc.urlaubstage} Tage).` : `Summe der individuell berechneten Urlaubstage.`}${personCalc.urlaubstageOffen > 0 ? ` Nicht genommene Urlaubstage (${personCalc.urlaubstageOffen}) werden als Tagesgage ausgezahlt.` : ''}</p>`;
     }
 
-    // Urlaub
-    html += `<h2>Urlaub (TZ 14.1 TV-FFS)</h2>`;
-    html += `<table><tbody>`;
-    html += `<tr><td>Gesammelte Urlaubstage</td><td class="num">${c.urlaubstage} Tage</td></tr>`;
-    if (c.urlaubstageGenommen > 0) html += `<tr><td>Genommene Urlaubstage</td><td class="num">${c.urlaubstageGenommen} Tage</td></tr>`;
-    html += `<tr><td>Offene Urlaubstage</td><td class="num">${c.urlaubstageOffen} Tage</td></tr>`;
-    html += `</tbody></table>`;
-    html += `<p class="section-note">${c.anstellungstage > 0 ? `0,5 Urlaubstag pro 7 zusammenhängende Anstellungstage (${c.anstellungstage} Tage ÷ 7 = ${c.totalWochen} × 0,5 = ${c.urlaubstage} Tage).` : `Summe der individuell berechneten Urlaubstage aller Personen (0,5 Tage pro 7 Anstellungstage).`}${c.urlaubstageOffen > 0 ? ` Nicht genommene Urlaubstage (${c.urlaubstageOffen}) werden als Tagesgage ausgezahlt.` : ''}</p>`;
+    if (isMultiPerson) html += `</div>`;
+    return html;
+  }
+
+  // Build the full PDF
+  const projekt = timesheets[0]?.projekt || '';
+  const projLabel = projectFilter && projectFilter !== 'all' ? projectFilter : projekt;
+
+  let html = `<!DOCTYPE html><html><head><meta charset="utf-8"><style>${css}</style></head><body>`;
+
+  if (isMultiPerson) {
+    // Multi-person export: per-person sections
+    html += `<h1>ZeitBlick Übersicht</h1>`;
+    html += `<span class="subtitle">Exportiert am ${new Date().toLocaleDateString('de-DE')}${projLabel ? ' · Projekt: ' + projLabel : ''}</span>`;
+
+    // Group timesheets by resolved person name
+    const personMap = new Map();
+    timesheets.forEach(ts => {
+      const name = resolve(ts.name || 'Unbekannt');
+      if (!personMap.has(name)) personMap.set(name, []);
+      personMap.get(name).push(ts);
+    });
+    const personNames = [...personMap.keys()].sort();
+
+    personNames.forEach((name, idx) => {
+      const personSheets = personMap.get(name);
+      const pSettings = getPersonSettings
+        ? getPersonSettings(name, projectFilter && projectFilter !== 'all' ? projectFilter : undefined)
+        : settings;
+      const pCalc = calcTVFFS(personSheets, pSettings);
+      html += generatePersonSection(personSheets, pCalc, pSettings, name, idx === 0);
+    });
+
+    // Grand total section (if multiple people)
+    if (personNames.length > 1) {
+      const anyGage = personNames.some(name => {
+        const ps = getPersonSettings ? getPersonSettings(name, projectFilter && projectFilter !== 'all' ? projectFilter : undefined) : settings;
+        return ps.tagesgage > 0;
+      });
+
+      html += `<div class="person-section page-break">`;
+      html += `<h2 style="font-size:15px; border-bottom: 2px solid #333; margin-bottom: 8px;">Gesamtübersicht (${personNames.length} Personen)</h2>`;
+      html += `<table><thead><tr>
+        <th>Person</th><th class="num">Tage</th><th class="num">Stunden</th>
+        <th class="num">Überstd.</th><th class="num">Nacht</th>
+        <th class="num">Urlaub</th>`;
+      if (anyGage) html += `<th class="num">Verdienst</th>`;
+      html += `</tr></thead><tbody>`;
+
+      let totalTage = 0, totalStunden = 0, totalUeber = 0, totalNacht = 0, totalUrlaub = 0, totalVerdienst = 0;
+      personNames.forEach(name => {
+        const personSheets = personMap.get(name);
+        const pSettings = getPersonSettings ? getPersonSettings(name, projectFilter && projectFilter !== 'all' ? projectFilter : undefined) : settings;
+        const pCalc = calcTVFFS(personSheets, pSettings);
+        totalTage += pCalc.totalBezahlteTage;
+        totalStunden += pCalc.totalStunden;
+        totalUeber += pCalc.totalUeberstunden;
+        totalNacht += pCalc.totalNacht;
+        totalUrlaub += pCalc.urlaubstage;
+        totalVerdienst += pCalc.gesamtVerdienst || 0;
+        html += `<tr>
+          <td>${name}</td>
+          <td class="num">${pCalc.totalBezahlteTage}</td>
+          <td class="num">${fmt(pCalc.totalStunden)}</td>
+          <td class="num">${fmt(pCalc.totalUeberstunden)}</td>
+          <td class="num">${fmt(pCalc.totalNacht)}</td>
+          <td class="num">${fmt(pCalc.urlaubstage)}</td>`;
+        if (anyGage) html += `<td class="num">${fmtC(pCalc.gesamtVerdienst)}</td>`;
+        html += `</tr>`;
+      });
+
+      html += `<tr class="total-row">
+        <td>Gesamt</td>
+        <td class="num">${totalTage}</td>
+        <td class="num">${fmt(totalStunden)}</td>
+        <td class="num">${fmt(totalUeber)}</td>
+        <td class="num">${fmt(totalNacht)}</td>
+        <td class="num">${fmt(totalUrlaub)}</td>`;
+      if (anyGage) html += `<td class="num">${fmtC(totalVerdienst)}</td>`;
+      html += `</tr></tbody></table>`;
+      html += `</div>`;
+    }
+  } else {
+    // Single-person export
+    const name = personFilter;
+    html += `<h1>ZeitBlick Übersicht — ${name}</h1>`;
+    html += `<span class="subtitle">Exportiert am ${new Date().toLocaleDateString('de-DE')}${projLabel ? ' · Projekt: ' + projLabel : ''} · ${name}</span>`;
+    html += generatePersonSection(timesheets, c, settings, name, true);
   }
 
   html += `</body></html>`;
@@ -321,6 +405,9 @@ export default function Dashboard({ timesheets, calculations, settings: propSett
   const [spesenCollapsed, setSpesenCollapsed] = useState(true);
   const [draggedPerson, setDraggedPerson] = useState(null);
   const [dropTarget, setDropTarget] = useState(null); // 'stammteam' or 'weitere'
+  const [showNewProject, setShowNewProject] = useState(false);
+  const [newProjForm, setNewProjForm] = useState({ name: '', nummer: '', firma: '', start: '' });
+  const [expandedProjEdit, setExpandedProjEdit] = useState(null);
   const hiddenZusatzPersonen = settings.hiddenZusatzPersonen || [];
   const setHiddenZusatzPersonen = (val) => {
     const newVal = typeof val === 'function' ? val(hiddenZusatzPersonen) : val;
@@ -360,7 +447,7 @@ export default function Dashboard({ timesheets, calculations, settings: propSett
     setShowExport(false);
     setExporting(true);
     try {
-      const html = generatePDFHTML(timesheets, c, settings, personFilter);
+      const html = generatePDFHTML(timesheets, c, es, personFilter, { getPersonSettings, resolveName: resolve, projectFilter });
       const personSuffix = personFilter !== 'all' ? `-${personFilter}` : '';
       const result = await window.electronAPI.exportPDF(html, `ZeitBlick-Übersicht${personSuffix}-${new Date().toISOString().slice(0,10)}.pdf`);
       if (result && !result.success && result.error) {
@@ -447,6 +534,14 @@ export default function Dashboard({ timesheets, calculations, settings: propSett
     setZeitkonto(settings.zeitkonto || false);
   }, [settings, es, personFilter, projectFilter]);
 
+  // Auto-select first project when person is selected with no project
+  useEffect(() => {
+    const personLabel = personFilter !== 'all' ? personFilter : null;
+    if (personLabel && projectFilter === 'all' && projects && projects.length > 0) {
+      onProjectFilter && onProjectFilter(projects[0]);
+    }
+  }, [personFilter, projectFilter, projects, onProjectFilter]);
+
   // Save gage — per-person-per-project when both selected, per-person when only person, otherwise global
   const handleGageChange = (value) => {
     setGageInput(value);
@@ -505,6 +600,36 @@ export default function Dashboard({ timesheets, calculations, settings: propSett
   const handleDeleteSpesen = (id) => {
     const newSpesen = (settings.spesen || []).filter(s => s.id !== id);
     onSettings({ ...settings, spesen: newSpesen });
+  };
+
+  const handleCreateProject = () => {
+    if (!newProjForm.name.trim()) return;
+    const name = newProjForm.name.trim();
+    const currentProjects = settings.projects || {};
+    if (currentProjects[name]) return; // already exists
+    onSettings({
+      ...settings,
+      projects: {
+        ...currentProjects,
+        [name]: { projektnummer: newProjForm.nummer.trim(), produktionsfirma: newProjForm.firma.trim(), drehStartDatum: newProjForm.start, stammteam: [] },
+      },
+    });
+    setNewProjForm({ name: '', nummer: '', firma: '', start: '' });
+    setShowNewProject(false);
+    setExpandedProjEdit(name);
+  };
+
+  const handleDeleteProject = (name) => {
+    const updated = { ...(settings.projects || {}) };
+    delete updated[name];
+    onSettings({ ...settings, projects: updated });
+    if (expandedProjEdit === name) setExpandedProjEdit(null);
+  };
+
+  const handleUpdateProjectField = (projectName, field, value) => {
+    const updated = { ...(settings.projects || {}) };
+    updated[projectName] = { ...(updated[projectName] || {}), [field]: value };
+    onSettings({ ...settings, projects: updated });
   };
 
   const spesenTotal = (settings.spesen || []).reduce((sum, s) => sum + s.betrag, 0);
@@ -760,103 +885,154 @@ export default function Dashboard({ timesheets, calculations, settings: propSett
   const uniquePersons = [...new Set((allTimesheets || timesheets).map(t => resolve(t.name || 'Unbekannt')))];
   const showCrewOverview = isAllPersons && uniquePersons.length > 1;
 
-  // Auto-select first project when person is selected with no project
-  useEffect(() => {
-    const personLabel = personFilter !== 'all' ? personFilter : null;
-    if (personLabel && projectFilter === 'all' && projects && projects.length > 0) {
-      onProjectFilter && onProjectFilter(projects[0]);
-    }
-  }, [personFilter, projectFilter, projects, onProjectFilter]);
-
   // --- CREW OVERVIEW (clean, standalone) ---
   if (showCrewOverview) {
+    const PROJ_PALETTE = ['#6366F1', '#22C58F', '#F59E0B', '#F43F5E', '#06B6D4', '#8B5CF6', '#EC4899', '#14B8A6', '#F97316'];
+    const projColor = (name = '') => { let h = 0; for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) >>> 0; return PROJ_PALETTE[h % PROJ_PALETTE.length]; };
+    const crewTotalHours = projectStats.reduce((s, p) => s + p.totalHours, 0);
+    const crewTotalOT = projectStats.reduce((s, p) => s + p.totalOvertime, 0);
+    const fmtH = (n) => Number(n || 0).toLocaleString('de-DE', { minimumFractionDigits: 1, maximumFractionDigits: 1 });
     return (
       <div className="dashboard">
-        <div className="dashboard-header">
-          <div className="dashboard-header-left">
-            <h2>Crew-Übersicht</h2>
-            <span className="subtitle">{uniquePersons.length} Personen · {c.totalWochen} Woche{c.totalWochen !== 1 ? 'n' : ''} importiert</span>
-          </div>
-          <div className="dashboard-header-right">
-            {projects && projects.length > 1 && (
-              <select className="project-filter" value={projectFilter} onChange={e => onProjectFilter(e.target.value)}>
-                <option value="all">Alle Projekte</option>
-                {projects.map(p => <option key={p} value={p}>{p}</option>)}
-              </select>
-            )}
-            <div className="export-dropdown">
-              <button className="export-btn" onClick={() => setShowExport(!showExport)} disabled={exporting} aria-label="Exportieren">
-                {exporting ? '⏳ Exportiert…' : '↗ Exportieren'}
-              </button>
-              {showExport && !exporting && (
-                <div className="export-menu" role="menu">
-                  <button onClick={() => handleExportCSV()} role="menuitem">CSV exportieren</button>
-                  <button onClick={() => handleExportPDF()} role="menuitem">PDF exportieren</button>
-                  <button onClick={() => handleExportExcel()} role="menuitem">Excel exportieren</button>
-                </div>
-              )}
+        {/* ── V3 Dashboard Header ── */}
+        <div className="v3-dash-header" style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: 20 }}>
+          <div>
+            <div className="v3-dash-title">Übersicht</div>
+            <div className="v3-dash-sub">
+              {uniquePersons.length} Personen · {(allTimesheets || timesheets).length} Stundenzettel
+              {projectFilter !== 'all' && ` · ${projectFilter}`}
             </div>
+          </div>
+          <div className="export-dropdown" style={{ position: 'relative' }}>
+            <button className="btn-secondary" onClick={() => setShowExport(!showExport)} disabled={exporting}>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+              {exporting ? 'Exportiert…' : 'Exportieren'}
+            </button>
+            {showExport && !exporting && (
+              <div className="export-menu" role="menu">
+                <button onClick={() => handleExportCSV()} role="menuitem">CSV exportieren</button>
+                <button onClick={() => handleExportPDF()} role="menuitem">PDF exportieren</button>
+                <button onClick={() => handleExportExcel()} role="menuitem">Excel exportieren</button>
+              </div>
+            )}
           </div>
         </div>
 
-        {/* Projektübersicht in Crew View */}
-        {projectStats.length > 1 && projectFilter === 'all' && (
-          <div className="project-tiles-grid">
-            {projectStats.map(ps => {
-              const isCompleted = !!(completedProjects && completedProjects[ps.projekt]);
-              const getInitials = (name) => name.split(' ').map(w => w[0]).join('').toUpperCase().slice(0, 2);
-              return (
-                <div
-                  key={ps.projekt}
-                  className={`project-tile${isCompleted ? ' project-tile-completed' : ''}`}
-                  onClick={() => onProjectFilter && onProjectFilter(ps.projekt)}
-                  role="button"
-                  tabIndex={0}
-                  onKeyDown={(e) => { if (e.key === 'Enter') onProjectFilter && onProjectFilter(ps.projekt); }}
-                  aria-label={`Projekt ${ps.projekt} öffnen`}
-                >
-                  <div className="project-tile-header">
-                    <span className="project-tile-name">
-                      {isCompleted && <span className="project-completed-icon" title="Abgeschlossen">✅</span>}
-                      {ps.projekt}
-                    </span>
-                    <span className="project-tile-badge">{ps.sheets}</span>
-                  </div>
-                  <div className="project-tile-stats">
-                    <div className="project-tile-stat">
-                      <span className="project-tile-stat-value">{ps.totalHours.toFixed(1)}</span>
-                      <span className="project-tile-stat-label">Stunden</span>
+        {/* ── V3 Projekt-Karten ── */}
+        {projectStats.length > 0 && projectFilter === 'all' && (
+          <>
+            <div className="v3-section-head">
+              <div className="v3-section-title">Aktive Projekte</div>
+              <button className="v3-section-link" onClick={() => setShowNewProject(v => !v)}>+ Projekt anlegen</button>
+            </div>
+            <div className="v3-proj-grid">
+              {projectStats.slice(0, 6).map(ps => {
+                const isCompleted = !!(completedProjects && completedProjects[ps.projekt]);
+                const accentColor = projColor(ps.projekt);
+                const projMeta = (settings.projects || {})[ps.projekt] || {};
+                const metaParts = [projMeta.produktionsfirma, projMeta.drehStartDatum ? `ab ${projMeta.drehStartDatum}` : null].filter(Boolean);
+                return (
+                  <button
+                    key={ps.projekt}
+                    className="v3-proj-card"
+                    style={{ opacity: isCompleted ? 0.7 : 1 }}
+                    onClick={() => onProjectFilter && onProjectFilter(ps.projekt)}
+                  >
+                    <div className="v3-proj-bar" style={{ background: accentColor }} />
+                    <div className="v3-proj-name">{ps.projekt}</div>
+                    <div className="v3-proj-meta">
+                      <span>{ps.sheets} Zettel</span>
+                      <span>·</span>
+                      <span>{ps.personen} Person{ps.personen !== 1 ? 'en' : ''}</span>
+                      {metaParts[0] && <><span>·</span><span>{metaParts[0]}</span></>}
                     </div>
-                    <div className="project-tile-stat">
-                      <span className="project-tile-stat-value">{ps.totalOvertime.toFixed(1)}</span>
-                      <span className="project-tile-stat-label">Überstunden</span>
+                    <div>
+                      <div className="v3-proj-stat-val">{fmtH(ps.totalHours)} h</div>
+                      <div className="v3-proj-stat-lbl">Gesamtstunden</div>
                     </div>
-                    <div className="project-tile-stat">
-                      <span className="project-tile-stat-value">{ps.personen}</span>
-                      <span className="project-tile-stat-label">Personen</span>
-                    </div>
-                  </div>
-                  <div className="project-tile-footer">
-                    <div className="project-tile-people">
-                      {ps.people.slice(0, 5).map(p => (
-                        <span key={p} className="project-tile-avatar" title={p}>{getInitials(p)}</span>
-                      ))}
-                      {ps.people.length > 5 && <span className="project-tile-avatar project-tile-avatar-more">+{ps.people.length - 5}</span>}
-                    </div>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
+                  </button>
+                );
+              })}
+            </div>
+          </>
         )}
+
+        {/* Einzelprojekt-Filter aktiv */}
         {projectFilter !== 'all' && projectStats.length > 1 && (
-          <div className="stats-section">
-            <button className="project-filter-reset-btn" onClick={() => onProjectFilter && onProjectFilter('all')}>
-              ← Zurück zur Projektübersicht
+          <button className="project-filter-reset-btn" onClick={() => onProjectFilter && onProjectFilter('all')}>
+            ← Zurück zur Projektübersicht
+          </button>
+        )}
+
+        {/* Single project or no-data: always show create button */}
+        {projectStats.length <= 1 && projectFilter === 'all' && (
+          <div className="proj-create-bar">
+            <button className="proj-create-inline-btn" onClick={() => setShowNewProject(v => !v)}>
+              + Neues Projekt erstellen
             </button>
           </div>
         )}
 
+        {/* Inline project creation form */}
+        {showNewProject && (
+          <div className="proj-create-form-card">
+            <div className="proj-create-form-header">
+              <h3>Neues Projekt</h3>
+              <button className="proj-create-close" onClick={() => setShowNewProject(false)}>×</button>
+            </div>
+            <div className="proj-create-form-grid">
+              <div className="proj-create-field">
+                <label>Projektname *</label>
+                <input type="text" value={newProjForm.name} onChange={e => setNewProjForm(f => ({ ...f, name: e.target.value }))} placeholder="z.B. Mein Film 2026" autoFocus onKeyDown={e => e.key === 'Enter' && handleCreateProject()} />
+              </div>
+              <div className="proj-create-field">
+                <label>Projektnummer</label>
+                <input type="text" value={newProjForm.nummer} onChange={e => setNewProjForm(f => ({ ...f, nummer: e.target.value }))} placeholder="z.B. 12345" />
+              </div>
+              <div className="proj-create-field">
+                <label>Produktionsfirma</label>
+                <input type="text" value={newProjForm.firma} onChange={e => setNewProjForm(f => ({ ...f, firma: e.target.value }))} placeholder="z.B. Bavaria Film" />
+              </div>
+              <div className="proj-create-field">
+                <label>Erster Drehtag</label>
+                <input type="date" value={newProjForm.start} onChange={e => setNewProjForm(f => ({ ...f, start: e.target.value }))} />
+              </div>
+            </div>
+            <div className="proj-create-form-actions">
+              <button className="btn btn-secondary" onClick={() => setShowNewProject(false)}>Abbrechen</button>
+              <button className="btn btn-primary" onClick={handleCreateProject} disabled={!newProjForm.name.trim()}>Erstellen</button>
+            </div>
+          </div>
+        )}
+
+        {/* Project meta editor — shown when expandedProjEdit is set (just after creation) */}
+        {expandedProjEdit && (settings.projects || {})[expandedProjEdit] && (
+          <div className="proj-edit-banner">
+            <div className="proj-edit-banner-title">
+              <span>🎬 {expandedProjEdit}</span>
+              <button className="proj-create-close" onClick={() => setExpandedProjEdit(null)}>×</button>
+            </div>
+            <div className="proj-create-form-grid">
+              <div className="proj-create-field">
+                <label>Projektnummer</label>
+                <input type="text" value={(settings.projects || {})[expandedProjEdit].projektnummer || ''} onChange={e => handleUpdateProjectField(expandedProjEdit, 'projektnummer', e.target.value)} placeholder="z.B. 12345" />
+              </div>
+              <div className="proj-create-field">
+                <label>Produktionsfirma</label>
+                <input type="text" value={(settings.projects || {})[expandedProjEdit].produktionsfirma || ''} onChange={e => handleUpdateProjectField(expandedProjEdit, 'produktionsfirma', e.target.value)} placeholder="z.B. Bavaria Film" />
+              </div>
+              <div className="proj-create-field">
+                <label>Erster Drehtag</label>
+                <input type="date" value={(settings.projects || {})[expandedProjEdit].drehStartDatum || ''} onChange={e => handleUpdateProjectField(expandedProjEdit, 'drehStartDatum', e.target.value)} />
+              </div>
+            </div>
+            <p className="proj-edit-banner-hint">Das Projekt wurde gespeichert. Felder können jederzeit hier bearbeitet werden.</p>
+            <div className="proj-create-form-actions">
+              <button className="btn btn-icon-danger btn-secondary" onClick={() => handleDeleteProject(expandedProjEdit)} title="Projekt löschen">🗑 Projekt löschen</button>
+              <button className="btn btn-primary" onClick={() => setExpandedProjEdit(null)}>Fertig</button>
+            </div>
+          </div>
+        )}
         {/* Person cards with per-project Stammteam (drag & drop) */}
         {(() => {
           // Determine which project to show Stammteam for
@@ -1025,9 +1201,75 @@ export default function Dashboard({ timesheets, calculations, settings: propSett
             );
           };
 
-          // If a project filter is active, show Stammteam/Weitere for that project
+          // If a project filter is active, show new table view
           if (activeProject) {
-            return renderProjectCrew(activeProject);
+            const baseTS = allTimesheets || timesheets;
+            const projectPersons = new Set(
+              baseTS.filter(t => baseProject(t.projekt) === activeProject).map(t => resolve(t.name || 'Unbekannt'))
+            );
+            const tableRows = personStats.filter(ps => projectPersons.has(ps.name));
+            const hasGageAny = tableRows.some(ps => ps.verdienst > 0);
+            const PALETTE = ['#6366F1','#22C58F','#F59E0B','#F43F5E','#06B6D4','#8B5CF6','#EC4899','#14B8A6','#F97316'];
+            const avatarColor = (name) => { let h = 0; for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) >>> 0; return PALETTE[h % PALETTE.length]; };
+            const getInitials = (name) => name.split(' ').filter(Boolean).map(w => w[0]).join('').toUpperCase().slice(0, 2);
+            return (
+              <div className="crew-table-card">
+                <div className="crew-table-card-head">
+                  <h2 className="crew-table-card-title">Übersicht — {activeProject}</h2>
+                  <div className="crew-table-card-actions">
+                    <span style={{ fontSize: 12, color: 'var(--muted)' }}>{tableRows.length} Person{tableRows.length !== 1 ? 'en' : ''}</span>
+                  </div>
+                </div>
+                <table className="crew-timesheets" aria-label="Crew-Übersicht">
+                  <thead>
+                    <tr>
+                      <th style={{ width: '28%' }}>Person</th>
+                      <th>Projekt</th>
+                      <th className="num">Tage</th>
+                      <th className="num">Stunden</th>
+                      <th className="num">Überstd.</th>
+                      {hasGageAny && <th className="num">Verdienst</th>}
+                      <th style={{ width: 44 }}></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {tableRows.map(ps => (
+                      <tr key={ps.name} onClick={() => onPersonFilter && onPersonFilter(ps.name)}>
+                        <td>
+                          <div className="person-cell">
+                            <div className="person-avatar" style={{ background: avatarColor(ps.name) }}>{getInitials(ps.name)}</div>
+                            <div>
+                              <div style={{ fontWeight: 500, color: 'var(--ink)' }}>{ps.name}</div>
+                              {ps.position && <div style={{ fontSize: 11, color: 'var(--muted)' }}>{ps.position}</div>}
+                            </div>
+                          </div>
+                        </td>
+                        <td><span className="proj-badge">{activeProject}</span></td>
+                        <td className="num">{ps.arbeitstage}</td>
+                        <td className="num">{ps.stunden.toLocaleString('de-DE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+                        <td className="num">
+                          {ps.ueberstunden > 0
+                            ? <span className={`ot-badge${ps.ueberstunden / (ps.stunden || 1) > 0.2 ? ' warn' : ''}`}>+{ps.ueberstunden.toLocaleString('de-DE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+                            : <span style={{ color: 'var(--muted)' }}>—</span>}
+                        </td>
+                        {hasGageAny && (
+                          <td className="num amount">
+                            {ps.verdienst > 0
+                              ? <span className="pos">{ps.verdienst.toLocaleString('de-DE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} €</span>
+                              : <span style={{ color: 'var(--muted)' }}>—</span>}
+                          </td>
+                        )}
+                        <td>
+                          <button className="row-open-btn" title="Detail öffnen" onClick={e => { e.stopPropagation(); onPersonFilter && onPersonFilter(ps.name); }}>
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            );
           }
 
           // No project filter and multiple projects — tiles above handle navigation
@@ -1176,24 +1418,39 @@ export default function Dashboard({ timesheets, calculations, settings: propSett
 
   return (
     <div className="dashboard">
-      <div className="dashboard-header">
-        <div className="dashboard-header-left">
+      <div className="page-head">
+        <div>
           {showBackToCrew && (
             <button className="back-to-crew-btn" onClick={() => onPersonFilter && onPersonFilter('all')}>
-              ← Crew-Übersicht
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
+              Crew-Übersicht
             </button>
           )}
-          <h2>{personLabel ? `Übersicht — ${personLabel}` : 'Übersicht'}</h2>
-          <span className="subtitle">
+          <h1 className="page-title">{personLabel ? `Übersicht — ${personLabel}` : 'Übersicht'}</h1>
+          <p className="page-subtitle">
             {personLabel ? `${personLabel} · ` : ''}{c.totalWochen} Woche{c.totalWochen !== 1 ? 'n' : ''} importiert
-          </span>
+          </p>
         </div>
-        <div className="dashboard-header-right">
+        <div className="hstack page-head-actions">
           {personHasMultipleProjects && (
-            <select className="project-filter" value={projectFilter} onChange={e => onProjectFilter(e.target.value)}>
-              {projects.map(p => <option key={p} value={p}>{p}</option>)}
-            </select>
+            <div className="proj-filter-pills">
+              <button
+                className={`proj-filter-pill ${projectFilter === 'all' ? 'active' : ''}`}
+                onClick={() => onProjectFilter('all')}
+              >Alle</button>
+              {projects.map(p => (
+                <button
+                  key={p}
+                  className={`proj-filter-pill ${projectFilter === p ? 'active' : ''}`}
+                  onClick={() => onProjectFilter(p)}
+                >{p}</button>
+              ))}
+            </div>
           )}
+          <button className="btn-ghost" onClick={() => setShowNewProject(v => !v)} title="Neues Projekt erstellen">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+            Projekt
+          </button>
           <div className="export-dropdown">
             <button className="export-btn" onClick={() => setShowExport(!showExport)} disabled={exporting} aria-label="Exportieren">
               {exporting ? '⏳ Exportiert…' : '↗ Exportieren'}
@@ -1209,33 +1466,154 @@ export default function Dashboard({ timesheets, calculations, settings: propSett
         </div>
       </div>
 
+      {/* Project creation form (regular view) */}
+      {showNewProject && (
+        <div className="proj-create-form-card">
+          <div className="proj-create-form-header">
+            <h3>Neues Projekt</h3>
+            <button className="proj-create-close" onClick={() => setShowNewProject(false)}>×</button>
+          </div>
+          <div className="proj-create-form-grid">
+            <div className="proj-create-field">
+              <label>Projektname *</label>
+              <input type="text" value={newProjForm.name} onChange={e => setNewProjForm(f => ({ ...f, name: e.target.value }))} placeholder="z.B. Mein Film 2026" autoFocus onKeyDown={e => e.key === 'Enter' && handleCreateProject()} />
+            </div>
+            <div className="proj-create-field">
+              <label>Projektnummer</label>
+              <input type="text" value={newProjForm.nummer} onChange={e => setNewProjForm(f => ({ ...f, nummer: e.target.value }))} placeholder="z.B. 12345" />
+            </div>
+            <div className="proj-create-field">
+              <label>Produktionsfirma</label>
+              <input type="text" value={newProjForm.firma} onChange={e => setNewProjForm(f => ({ ...f, firma: e.target.value }))} placeholder="z.B. Bavaria Film" />
+            </div>
+            <div className="proj-create-field">
+              <label>Erster Drehtag</label>
+              <input type="date" value={newProjForm.start} onChange={e => setNewProjForm(f => ({ ...f, start: e.target.value }))} />
+            </div>
+          </div>
+          <div className="proj-create-form-actions">
+            <button className="btn btn-secondary" onClick={() => setShowNewProject(false)}>Abbrechen</button>
+            <button className="btn btn-primary" onClick={handleCreateProject} disabled={!newProjForm.name.trim()}>Erstellen</button>
+          </div>
+        </div>
+      )}
+      {expandedProjEdit && (settings.projects || {})[expandedProjEdit] && (
+        <div className="proj-edit-banner">
+          <div className="proj-edit-banner-title">
+            <span>🎬 {expandedProjEdit}</span>
+            <button className="proj-create-close" onClick={() => setExpandedProjEdit(null)}>×</button>
+          </div>
+          <div className="proj-create-form-grid">
+            <div className="proj-create-field">
+              <label>Projektnummer</label>
+              <input type="text" value={(settings.projects || {})[expandedProjEdit].projektnummer || ''} onChange={e => handleUpdateProjectField(expandedProjEdit, 'projektnummer', e.target.value)} placeholder="z.B. 12345" />
+            </div>
+            <div className="proj-create-field">
+              <label>Produktionsfirma</label>
+              <input type="text" value={(settings.projects || {})[expandedProjEdit].produktionsfirma || ''} onChange={e => handleUpdateProjectField(expandedProjEdit, 'produktionsfirma', e.target.value)} placeholder="z.B. Bavaria Film" />
+            </div>
+            <div className="proj-create-field">
+              <label>Erster Drehtag</label>
+              <input type="date" value={(settings.projects || {})[expandedProjEdit].drehStartDatum || ''} onChange={e => handleUpdateProjectField(expandedProjEdit, 'drehStartDatum', e.target.value)} />
+            </div>
+          </div>
+          <p className="proj-edit-banner-hint">Das Projekt wurde gespeichert. Felder können jederzeit hier bearbeitet werden.</p>
+          <div className="proj-create-form-actions">
+            <button className="btn btn-icon-danger btn-secondary" onClick={() => handleDeleteProject(expandedProjEdit)}>🗑 Projekt löschen</button>
+            <button className="btn btn-primary" onClick={() => setExpandedProjEdit(null)}>Fertig</button>
+          </div>
+        </div>
+      )}
+
       {/* Alles unterhalb nur zeigen wenn Projekt gewählt (oder nur ein Projekt existiert) */}
       {(<>
 
-      {/* Gage Eingabe Bar */}
-      <div className="gage-bar">
-        <div className="gage-bar-left">
-          {personFilter !== 'all' && projectFilter !== 'all' ? (
-            <span className="gage-person-label">💰 {personFilter} · 🎬 {projectFilter}</span>
-          ) : personFilter !== 'all' ? (
-            <span className="gage-person-label">💰 {personFilter}</span>
-          ) : projectFilter !== 'all' ? (
-            <span className="gage-person-label">🎬 {projectFilter}</span>
-          ) : null}
-          <div className="gage-type-toggle">
-            <button
-              className={`toggle-btn ${gageType === 'tag' ? 'active' : ''}`}
-              onClick={() => handleGageTypeChange('tag')}
-            >
-              Tagesgage
-            </button>
-            <button
-              className={`toggle-btn ${gageType === 'woche' ? 'active' : ''}`}
-              onClick={() => handleGageTypeChange('woche')}
-            >
-              Wochengage
-            </button>
+      {/* KPI Row */}
+      <div className="kpi-row">
+        <div className="kpi-card">
+          <div className="kpi-card-label">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15 14"/></svg>
+            Gesamtstunden
           </div>
+          <div className="kpi-card-value">
+            {c.totalStunden.toLocaleString('de-DE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+            <span className="unit"> Std.</span>
+          </div>
+          {c.totalArbeitstage > 0 && (
+            <div className="kpi-card-trend">{c.totalArbeitstage} Arbeitstage</div>
+          )}
+        </div>
+        <div className="kpi-card">
+          <div className="kpi-card-label">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/><polyline points="17 6 23 6 23 12"/></svg>
+            Überstunden
+          </div>
+          <div className="kpi-card-value">
+            {c.totalUeberstunden.toLocaleString('de-DE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+            <span className="unit"> Std.</span>
+          </div>
+          {c.totalStunden > 0 && (
+            <div className={`kpi-card-trend${c.totalUeberstunden / c.totalStunden > 0.15 ? ' warn' : ''}`}>
+              {((c.totalUeberstunden / c.totalStunden) * 100).toLocaleString('de-DE', { minimumFractionDigits: 1, maximumFractionDigits: 1 })}% des Volumens
+            </div>
+          )}
+        </div>
+        <div className="kpi-card">
+          <div className="kpi-card-label">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
+            Verdienst (brutto)
+          </div>
+          <div className="kpi-card-value">
+            {hasGage
+              ? c.gesamtVerdienst.toLocaleString('de-DE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+              : '–'}
+            {hasGage && <span className="unit"> €</span>}
+          </div>
+          {hasGage && c.grundgage > 0 && (
+            <div className="kpi-card-trend">
+              {formatCurrency(c.grundgage)} Grundgage
+            </div>
+          )}
+          {!hasGage && (
+            <div className="kpi-card-trend">Gage eingeben für Berechnung</div>
+          )}
+        </div>
+        <div className="kpi-card">
+          <div className="kpi-card-label">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg>
+            Urlaub angespart
+          </div>
+          <div className="kpi-card-value">
+            {c.urlaubstage ?? '–'}
+            {c.urlaubstage != null && <span className="unit"> Tage</span>}
+          </div>
+          {c.urlaubstageOffen > 0 && (
+            <div className="kpi-card-trend">{c.urlaubstageOffen} offen, auszahlbar</div>
+          )}
+          {c.urlaubstageOffen === 0 && c.urlaubstageGenommen > 0 && (
+            <div className="kpi-card-trend">{c.urlaubstageGenommen} genommen</div>
+          )}
+        </div>
+      </div>
+
+      {/* Gage Eingabe Card */}
+      <div className="card gage-settings-card">
+        <div className="card-head">
+          <div className="hstack" style={{gap: 6}}>
+            <span className="card-title">Gage</span>
+            {personFilter !== 'all' && (
+              <span className="gage-ctx-badge">{personFilter}</span>
+            )}
+            {projectFilter !== 'all' && (
+              <span className="gage-ctx-badge gage-ctx-project">{projectFilter}</span>
+            )}
+          </div>
+          <div className="tabs gage-tabs">
+            <button className={`tab ${gageType === 'tag' ? 'active' : ''}`} onClick={() => handleGageTypeChange('tag')}>Tagesgage</button>
+            <button className={`tab ${gageType === 'woche' ? 'active' : ''}`} onClick={() => handleGageTypeChange('woche')}>Wochengage</button>
+          </div>
+        </div>
+        <div className="card-body gage-settings-body">
           <div className="gage-input-group">
             <input
               type="text"
@@ -1249,8 +1627,7 @@ export default function Dashboard({ timesheets, calculations, settings: propSett
           {displayStundensatz() && (
             <span className="gage-hint">= {displayStundensatz()} €/Std.</span>
           )}
-        </div>
-        <div className="gage-bar-right">
+          <div className="spacer" />
           <div className="zeitkonto-toggle" onClick={handleZeitkontoToggle}>
             <div className={`toggle-switch ${zeitkonto ? 'on' : ''}`}>
               <div className="toggle-knob" />
@@ -1330,8 +1707,14 @@ export default function Dashboard({ timesheets, calculations, settings: propSett
 
       {/* === Projektübersicht === */}
       {personProjectStats.length > 1 && (
-        <div className="stats-section">
-          <h3 className="section-title">Projektübersicht</h3>
+        <div className="card" style={{marginBottom: 24}}>
+          <div className="card-head">
+            <h2 className="card-title">Projektübersicht</h2>
+            {projectFilter !== 'all' && (
+              <button className="btn-ghost" style={{fontSize: 12}} onClick={() => onProjectFilter && onProjectFilter('all')}>✕ Filter zurücksetzen</button>
+            )}
+          </div>
+          <div className="card-body" style={{paddingTop: 12}}>
           <div className="project-breakdown-grid">
             {personProjectStats.map(ps => (
               <button
@@ -1369,50 +1752,55 @@ export default function Dashboard({ timesheets, calculations, settings: propSett
               </button>
             ))}
           </div>
-          {projectFilter !== 'all' && (
-            <button className="project-filter-reset-btn" onClick={() => onProjectFilter && onProjectFilter('all')}>
-              ✕ Projektfilter zurücksetzen — alle Projekte anzeigen
-            </button>
-          )}
+          </div>
         </div>
       )}
 
       {/* Arbeitszeit Karten */}
-      <div className="stats-section">
-        <h3 className="section-title">Arbeitszeit{projectFilter !== 'all' ? ` — ${projectFilter}` : ''}</h3>
-        <div className="stats-grid">
-          <StatCard label="Arbeitstage" value={c.totalArbeitstage} unit="Tage" color="blue" />
-          {c.totalKranktage > 0 && <StatCard label="Krankheitstage" value={c.totalKranktage} unit="Tage" color="red" />}
-          {c.totalAZVTage > 0 && <StatCard label="AZV-Tage" value={c.totalAZVTage} unit="Tage" color="cyan" />}
-          <StatCard label="Bezahlte Tage" value={c.totalBezahlteTage} unit="Tage" color="green" />
-          <StatCard label="Gesamtstunden" value={c.totalStunden} unit="Std." color="purple" />
-          <StatCard label="Ø Stunden/Tag" value={c.durchschnittStundenProTag} unit="Std." color="cyan" />
-          <StatCard label="Überstunden gesamt" value={c.totalUeberstunden} unit="Std." color="orange" />
+      <div className="card" style={{marginBottom: 24}}>
+        <div className="card-head">
+          <h2 className="card-title">Arbeitszeit{projectFilter !== 'all' ? ` — ${projectFilter}` : ''}</h2>
+        </div>
+        <div className="card-body" style={{paddingTop: 12}}>
+          <div className="stats-grid">
+            <StatCard label="Arbeitstage" value={c.totalArbeitstage} unit="Tage" color="blue" />
+            {c.totalKranktage > 0 && <StatCard label="Krankheitstage" value={c.totalKranktage} unit="Tage" color="red" />}
+            {c.totalAZVTage > 0 && <StatCard label="AZV-Tage" value={c.totalAZVTage} unit="Tage" color="cyan" />}
+            <StatCard label="Bezahlte Tage" value={c.totalBezahlteTage} unit="Tage" color="green" />
+            <StatCard label="Gesamtstunden" value={c.totalStunden} unit="Std." color="purple" />
+            <StatCard label="Ø Stunden/Tag" value={c.durchschnittStundenProTag} unit="Std." color="cyan" />
+            <StatCard label="Überstunden gesamt" value={c.totalUeberstunden} unit="Std." color="orange" />
+          </div>
         </div>
       </div>
 
       {/* Überstunden Detail */}
-      <div className="stats-section">
-        <h3 className="section-title">Überstunden & Zuschläge</h3>
-        <div className="stats-grid">
-          <StatCard label="Ü 25% (TZ 5.4.3.2)" value={c.totalUeberstunden25} unit="Std." color="yellow" />
-          <StatCard label="Ü 50% (TZ 5.4.3.2)" value={c.totalUeberstunden50} unit="Std." color="orange" />
-          {c.totalUeberstunden100 > 0 && <StatCard label="Ü 100% (Feiertag)" value={c.totalUeberstunden100} unit="Std." color="red" />}
-          <StatCard label="Nachtstunden" value={c.totalNacht} unit="Std." color="indigo" />
-          <StatCard label="Fahrzeit" value={c.totalFahrzeit} unit="Std." color="gray" />
-          <StatCard label="Samstage" value={c.totalSamstagsstunden} unit="Std." color="teal" />
-          <StatCard label="Sonntage" value={c.totalSonntagsstunden} unit="Std." color="pink" />
-          {c.totalFeiertagstage > 0 && <StatCard label="Feiertage" value={c.totalFeiertagstage} unit="Tage" color="red" />}
-          {c.weeklyOT25 > 0 && <StatCard label="Wöch. Ü 25% (5.4.3.3)" value={c.weeklyOT25} unit="Std." color="yellow" />}
-          {c.weeklyOT50 > 0 && <StatCard label="Wöch. Ü 50% (5.4.3.3)" value={c.weeklyOT50} unit="Std." color="orange" />}
+      <div className="card" style={{marginBottom: 24}}>
+        <div className="card-head">
+          <h2 className="card-title">Überstunden & Zuschläge</h2>
+        </div>
+        <div className="card-body" style={{paddingTop: 12}}>
+          <div className="stats-grid">
+            <StatCard label="Ü 25% (TZ 5.4.3.2)" value={c.totalUeberstunden25} unit="Std." color="yellow" />
+            <StatCard label="Ü 50% (TZ 5.4.3.2)" value={c.totalUeberstunden50} unit="Std." color="orange" />
+            {c.totalUeberstunden100 > 0 && <StatCard label="Ü 100% (Feiertag)" value={c.totalUeberstunden100} unit="Std." color="red" />}
+            <StatCard label="Nachtstunden" value={c.totalNacht} unit="Std." color="indigo" />
+            <StatCard label="Fahrzeit" value={c.totalFahrzeit} unit="Std." color="gray" />
+            <StatCard label="Samstage" value={c.totalSamstagsstunden} unit="Std." color="teal" />
+            <StatCard label="Sonntage" value={c.totalSonntagsstunden} unit="Std." color="pink" />
+            {c.totalFeiertagstage > 0 && <StatCard label="Feiertage" value={c.totalFeiertagstage} unit="Tage" color="red" />}
+            {c.weeklyOT25 > 0 && <StatCard label="Wöch. Ü 25% (5.4.3.3)" value={c.weeklyOT25} unit="Std." color="yellow" />}
+            {c.weeklyOT50 > 0 && <StatCard label="Wöch. Ü 50% (5.4.3.3)" value={c.weeklyOT50} unit="Std." color="orange" />}
+          </div>
         </div>
       </div>
 
       {/* Zeitkonto */}
       {zeitkonto && c.totalUeberstunden > 0 && (
-        <div className="stats-section">
-          <h3 className="section-title">Zeitkonto (TVFFS)</h3>
-          <div className="zeitkonto-card">
+        <div className="zeitkonto-card" style={{marginBottom: 24}}>
+          <div className="card-head zeitkonto-card-head">
+            <h2 className="card-title" style={{color: 'var(--accent-blue)'}}>Zeitkonto (TVFFS)</h2>
+          </div>
             <div className="zeitkonto-balance">
               <div className="zeitkonto-big-number">
                 {c.zeitkontoStunden?.toLocaleString('de-DE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
@@ -1442,15 +1830,14 @@ export default function Dashboard({ timesheets, calculations, settings: propSett
               Überstunden werden nicht ausbezahlt, sondern dem Zeitkonto gutgeschrieben.
               Zuschläge (25%/50%/100%) werden weiterhin ausbezahlt.
             </div>
-          </div>
         </div>
       )}
-
-      {/* Vergütung */}
       {hasGage && (
-        <div className="stats-section">
-          <h3 className="section-title">Vergütung (TV-FFS 2025)</h3>
-          <div className="earnings-card">
+        <div className="card" style={{marginBottom: 24}}>
+          <div className="card-head">
+            <h2 className="card-title">Vergütung (TV-FFS 2025)</h2>
+          </div>
+          <div className="earnings-card earnings-inner">
             <div className="earnings-breakdown">
               <EarningsRow label="Grundgage" sublabel={`${c.totalBezahlteTage} Tage × ${formatCurrency(c.tagesgageEffective)}${c.totalKranktage > 0 ? ` (inkl. ${c.totalKranktage} Kranktag${c.totalKranktage > 1 ? 'e' : ''})` : ''}${c.totalAZVTage > 0 ? ` (inkl. ${c.totalAZVTage} AZV-Tag${c.totalAZVTage > 1 ? 'e' : ''})` : ''}`} value={c.grundgage} />
               {!zeitkonto && c.totalUeberstunden > 0 && (
@@ -1477,23 +1864,40 @@ export default function Dashboard({ timesheets, calculations, settings: propSett
       )}
 
       {/* Urlaub */}
-      <div className="stats-section">
-        <h3 className="section-title">Urlaub (TZ 14.1 TV-FFS)</h3>
-        <div className="stats-grid">
-          <StatCard label="Gesammelte Urlaubstage" value={c.urlaubstage} unit="Tage" color="green" large />
+      <div className="card" style={{marginBottom: 24}}>
+        <div className="card-head">
+          <h2 className="card-title">Urlaub (TZ 14.1 TV-FFS)</h2>
         </div>
-        {c.anstellungstage > 0 ? (
-          <p className="stats-note">0,5 Urlaubstag pro 7 zusammenhängende Anstellungstage ({c.anstellungstage} Tage ÷ 7 = {c.totalWochen} × 0,5 = {Number(c.urlaubstage).toFixed(2)} Tage). Urlaubstage werden gesammelt und nicht als Geld ausgezahlt.</p>
-        ) : (
-          <p className="stats-note">Summe der individuell berechneten Urlaubstage aller Personen (0,5 Tage pro 7 Anstellungstage). Urlaubstage werden gesammelt und nicht als Geld ausgezahlt.</p>
-        )}
+        <div className="card-body" style={{paddingTop: 12}}>
+          <div className="stats-grid">
+            <StatCard label="Gesammelte Urlaubstage" value={c.urlaubstage} unit="Tage" color="green" large />
+          </div>
+          {c.anstellungstage > 0 ? (
+            <p className="stats-note">0,5 Urlaubstag pro 7 zusammenhängende Anstellungstage ({c.anstellungstage} Tage ÷ 7 = {c.totalWochen} × 0,5 = {Number(c.urlaubstage).toFixed(2)} Tage). Urlaubstage werden gesammelt und nicht als Geld ausgezahlt.</p>
+          ) : (
+            <p className="stats-note">Summe der individuell berechneten Urlaubstage aller Personen (0,5 Tage pro 7 Anstellungstage). Urlaubstage werden gesammelt und nicht als Geld ausgezahlt.</p>
+          )}
+        </div>
       </div>
 
       {/* Stunden-Chart */}
       {chartData.length > 1 && (
-        <div className="stats-section">
-          <h3 className="section-title">Stundenverlauf</h3>
-          <div className="chart-container">
+        <div className="card" style={{ marginBottom: 24 }}>
+          <div className="card-head">
+            <h2 className="card-title">Stundenverlauf</h2>
+            <div className="card-actions">
+              {chartData.length > 0 && (
+                <span style={{ fontSize: 12, color: 'var(--muted)' }}>
+                  {chartData[0]?.label} – {chartData[chartData.length - 1]?.label}
+                </span>
+              )}
+              <div className="chart-legend" style={{ margin: 0 }}>
+                <span className="chart-legend-item"><span className="chart-dot chart-dot-total" /> Gesamt</span>
+                <span className="chart-legend-item"><span className="chart-dot chart-dot-ot" /> Überstunden</span>
+              </div>
+            </div>
+          </div>
+          <div className="card-body">
             <div className="chart-bars">
               {chartData.map((d, i) => (
                 <div key={i} className="chart-bar-group">
@@ -1516,10 +1920,6 @@ export default function Dashboard({ timesheets, calculations, settings: propSett
                   <span className="chart-label">{d.label}</span>
                 </div>
               ))}
-            </div>
-            <div className="chart-legend">
-              <span className="chart-legend-item"><span className="chart-dot chart-dot-total" /> Gesamt</span>
-              <span className="chart-legend-item"><span className="chart-dot chart-dot-ot" /> Überstunden</span>
             </div>
           </div>
         </div>
@@ -1590,22 +1990,26 @@ export default function Dashboard({ timesheets, calculations, settings: propSett
       </>)}
 
       {/* Letzte Einträge */}
-      <div className="stats-section">
-        <h3 className="section-title">Letzte Einträge</h3>
-        <div className="recent-sheets">
-          {sortedTimesheets.slice(-5).reverse().map(sheet => (
-            <button key={sheet.id} className="recent-sheet-card" onClick={() => onViewDetail(sheet)}>
-              <div className="sheet-info">
-                <span className="sheet-project">{sheet.projekt || 'Unbekannt'}</span>
-                <span className="sheet-dates">
-                  {sheet.days.find(d => d.datum)?.datum || 'Kein Datum'}
-                </span>
-              </div>
-              <div className="sheet-hours">
-                {sheet.totals?.stundenTotal || 0} Std.
-              </div>
-            </button>
-          ))}
+      <div className="card" style={{marginBottom: 24}}>
+        <div className="card-head">
+          <h2 className="card-title">Letzte Einträge</h2>
+        </div>
+        <div className="card-body" style={{paddingTop: 10, paddingBottom: 10}}>
+          <div className="recent-sheets">
+            {sortedTimesheets.slice(-5).reverse().map(sheet => (
+              <button key={sheet.id} className="recent-sheet-card" onClick={() => onViewDetail(sheet)}>
+                <div className="sheet-info">
+                  <span className="sheet-project">{sheet.projekt || 'Unbekannt'}</span>
+                  <span className="sheet-dates">
+                    {sheet.days.find(d => d.datum)?.datum || 'Kein Datum'}
+                  </span>
+                </div>
+                <div className="sheet-hours">
+                  {sheet.totals?.stundenTotal || 0} Std.
+                </div>
+              </button>
+            ))}
+          </div>
         </div>
       </div>
     </div>

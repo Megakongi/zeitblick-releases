@@ -1,7 +1,112 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { useUpdateChecker } from './UpdateOverlay';
 
-export default function Settings({ settings, onSave, timesheets, setTimesheets }) {
+/**
+ * Schritt-für-Schritt-Einrichtungshilfe für die n8n-Anbindung.
+ * Erklärt iCloud-Ordner, n8n-Installation, IMAP-Workflow für Dispo-PDFs
+ * und das Dateinamen-Format. Mit Kopier-Buttons für Pfade/Snippets.
+ */
+function N8NSetupGuide({ folder }) {
+  const [open, setOpen] = useState(false);
+  const [copied, setCopied] = useState('');
+
+  const copy = (key, text) => {
+    try { navigator.clipboard.writeText(text); setCopied(key); setTimeout(() => setCopied(''), 1500); } catch { /* ignore */ }
+  };
+
+  const folderPath = folder || '~/Library/Mobile Documents/com~apple~CloudDocs/ZeitBlick';
+
+  const CopyBtn = ({ id, text }) => (
+    <button type="button" className="n8n-copy-btn" onClick={() => copy(id, text)}>
+      {copied === id ? '✓ Kopiert' : 'Kopieren'}
+    </button>
+  );
+
+  return (
+    <div className="settings-card n8n-guide">
+      <button type="button" className="n8n-guide-toggle" onClick={() => setOpen(o => !o)}>
+        <span>🧭 Einrichtungshilfe: Mailpostfach → Dispos</span>
+        <span className={`n8n-guide-chevron${open ? ' open' : ''}`}>▾</span>
+      </button>
+
+      {open && (
+        <div className="n8n-guide-body">
+          <p className="settings-description">
+            Mit n8n holst du Dispo-PDFs automatisch aus deinem Mailpostfach und legst sie in deinen
+            ZeitBlick-Ordner. ZeitBlick erkennt sie dann im Tab <strong>„Dispos"</strong>. So geht's:
+          </p>
+
+          <div className="n8n-step">
+            <div className="n8n-step-num">1</div>
+            <div className="n8n-step-content">
+              <div className="n8n-step-title">ZeitBlick-Ordner in iCloud anlegen</div>
+              <p>Erstelle (falls noch nicht vorhanden) einen Ordner <code>ZeitBlick</code> in iCloud Drive. Diesen Pfad nutzt n8n als Ziel:</p>
+              <div className="n8n-code-row">
+                <code className="n8n-code">{folderPath}</code>
+                <CopyBtn id="folder" text={folderPath} />
+              </div>
+            </div>
+          </div>
+
+          <div className="n8n-step">
+            <div className="n8n-step-num">2</div>
+            <div className="n8n-step-content">
+              <div className="n8n-step-title">n8n installieren</div>
+              <p>n8n ist ein kostenloses Automatisierungs-Tool. Am einfachsten lokal per Docker oder npx:</p>
+              <div className="n8n-code-row">
+                <code className="n8n-code">npx n8n</code>
+                <CopyBtn id="npx" text="npx n8n" />
+              </div>
+              <p className="n8n-hint">Alternativ n8n Cloud (n8n.io) – dann muss der Ziel-Ordner aber für n8n erreichbar sein (z.B. via lokalem Agent). Für iCloud auf deinem Mac ist die lokale Variante am einfachsten.</p>
+            </div>
+          </div>
+
+          <div className="n8n-step">
+            <div className="n8n-step-num">3</div>
+            <div className="n8n-step-content">
+              <div className="n8n-step-title">Workflow in n8n bauen</div>
+              <p>Lege einen Workflow mit diesen Knoten an:</p>
+              <ul className="n8n-list">
+                <li><strong>IMAP Email</strong> (Trigger) – verbindet dein Postfach, reagiert auf neue Mails. Tipp: per Filter nur Mails mit Betreff „Dispo" / „Dispo" / „Callsheet" behandeln.</li>
+                <li><strong>IF / Filter</strong> – nur Mails mit PDF-Anhang weiterleiten.</li>
+                <li><strong>Read/Write Files from Disk</strong> (oder „Move Binary Data" → „Write File") – speichert den PDF-Anhang in den ZeitBlick-Ordner.</li>
+              </ul>
+              <p>Als Dateipfad im „Write File"-Knoten:</p>
+              <div className="n8n-code-row">
+                <code className="n8n-code">{folderPath}/{'{{$binary.attachment_0.fileName}}'}</code>
+                <CopyBtn id="writepath" text={`${folderPath}/{{$binary.attachment_0.fileName}}`} />
+              </div>
+            </div>
+          </div>
+
+          <div className="n8n-step">
+            <div className="n8n-step-num">4</div>
+            <div className="n8n-step-content">
+              <div className="n8n-step-title">Dateinamen für beste Erkennung</div>
+              <p>ZeitBlick liest <strong>Datum</strong>, <strong>Drehtag</strong> und <strong>Projekt</strong> aus dem Dateinamen. Diese Formate werden zuverlässig erkannt:</p>
+              <ul className="n8n-list">
+                <li><strong>Datum:</strong> <code>26.03.26</code>, <code>26.03.2026</code>, <code>260326</code> (JJMMTT) oder <code>20260326</code></li>
+                <li><strong>Drehtag:</strong> <code>DT 1</code>, <code>22. DT</code>, <code>SD 49</code>, <code>Aufbautag</code>, <code>Nachdreh</code></li>
+                <li><strong>Projekt:</strong> voller Name, Projekt-<em>Kürzel</em> (siehe Projekte) oder Projektnummer</li>
+              </ul>
+              <p className="n8n-hint">Wird das Projekt nicht erkannt, ordnest du es in der Dispo-Liste einfach per Dropdown zu. Das Datum reicht meist schon – der Rest ist optional.</p>
+            </div>
+          </div>
+
+          <div className="n8n-step">
+            <div className="n8n-step-num">5</div>
+            <div className="n8n-step-content">
+              <div className="n8n-step-title">Fertig – in ZeitBlick prüfen</div>
+              <p>Öffne den Tab <strong>„Dispos"</strong> und klicke <strong>„↻ Synchronisieren"</strong>. Neue PDFs aus dem Ordner erscheinen als Karten. n8n läuft im Hintergrund und legt künftig automatisch neue Dispos ab.</p>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+export default function Settings({ settings, onSave, timesheets, setTimesheets, onSyncN8N, onRestartTour }) {
   const [newPosition, setNewPosition] = useState('');
   const [newPositionGage, setNewPositionGage] = useState('');
 
@@ -10,15 +115,6 @@ export default function Settings({ settings, onSave, timesheets, setTimesheets }
   const [editingProject, setEditingProject] = useState(null);
   const [renamingProject, setRenamingProject] = useState(null);
   const [renameProjectValue, setRenameProjectValue] = useState('');
-
-  // Crew management state
-  const [newCrewName, setNewCrewName] = useState('');
-  const [editingCrew, setEditingCrew] = useState(null); // crew name being edited
-  const [renamingCrew, setRenamingCrew] = useState(null); // crew name being renamed
-  const [renameValue, setRenameValue] = useState('');
-  const [newMemberName, setNewMemberName] = useState('');
-  const [newMemberPosition, setNewMemberPosition] = useState('');
-  const [newMemberAbteilung, setNewMemberAbteilung] = useState('');
 
   // Backup state
   const [backups, setBackups] = useState([]);
@@ -33,13 +129,12 @@ export default function Settings({ settings, onSave, timesheets, setTimesheets }
 
   const positionGagen = settings.positionGagen || {};
   const nameAliases = settings.nameAliases || {};
-  const crews = settings.crews || {};
   const projects = settings.projects || {};
 
   // ===== Project Management Handlers =====
   const handleAddProject = () => {
     if (!newProjectName.trim()) return;
-    const updatedProjects = { ...projects, [newProjectName.trim()]: { projektnummer: '', produktionsfirma: '', crew: '', drehStartDatum: '' } };
+    const updatedProjects = { ...projects, [newProjectName.trim()]: { projektnummer: '', produktionsfirma: '', drehStartDatum: '' } };
     onSave({ ...settings, projects: updatedProjects });
     setNewProjectName('');
     setEditingProject(newProjectName.trim());
@@ -166,81 +261,99 @@ export default function Settings({ settings, onSave, timesheets, setTimesheets }
     onSave({ ...settings, nameAliases: na });
   };
 
-  // ===== Crew Management Handlers =====
-  const handleAddCrew = () => {
-    if (!newCrewName.trim()) return;
-    const updatedCrews = { ...crews, [newCrewName.trim()]: { members: [] } };
-    onSave({ ...settings, crews: updatedCrews });
-    setNewCrewName('');
-    setEditingCrew(newCrewName.trim());
-  };
+  const [settingsTab, setSettingsTab] = useState('projekte');
 
-  const handleDeleteCrew = (crewName) => {
-    const updatedCrews = { ...crews };
-    delete updatedCrews[crewName];
-    onSave({ ...settings, crews: updatedCrews });
-    if (editingCrew === crewName) setEditingCrew(null);
-  };
+  // n8n-Anbindung
+  const [n8nFolderInput, setN8nFolderInput] = useState(settings.n8nFolder || '');
+  const [n8nDefaultFolder, setN8nDefaultFolder] = useState('');
+  const [n8nStatus, setN8nStatus] = useState('');
+  useEffect(() => {
+    if (window.electronAPI && window.electronAPI.getDefaultN8NFolder) {
+      window.electronAPI.getDefaultN8NFolder().then(p => setN8nDefaultFolder(p || '')).catch(() => {});
+    }
+  }, []);
+  const handleSaveN8nFolder = () => { onSave({ ...settings, n8nFolder: n8nFolderInput.trim() }); setN8nStatus('Ordner gespeichert.'); setTimeout(() => setN8nStatus(''), 3000); };
+  const handleToggleN8n = () => onSave({ ...settings, n8nEnabled: !settings.n8nEnabled });
+  const handleSyncN8n = async () => { setN8nStatus('Synchronisiere…'); try { await (onSyncN8N && onSyncN8N()); setN8nStatus('Synchronisierung gestartet.'); } catch { setN8nStatus('Fehler bei der Synchronisierung.'); } setTimeout(() => setN8nStatus(''), 4000); };
 
-  const handleRenameCrew = (oldName, newName) => {
-    if (!newName.trim() || newName === oldName || crews[newName]) return;
-    const updatedCrews = { ...crews };
-    updatedCrews[newName.trim()] = updatedCrews[oldName];
-    delete updatedCrews[oldName];
-    onSave({ ...settings, crews: updatedCrews });
-    if (editingCrew === oldName) setEditingCrew(newName.trim());
-  };
-
-  const handleAddMember = (crewName) => {
-    if (!newMemberName.trim()) return;
-    const crew = { ...crews[crewName] };
-    crew.members = [...(crew.members || []), {
-      name: newMemberName.trim(),
-      position: newMemberPosition.trim(),
-      abteilung: newMemberAbteilung.trim(),
-    }];
-    onSave({ ...settings, crews: { ...crews, [crewName]: crew } });
-    setNewMemberName('');
-    setNewMemberPosition('');
-    setNewMemberAbteilung('');
-  };
-
-  const handleRemoveMember = (crewName, memberIdx) => {
-    const crew = { ...crews[crewName] };
-    crew.members = crew.members.filter((_, i) => i !== memberIdx);
-    onSave({ ...settings, crews: { ...crews, [crewName]: crew } });
-  };
-
-  const handleUpdateMember = (crewName, memberIdx, field, value) => {
-    const crew = { ...crews[crewName] };
-    crew.members = crew.members.map((m, i) => i === memberIdx ? { ...m, [field]: value } : m);
-    onSave({ ...settings, crews: { ...crews, [crewName]: crew } });
-  };
-
-  // Unique names/positions/abteilungen from existing timesheets for suggestions
-  const allNamesFromSheets = useMemo(() => {
-    if (!timesheets || timesheets.length === 0) return [];
-    return [...new Set(timesheets.map(ts => ts.name).filter(Boolean))].sort();
-  }, [timesheets]);
-
-  const allPositionsFromSheets = useMemo(() => {
-    if (!timesheets || timesheets.length === 0) return [];
-    return [...new Set(timesheets.map(ts => ts.position).filter(Boolean))].sort();
-  }, [timesheets]);
-
-  const allAbteilungenFromSheets = useMemo(() => {
-    if (!timesheets || timesheets.length === 0) return [];
-    return [...new Set(timesheets.map(ts => ts.abteilung).filter(Boolean))].sort();
-  }, [timesheets]);
+  const settingsNavItems = [
+    { id: 'projekte', label: 'Projekte', icon: '🎬' },
+    { id: 'gagen', label: 'Gagen', icon: '💶' },
+    { id: 'namen', label: 'Namen & Aliases', icon: '👤' },
+    { id: 'n8n', label: 'n8n', icon: '🔗' },
+    { id: 'system', label: 'System & Export', icon: '⚙️' },
+  ];
 
   return (
     <div className="settings-view">
-      <h2>Einstellungen</h2>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 20 }}>
+        <div>
+          <div style={{ fontSize: 20, fontWeight: 700, letterSpacing: '-.3px', color: 'var(--ink)' }}>Einstellungen</div>
+          <div style={{ fontSize: 13, color: 'var(--muted)', marginTop: 3 }}>Projekte, Gagen und App-Konfiguration</div>
+        </div>
+      </div>
+      <div className="v3-settings-layout">
+        {/* Linke Nav */}
+        <div className="v3-settings-nav">
+          {settingsNavItems.map(item => (
+            <button
+              key={item.id}
+              className={`v3-settings-nav-btn${settingsTab === item.id ? ' active' : ''}`}
+              onClick={() => setSettingsTab(item.id)}
+            >
+              <span>{item.icon}</span>
+              {item.label}
+            </button>
+          ))}
+        </div>
+        {/* Rechtes Panel */}
+        <div>
+      {settingsTab === 'n8n' && (
+      <div className="v3-settings-panel">
+        <div className="v3-settings-panel-title">n8n-Anbindung</div>
+        <div className="v3-settings-panel-sub">Automatischer Import von Stundenzetteln & Zusatzpersonal aus JSON-Dateien (.txt) in deinem iCloud-Ordner.</div>
 
-      {/* Project Management */}
-      <div className="settings-card">
-        <h3>🎬 Projekte verwalten</h3>
-        <p className="settings-description">Erstelle Projekte mit Produktionsname, Firma und Crew. Beim Erstellen von Stundenzetteln kannst du ein Projekt auswählen, um alle Felder automatisch auszufüllen. Der Drehtag wird automatisch in die Bemerkung geschrieben.</p>
+        <div className="settings-card">
+          <h3>🔗 n8n-Import</h3>
+          <p className="settings-description">
+            n8n ist ein Automatisierungs-Tool. Ein n8n-Workflow legt JSON-Dateien in deinen iCloud-Ordner, die ZeitBlick automatisch zu Stundenzetteln verarbeitet. Verarbeitete Dateien werden nach „_verarbeitet" verschoben.
+          </p>
+
+          <label style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '10px 0' }}>
+            <input type="checkbox" checked={!!settings.n8nEnabled} onChange={handleToggleN8n} />
+            <span>Automatischer Import aktiv (Überwachung + Scan beim Start)</span>
+          </label>
+
+          <div className="project-field" style={{ marginTop: 8 }}>
+            <label>iCloud-Ordner</label>
+            <input
+              type="text"
+              value={n8nFolderInput}
+              onChange={e => setN8nFolderInput(e.target.value)}
+              placeholder={n8nDefaultFolder || '~/Library/Mobile Documents/com~apple~CloudDocs/ZeitBlick'}
+            />
+            {n8nDefaultFolder && !n8nFolderInput && <span className="project-field-hint">Standard: {n8nDefaultFolder}</span>}
+          </div>
+
+          <div className="backup-actions" style={{ marginTop: 12, display: 'flex', gap: 8 }}>
+            <button className="backup-btn" onClick={handleSaveN8nFolder}>💾 Ordner speichern</button>
+            <button className="backup-btn" onClick={handleSyncN8n}>🔄 Jetzt synchronisieren</button>
+          </div>
+          {n8nStatus && <p className="settings-description" style={{ marginTop: 8 }}>{n8nStatus}</p>}
+        </div>
+
+        <N8NSetupGuide folder={n8nFolderInput || n8nDefaultFolder} />
+      </div>
+      )}
+      {settingsTab === 'projekte' && (
+      <div className="v3-settings-panel">
+        <div className="v3-settings-panel-title">Projekte verwalten</div>
+        <div className="v3-settings-panel-sub">Erstelle Projekte mit Produktionsname und Firma.</div>
+
+      {/* Alle Einstellungs-Sektionen — scrollbar im Panel */}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 0 }}>
+        <div style={{ fontSize: 12, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '.5px', fontWeight: 600, marginBottom: 12 }}>🎬 Projekte</div>
+        <p className="settings-description" style={{ marginBottom: 16 }}>Erstelle Projekte mit Produktionsname und Firma. Beim Erstellen von Stundenzetteln kannst du ein Projekt auswählen, um alle Felder automatisch auszufüllen.</p>
         
         {Object.keys(projects).length > 0 && (
           <div className="crew-list">
@@ -276,7 +389,6 @@ export default function Settings({ settings, onSave, timesheets, setTimesheets }
                         <span className="crew-name">{projectName}</span>
                         <span className="crew-member-count">
                           {project.produktionsfirma || 'Keine Firma'}
-                          {project.crew ? ` · Crew: ${project.crew}` : ''}
                         </span>
                       </div>
                       <div className="crew-header-actions">
@@ -310,21 +422,6 @@ export default function Settings({ settings, onSave, timesheets, setTimesheets }
                         />
                       </div>
                       <div className="project-field">
-                        <label>Crew zuweisen</label>
-                        <select
-                          value={project.crew || ''}
-                          onChange={e => handleUpdateProject(projectName, 'crew', e.target.value)}
-                          className="project-crew-select"
-                        >
-                          <option value="">Keine Crew</option>
-                          {Object.entries(crews).map(([crewName, crew]) => (
-                            <option key={crewName} value={crewName}>
-                              {crewName} ({(crew.members || []).length} Personen)
-                            </option>
-                          ))}
-                        </select>
-                      </div>
-                      <div className="project-field">
                         <label>Erster Drehtag</label>
                         <input
                           type="date"
@@ -334,16 +431,6 @@ export default function Settings({ settings, onSave, timesheets, setTimesheets }
                         <span className="project-field-hint">Für automatische Drehtag-Berechnung</span>
                       </div>
                     </div>
-                    {project.crew && crews[project.crew] && (
-                      <div className="project-crew-preview">
-                        <span className="project-crew-preview-label">Crew „{project.crew}":</span>
-                        <div className="crew-preview-members">
-                          {(crews[project.crew].members || []).map((m, i) => (
-                            <span key={i} className="crew-preview-chip">{m.name}{m.position ? ` (${m.position})` : ''}</span>
-                          ))}
-                        </div>
-                      </div>
-                    )}
                   </div>
                 )}
               </div>
@@ -366,152 +453,6 @@ export default function Settings({ settings, onSave, timesheets, setTimesheets }
         {/* Datalist for firma suggestions in projects */}
         <datalist id="suggest-firmen-project">
           {[...new Set(timesheets.map(ts => ts.produktionsfirma).filter(Boolean))].map(f => <option key={f} value={f} />)}
-        </datalist>
-      </div>
-
-      {/* Crew Management */}
-      <div className="settings-card">
-        <h3>👥 Crews verwalten</h3>
-        <p className="settings-description">Erstelle Crews mit mehreren Personen. Beim Erstellen von Stundenzetteln kannst du eine Crew auswählen, um für alle Mitglieder gleichzeitig Zettel zu erstellen.</p>
-        
-        {Object.keys(crews).length > 0 && (
-          <div className="crew-list">
-            {Object.entries(crews).map(([crewName, crew]) => (
-              <div key={crewName} className={`crew-card ${editingCrew === crewName ? 'crew-card-editing' : ''}`}>
-                <div className="crew-card-header">
-                  {renamingCrew === crewName ? (
-                    <div className="crew-rename-row">
-                      <input
-                        type="text"
-                        value={renameValue}
-                        onChange={e => setRenameValue(e.target.value)}
-                        className="crew-rename-input"
-                        autoFocus
-                        onKeyDown={e => {
-                          if (e.key === 'Enter') {
-                            handleRenameCrew(crewName, renameValue);
-                            setRenamingCrew(null);
-                          }
-                          if (e.key === 'Escape') setRenamingCrew(null);
-                        }}
-                        onBlur={() => {
-                          if (renameValue.trim() && renameValue !== crewName) {
-                            handleRenameCrew(crewName, renameValue);
-                          }
-                          setRenamingCrew(null);
-                        }}
-                        placeholder="Neuer Crew-Name..."
-                      />
-                      <button className="crew-rename-save" onClick={() => { handleRenameCrew(crewName, renameValue); setRenamingCrew(null); }} title="Speichern">✓</button>
-                    </div>
-                  ) : (
-                    <>
-                      <div className="crew-card-title" onClick={() => setEditingCrew(editingCrew === crewName ? null : crewName)}>
-                        <span className={`crew-chevron ${editingCrew === crewName ? 'open' : ''}`}>›</span>
-                        <span className="crew-name">{crewName}</span>
-                        <span className="crew-member-count">{(crew.members || []).length} Mitglieder</span>
-                      </div>
-                      <div className="crew-header-actions">
-                        <button className="crew-action-btn" onClick={(e) => { e.stopPropagation(); setRenamingCrew(crewName); setRenameValue(crewName); }} title="Crew umbenennen">✏️</button>
-                        <button className="crew-action-btn crew-action-delete" onClick={() => handleDeleteCrew(crewName)} title="Crew löschen">🗑</button>
-                      </div>
-                    </>
-                  )}
-                </div>
-
-                {editingCrew === crewName && (
-                  <div className="crew-card-body">
-                    {(crew.members || []).length > 0 && (
-                      <div className="crew-members-list">
-                        {crew.members.map((member, idx) => (
-                          <div key={idx} className="crew-member-row">
-                            <input
-                              type="text"
-                              value={member.name}
-                              onChange={e => handleUpdateMember(crewName, idx, 'name', e.target.value)}
-                              className="crew-member-input crew-member-name"
-                              placeholder="Name"
-                              list="crew-suggest-names"
-                            />
-                            <input
-                              type="text"
-                              value={member.position}
-                              onChange={e => handleUpdateMember(crewName, idx, 'position', e.target.value)}
-                              className="crew-member-input crew-member-pos"
-                              placeholder="Position"
-                              list="crew-suggest-positions"
-                            />
-                            <input
-                              type="text"
-                              value={member.abteilung}
-                              onChange={e => handleUpdateMember(crewName, idx, 'abteilung', e.target.value)}
-                              className="crew-member-input crew-member-abt"
-                              placeholder="Abteilung"
-                              list="crew-suggest-abteilungen"
-                            />
-                            <button className="spesen-delete-btn" onClick={() => handleRemoveMember(crewName, idx)} title="Mitglied entfernen">×</button>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                    <div className="crew-member-row crew-member-add">
-                      <input
-                        type="text"
-                        value={newMemberName}
-                        onChange={e => setNewMemberName(e.target.value)}
-                        className="crew-member-input crew-member-name"
-                        placeholder="Neuer Name..."
-                        list="crew-suggest-names"
-                        onKeyDown={e => e.key === 'Enter' && handleAddMember(crewName)}
-                      />
-                      <input
-                        type="text"
-                        value={newMemberPosition}
-                        onChange={e => setNewMemberPosition(e.target.value)}
-                        className="crew-member-input crew-member-pos"
-                        placeholder="Position"
-                        list="crew-suggest-positions"
-                        onKeyDown={e => e.key === 'Enter' && handleAddMember(crewName)}
-                      />
-                      <input
-                        type="text"
-                        value={newMemberAbteilung}
-                        onChange={e => setNewMemberAbteilung(e.target.value)}
-                        className="crew-member-input crew-member-abt"
-                        placeholder="Abteilung"
-                        list="crew-suggest-abteilungen"
-                        onKeyDown={e => e.key === 'Enter' && handleAddMember(crewName)}
-                      />
-                      <button className="spesen-add-btn" onClick={() => handleAddMember(crewName)} title="Mitglied hinzufügen">+</button>
-                    </div>
-                  </div>
-                )}
-              </div>
-            ))}
-          </div>
-        )}
-
-        <div className="crew-add-row">
-          <input
-            type="text"
-            value={newCrewName}
-            onChange={e => setNewCrewName(e.target.value)}
-            className="crew-name-input"
-            placeholder="Neue Crew erstellen..."
-            onKeyDown={e => e.key === 'Enter' && handleAddCrew()}
-          />
-          <button className="spesen-add-btn" onClick={handleAddCrew} title="Crew erstellen">+</button>
-        </div>
-
-        {/* Datalists for autocomplete */}
-        <datalist id="crew-suggest-names">
-          {allNamesFromSheets.map(n => <option key={n} value={n} />)}
-        </datalist>
-        <datalist id="crew-suggest-positions">
-          {allPositionsFromSheets.map(p => <option key={p} value={p} />)}
-        </datalist>
-        <datalist id="crew-suggest-abteilungen">
-          {allAbteilungenFromSheets.map(a => <option key={a} value={a} />)}
         </datalist>
       </div>
 
@@ -752,6 +693,15 @@ export default function Settings({ settings, onSave, timesheets, setTimesheets }
         )}
       </div>
 
+      {/* Einführung / Rundgang */}
+      <div className="settings-card">
+        <h3>🧭 Einführung</h3>
+        <p className="settings-description">Den Rundgang mit den wichtigsten Funktionen (inkl. n8n) erneut ansehen.</p>
+        <div className="backup-actions" style={{ marginTop: 8 }}>
+          <button className="backup-btn" onClick={() => onRestartTour && onRestartTour()}>🧭 Rundgang erneut starten</button>
+        </div>
+      </div>
+
       {/* Updates */}
       <div className="settings-card">
         <h3>🔄 Updates</h3>
@@ -818,6 +768,11 @@ export default function Settings({ settings, onSave, timesheets, setTimesheets }
             <span className="rule-value">Bezahlter Tag, bis 6 Wochen</span>
           </div>
         </div>
+      </div>
+      {/* Ende settings-card → v3-settings-panel → tab-conditional → right-panel → v3-settings-layout */}
+      </div>
+      )}
+      </div>
       </div>
     </div>
   );

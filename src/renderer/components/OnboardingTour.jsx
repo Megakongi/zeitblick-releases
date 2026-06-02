@@ -3,77 +3,57 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 const TOUR_STEPS = [
   {
     target: null,
-    title: 'Willkommen bei ZeitBlick!',
-    description: 'Deine App für Arbeitszeitverwaltung nach TV-FFS — Stundenzettel erstellen, importieren, auswerten und exportieren. Lass uns eine kurze Tour machen!',
-    icon: '👋',
+    title: 'Willkommen bei ZeitBlick',
+    description: 'ZeitBlick verwaltet und berechnet TV-FFS-Stundenzettel für dein ganzes Team. Wir zeigen dir kurz das Wichtigste.',
+    icon: '',
     position: 'center',
   },
   {
-    target: '.sidebar',
+    target: '.app-topbar',
+    title: 'Importieren oder neu anlegen',
+    description: 'Oben rechts findest du „PDFs importieren" und „Neuer Stundenzettel". PDFs kannst du auch einfach per Drag-and-Drop ins Fenster ziehen.',
+    icon: '',
+    position: 'bottom',
+  },
+  {
+    target: '.app-sidebar',
     title: 'Navigation',
-    description: 'Über die Seitenleiste navigierst du zwischen Übersicht, Einträgen, Erstellen und Einstellungen. Ganz unten findest du den PDF-Import und den Dark/Light-Mode.',
-    icon: '🧭',
-    position: 'right',
-  },
-  {
-    target: '.nav-item:nth-child(1)',
-    title: 'Übersicht / Dashboard',
-    description: 'Deine Gesamtauswertung: Arbeitstage, Überstunden, Zuschläge und Verdienst auf einen Blick. Verwalte das Stammteam per Drag & Drop und sieh Zusatztage ein.',
-    icon: '📊',
-    position: 'right',
-  },
-  {
-    target: '.nav-item:nth-child(2)',
-    title: 'Einträge',
-    description: 'Alle Stundenzettel sortierbar nach Name, KW, Projekt oder Datum. Exportiere einzelne Wochen oder ganze Projekte als PDF.',
-    icon: '📋',
-    position: 'right',
-  },
-  {
-    target: '.nav-item:nth-child(3)',
-    title: 'Stundenzettel erstellen',
-    description: 'Erstelle Stundenzettel einzeln oder im Batch-Modus für ganze Crews. Überstunden, Nachtarbeit und Pausen werden automatisch nach TV-FFS berechnet.',
-    icon: '✏️',
-    position: 'right',
-  },
-  {
-    target: '.nav-item:nth-child(4)',
-    title: 'Einstellungen',
-    description: 'Verwalte Projekte, Crews, Gagen und Name-Aliase. Lege Projekte mit Produktionsfirma, Crew und Drehstartdatum an — Drehtage werden automatisch gezählt.',
-    icon: '⚙️',
-    position: 'right',
-  },
-  {
-    target: '.search-trigger-btn',
-    title: 'Schnellsuche',
-    description: 'Mit ⌘K (oder Klick) öffnest du die Suche — finde Personen, Projekte oder Kalenderwochen in Sekunden.',
-    icon: '🔍',
-    position: 'right',
-  },
-  {
-    target: '.import-btn',
-    title: 'PDF importieren',
-    description: 'Importiere bestehende Stundenzettel als PDF — einzeln oder ganze Ordner. Du kannst auch Dateien per Drag & Drop auf die App ziehen!',
-    icon: '📄',
-    position: 'right',
-  },
-  {
-    target: '.theme-toggle-btn',
-    title: 'Design anpassen',
-    description: 'Wechsle zwischen Dark- und Light-Mode — ganz nach deinem Geschmack.',
-    icon: '🎨',
+    description: 'Über die Seitenleiste erreichst du die Übersicht, die Stundenzettel und „Team & Projekte". Mit ⌘K öffnest du die Schnellsuche.',
+    icon: '',
     position: 'right',
   },
   {
     target: null,
-    title: 'Los geht\'s!',
-    description: 'Du bist bereit! Importiere Stundenzettel, erstelle neue oder werte bestehende aus. Viel Spaß mit ZeitBlick!',
-    icon: '🚀',
+    title: 'Team & Projekte',
+    description: 'Unter „Team & Projekte" legst du Projekte an, stellst pro Projekt die Stammcrew zusammen (sie wird in den Stundenzetteln oben angezeigt) und verwaltest deine Personen.',
+    icon: '',
+    position: 'center',
+  },
+  {
+    target: null,
+    title: 'Stundenzettel auswerten',
+    description: 'In der Übersicht siehst du Stunden, Überstunden und Verdienst. In der Stundenzettel-Liste sind die Personen pro Projekt zusammengeklappt — ein Klick auf den Pfeil öffnet sie. Export als PDF oder Excel.',
+    icon: '',
+    position: 'center',
+  },
+  {
+    target: null,
+    title: 'Automatisierung mit n8n (optional)',
+    description: 'ZeitBlick kann Stundenzettel automatisch aus Dateien erzeugen, die ein n8n-Workflow in deinen iCloud-Ordner legt. n8n (n8n.io) ist ein Automatisierungs-Tool, das z. B. Dispo-Mails oder Tabellen in fertige Zeit-Dateien umwandelt. Du kannst das jetzt aktivieren oder später in den Einstellungen.',
+    icon: '',
+    position: 'center',
+    n8nChoice: true,
+  },
+  {
+    target: null,
+    title: 'Los geht’s',
+    description: 'Du bist startklar. Die Einführung findest du bei Bedarf wieder in den Einstellungen.',
+    icon: '',
     position: 'center',
   },
 ];
 
-export default function OnboardingTour({ onComplete }) {
+export default function OnboardingTour({ onComplete, onEnableN8N }) {
   const [currentStep, setCurrentStep] = useState(0);
   const [targetRect, setTargetRect] = useState(null);
   const [isAnimating, setIsAnimating] = useState(false);
@@ -257,21 +237,39 @@ export default function OnboardingTour({ onComplete }) {
         </div>
 
         {/* Navigation */}
-        <div className="tour-actions">
-          <button className="tour-btn tour-btn-skip" onClick={handleFinish}>
-            {isLastStep ? '' : 'Überspringen'}
-          </button>
-          <div className="tour-actions-right">
-            {!isFirstStep && (
-              <button className="tour-btn tour-btn-prev" onClick={handlePrev}>
-                ← Zurück
-              </button>
-            )}
-            <button className="tour-btn tour-btn-next" onClick={handleNext}>
-              {isLastStep ? 'Starten! 🎉' : 'Weiter →'}
+        {step.n8nChoice ? (
+          <div className="tour-actions">
+            <button className="tour-btn tour-btn-skip" onClick={() => { onEnableN8N && onEnableN8N(false); handleNext(); }}>
+              Später
             </button>
+            <div className="tour-actions-right">
+              {!isFirstStep && (
+                <button className="tour-btn tour-btn-prev" onClick={handlePrev}>
+                  ← Zurück
+                </button>
+              )}
+              <button className="tour-btn tour-btn-next" onClick={() => { onEnableN8N && onEnableN8N(true); handleNext(); }}>
+                n8n aktivieren →
+              </button>
+            </div>
           </div>
-        </div>
+        ) : (
+          <div className="tour-actions">
+            <button className="tour-btn tour-btn-skip" onClick={handleFinish}>
+              {isLastStep ? '' : 'Überspringen'}
+            </button>
+            <div className="tour-actions-right">
+              {!isFirstStep && (
+                <button className="tour-btn tour-btn-prev" onClick={handlePrev}>
+                  ← Zurück
+                </button>
+              )}
+              <button className="tour-btn tour-btn-next" onClick={handleNext}>
+                {isLastStep ? 'Loslegen' : 'Weiter →'}
+              </button>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

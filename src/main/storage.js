@@ -2,7 +2,7 @@ const fs = require('fs');
 const path = require('path');
 const { app } = require('electron');
 
-const DATA_VERSION = 2;
+const DATA_VERSION = 5;
 
 function getStoragePath() {
   const userDataPath = app.getPath('userData');
@@ -26,6 +26,85 @@ function migrateData(data) {
       data.settings.positionGagen = data.settings.positionGagen || {};
     }
     data._version = 2;
+  }
+  if (data._version === 2) {
+    // Migrate crews → team + projectStaffing
+    if (data.settings) {
+      const crews = data.settings.crews || {};
+      const existingTeam = data.settings.team || [];
+      const existingStaffing = data.settings.projectStaffing || {};
+      const existingNames = new Set(existingTeam.map(m => m.name.toLowerCase()));
+
+      // Collect all unique crew members, deduplicate by name
+      const newMembers = [];
+      for (const crew of Object.values(crews)) {
+        for (const member of (crew.members || [])) {
+          if (!member.name || existingNames.has(member.name.toLowerCase())) continue;
+          existingNames.add(member.name.toLowerCase());
+          newMembers.push({
+            id: Date.now().toString(36) + Math.random().toString(36).slice(2, 8),
+            name: member.name,
+            position: member.position || '',
+            email: '',
+            phone: '',
+            notizen: '',
+          });
+        }
+      }
+      data.settings.team = [...existingTeam, ...newMembers];
+
+      // Build a lookup: name → team member id
+      const nameToId = {};
+      for (const m of data.settings.team) {
+        nameToId[m.name.toLowerCase()] = m;
+      }
+
+      // Migrate project crew assignments → projectStaffing
+      const projects = data.settings.projects || {};
+      for (const [projectName, project] of Object.entries(projects)) {
+        if (!project.crew || !crews[project.crew]) continue;
+        if (existingStaffing[projectName] && existingStaffing[projectName].length > 0) continue;
+        const crewMembers = crews[project.crew].members || [];
+        existingStaffing[projectName] = crewMembers
+          .filter(m => m.name && nameToId[m.name.toLowerCase()])
+          .map(m => {
+            const teamMember = nameToId[m.name.toLowerCase()];
+            return {
+              id: Date.now().toString(36) + Math.random().toString(36).slice(2, 8),
+              memberId: teamMember.id,
+              name: teamMember.name,
+              position: m.position || teamMember.position || '',
+              von: '',
+              bis: '',
+            };
+          });
+        delete project.crew;
+      }
+      data.settings.projectStaffing = existingStaffing;
+
+      // Clean up: remove crews and remaining crew fields from projects
+      delete data.settings.crews;
+      for (const project of Object.values(projects)) {
+        delete project.crew;
+      }
+    }
+    data._version = 3;
+  }
+  if (data._version === 3) {
+    // Add n8n + projectCrews defaults
+    if (data.settings) {
+      data.settings.projectCrews = data.settings.projectCrews || {};
+      if (typeof data.settings.n8nFolder === 'undefined') data.settings.n8nFolder = '';
+      if (typeof data.settings.n8nEnabled === 'undefined') data.settings.n8nEnabled = false;
+    }
+    data._version = 4;
+  }
+  if (data._version === 4) {
+    // Dispos (PDF-Dispositionen) – Liste importierter Dispo-Dateien
+    if (data.settings) {
+      data.settings.dispos = data.settings.dispos || [];
+    }
+    data._version = 5;
   }
   return data;
 }

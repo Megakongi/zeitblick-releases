@@ -59,14 +59,13 @@ const emptyDay = (tag, datum) => ({
   anmerkungen: '',
 });
 
-export default function TimesheetCreate({ onSave, onSaveBatch, onCancel, editSheet, existingTimesheets, crews, projects, onCreateNext }) {
+export default function TimesheetCreate({ onSave, onSaveBatch, onCancel, editSheet, existingTimesheets, projectStaffing, projects, onCreateNext, team }) {
   const isEditing = !!editSheet;
 
   // Project selection
   const [selectedProject, setSelectedProject] = useState('');
 
-  // Batch mode (crew selection)
-  const [selectedCrew, setSelectedCrew] = useState('');
+  // Batch mode (project staffing)
   const [batchMode, setBatchMode] = useState(false);
   const [selectedMembers, setSelectedMembers] = useState(new Set());
 
@@ -112,8 +111,14 @@ export default function TimesheetCreate({ onSave, onSaveBatch, onCancel, editShe
     return {
       projekte: [...new Set(existingTimesheets.map(t => t.projekt).filter(Boolean))],
       firmen: [...new Set(existingTimesheets.map(t => t.produktionsfirma).filter(Boolean))],
-      namen: [...new Set(existingTimesheets.map(t => t.name).filter(Boolean))],
-      positionen: [...new Set(existingTimesheets.map(t => t.position).filter(Boolean))],
+      namen: [...new Set([
+        ...existingTimesheets.map(t => t.name).filter(Boolean),
+        ...((team || []).map(m => m.name).filter(Boolean)),
+      ])],
+      positionen: [...new Set([
+        ...existingTimesheets.map(t => t.position).filter(Boolean),
+        ...((team || []).map(m => m.position).filter(Boolean)),
+      ])],
       abteilungen: [...new Set(existingTimesheets.map(t => t.abteilung).filter(Boolean))],
     };
   }, [existingTimesheets]);
@@ -332,7 +337,7 @@ export default function TimesheetCreate({ onSave, onSaveBatch, onCancel, editShe
     }
   }, [existingTimesheets, weekStart, name, projekt, projektnummer, produktionsfirma, position, abteilung]);
 
-  // Handle project selection — auto-fill fields and optionally select crew
+  // Handle project selection — auto-fill fields and check for project staffing
   const handleProjectSelect = useCallback((projectName) => {
     setSelectedProject(projectName);
     if (!projectName || !projects || !projects[projectName]) return;
@@ -340,13 +345,13 @@ export default function TimesheetCreate({ onSave, onSaveBatch, onCancel, editShe
     setProjekt(projectName);
     if (proj.projektnummer) setProjektnummer(proj.projektnummer);
     if (proj.produktionsfirma) setProduktionsfirma(proj.produktionsfirma);
-    // If project has a crew, auto-select it
-    if (proj.crew && crews && crews[proj.crew]) {
+    // If project has staffing, auto-enable batch mode
+    const staffing = (projectStaffing || {})[projectName] || [];
+    if (staffing.length > 0) {
       setBatchMode(true);
-      setSelectedCrew(proj.crew);
-      setSelectedMembers(new Set((crews[proj.crew].members || []).map((_, i) => i)));
+      setSelectedMembers(new Set(staffing.map((_, i) => i)));
     }
-  }, [projects, crews]);
+  }, [projects, projectStaffing]);
 
   // Auto-fill Drehtag in Anmerkungen when project has drehStartDatum
   const handleAutoFillDrehtag = useCallback(() => {
@@ -382,12 +387,12 @@ export default function TimesheetCreate({ onSave, onSaveBatch, onCancel, editShe
     }
     setValidationErrors([]);
 
-    if (batchMode && selectedCrew && crews && crews[selectedCrew]) {
-      // Batch: create one sheet per selected crew member
-      const allMembers = crews[selectedCrew].members || [];
-      const crewMembers = allMembers.filter((_, i) => selectedMembers.has(i));
-      if (crewMembers.length === 0) return;
-      const sheets = crewMembers.map(member => ({
+    const staffing = (projectStaffing || {})[projekt] || [];
+    if (batchMode && staffing.length > 0) {
+      // Batch: create one sheet per selected staffing member
+      const staffMembers = staffing.filter((_, i) => selectedMembers.has(i));
+      if (staffMembers.length === 0) return;
+      const sheets = staffMembers.map(member => ({
         id: generateId(),
         importDate: new Date().toISOString(),
         createdManually: true,
@@ -397,7 +402,7 @@ export default function TimesheetCreate({ onSave, onSaveBatch, onCancel, editShe
         produktionsfirma,
         name: member.name,
         position: member.position || position,
-        abteilung: member.abteilung || abteilung,
+        abteilung: abteilung,
         pause: defaultPause,
         days: days.map(d => ({ ...d })),
         totals,
@@ -423,7 +428,7 @@ export default function TimesheetCreate({ onSave, onSaveBatch, onCancel, editShe
       };
       onSave(sheet);
     }
-  }, [editSheet, projekt, projektnummer, produktionsfirma, name, position, abteilung, defaultPause, days, totals, onSave, onSaveBatch, batchMode, selectedCrew, selectedMembers, crews]);
+  }, [editSheet, projekt, projektnummer, produktionsfirma, name, position, abteilung, defaultPause, days, totals, onSave, onSaveBatch, batchMode, selectedMembers, projectStaffing]);
 
   // Export as PDF
   const handleExportPDF = useCallback(async () => {
@@ -487,86 +492,65 @@ export default function TimesheetCreate({ onSave, onSaveBatch, onCancel, editShe
         </div>
       )}
 
-      {/* Crew Mode Toggle (only when not editing) */}
-      {!isEditing && crews && Object.keys(crews).length > 0 && (
-        <div className="create-section crew-mode-section">
-          <div className="crew-mode-toggle">
-            <label className="crew-toggle-label">
-              <input
-                type="checkbox"
-                checked={batchMode}
-                onChange={e => { setBatchMode(e.target.checked); if (!e.target.checked) setSelectedCrew(''); }}
-              />
-              <span className="crew-toggle-text">Für ganze Crew erstellen</span>
-            </label>
+      {/* Batch Mode Toggle (only when not editing and project has staffing) */}
+      {!isEditing && (() => {
+        const staffing = selectedProject ? ((projectStaffing || {})[selectedProject] || []) : [];
+        return staffing.length > 0 && (
+          <div className="create-section crew-mode-section">
+            <div className="crew-mode-toggle">
+              <label className="crew-toggle-label">
+                <input
+                  type="checkbox"
+                  checked={batchMode}
+                  onChange={e => { setBatchMode(e.target.checked); if (!e.target.checked) setSelectedMembers(new Set()); }}
+                />
+                <span className="crew-toggle-text">Für ganze Projektbesetzung erstellen</span>
+              </label>
+            </div>
             {batchMode && (
-              <select
-                className="crew-select"
-                value={selectedCrew}
-                onChange={e => {
-                  setSelectedCrew(e.target.value);
-                  // Select all members by default
-                  const crew = crews[e.target.value];
-                  if (crew) {
-                    setSelectedMembers(new Set((crew.members || []).map((_, i) => i)));
-                  } else {
-                    setSelectedMembers(new Set());
-                  }
-                }}
-              >
-                <option value="">Crew auswählen...</option>
-                {Object.entries(crews).map(([crewName, crew]) => (
-                  <option key={crewName} value={crewName}>
-                    {crewName} ({(crew.members || []).length} Personen)
-                  </option>
-                ))}
-              </select>
+              <div className="crew-preview">
+                <div className="crew-preview-header">
+                  <span className="crew-preview-label">Zettel werden erstellt für ({selectedMembers.size}/{staffing.length}):</span>
+                  <button
+                    className="crew-toggle-all-btn"
+                    onClick={() => {
+                      if (selectedMembers.size === staffing.length) {
+                        setSelectedMembers(new Set());
+                      } else {
+                        setSelectedMembers(new Set(staffing.map((_, i) => i)));
+                      }
+                    }}
+                  >
+                    {selectedMembers.size === staffing.length ? 'Alle abwählen' : 'Alle auswählen'}
+                  </button>
+                </div>
+                <div className="crew-preview-members">
+                  {staffing.map((m, i) => (
+                    <label
+                      key={m.id || i}
+                      className={`crew-preview-chip selectable ${selectedMembers.has(i) ? 'selected' : 'deselected'}`}
+                      title={selectedMembers.has(i) ? 'Klicken zum Abwählen' : 'Klicken zum Auswählen'}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={selectedMembers.has(i)}
+                        onChange={() => {
+                          setSelectedMembers(prev => {
+                            const next = new Set(prev);
+                            if (next.has(i)) next.delete(i); else next.add(i);
+                            return next;
+                          });
+                        }}
+                      />
+                      {m.name}{m.position ? ` (${m.position})` : ''}
+                    </label>
+                  ))}
+                </div>
+              </div>
             )}
           </div>
-          {batchMode && selectedCrew && crews[selectedCrew] && (
-            <div className="crew-preview">
-              <div className="crew-preview-header">
-                <span className="crew-preview-label">Zettel werden erstellt für ({selectedMembers.size}/{(crews[selectedCrew].members || []).length}):</span>
-                <button
-                  className="crew-toggle-all-btn"
-                  onClick={() => {
-                    const members = crews[selectedCrew].members || [];
-                    if (selectedMembers.size === members.length) {
-                      setSelectedMembers(new Set());
-                    } else {
-                      setSelectedMembers(new Set(members.map((_, i) => i)));
-                    }
-                  }}
-                >
-                  {selectedMembers.size === (crews[selectedCrew].members || []).length ? 'Alle abwählen' : 'Alle auswählen'}
-                </button>
-              </div>
-              <div className="crew-preview-members">
-                {(crews[selectedCrew].members || []).map((m, i) => (
-                  <label
-                    key={i}
-                    className={`crew-preview-chip selectable ${selectedMembers.has(i) ? 'selected' : 'deselected'}`}
-                    title={selectedMembers.has(i) ? 'Klicken zum Abwählen' : 'Klicken zum Auswählen'}
-                  >
-                    <input
-                      type="checkbox"
-                      checked={selectedMembers.has(i)}
-                      onChange={() => {
-                        setSelectedMembers(prev => {
-                          const next = new Set(prev);
-                          if (next.has(i)) next.delete(i); else next.add(i);
-                          return next;
-                        });
-                      }}
-                    />
-                    {m.name}{m.position ? ` (${m.position})` : ''}
-                  </label>
-                ))}
-              </div>
-            </div>
-          )}
-        </div>
-      )}
+        );
+      })()}
 
       {/* Header Fields */}
       <div className="create-section">
@@ -863,7 +847,7 @@ export default function TimesheetCreate({ onSave, onSaveBatch, onCancel, editShe
         )}
         <button className="save-btn" onClick={handleSave}>
           {isEditing ? 'Änderungen speichern' 
-            : batchMode && selectedCrew && crews[selectedCrew]
+            : batchMode && selectedMembers.size > 0
               ? `${selectedMembers.size} Stundenzettel erstellen`
               : 'Stundenzettel speichern'}
         </button>
