@@ -95,6 +95,27 @@ function buildStdWebFillScript(days) {
       return /\\d/.test(got);
     }
 
+    // Textfeld (Bemerkung/Reisezeit): Fokus → Wert setzen → AddChangedControl
+    // → Flush über erneutes Event (postet den geänderten Wert mit).
+    async function setText(base, value, log) {
+      if (value == null || String(value).trim() === '') return true;
+      const innerId = base + 'INNER_EINGABEFRAME';
+      const f = focusField(base);
+      if (f !== true) { log.push(f); return false; }
+      await sleep(750);
+      const inp = document.getElementById(innerId);
+      if (!inp) { log.push('Feld fehlt: ' + innerId); return false; }
+      inp.value = String(value);
+      try { inp.dispatchEvent(new Event('input', { bubbles: true })); inp.dispatchEvent(new Event('change', { bubbles: true })); } catch (_) {}
+      window.AddChangedControl(innerId);
+      await sleep(150);
+      focusField(base); // Flush: postet den geänderten Wert
+      await sleep(900);
+      const got = (document.getElementById(innerId) || {}).value || '';
+      log.push(base + ' = "' + got + '" (gesendet "' + value + '")');
+      return true;
+    }
+
     const days = ${payload};
     const report = [];
     for (const d of days) {
@@ -103,6 +124,8 @@ function buildStdWebFillScript(days) {
       ok = (await setTime('EDITBEGINN' + d.tag, d.von, log)) && ok;
       ok = (await setTime('EDITENDE' + d.tag, d.bis, log)) && ok;
       ok = (await setTime('EDITPAUSE' + d.tag, d.pause, log)) && ok;
+      ok = (await setText('EDITBEMERK' + d.tag, d.bemerkung, log)) && ok;
+      ok = (await setText('EDITREISE' + d.tag, d.reise, log)) && ok;
       report.push({ tag: d.tag, ok, log });
     }
     // Picker am Ende schließen

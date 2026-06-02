@@ -170,7 +170,7 @@ function StdWebTestCard() {
     setBusy(true);
     setStatus('Fülle Test-Tag (Mo 09:00–18:00, Pause 00:45)…');
     try {
-      const res = await window.electronAPI.fillStdWeb([{ tag: 1, von: '09:00', bis: '18:00', pause: '00:45' }]);
+      const res = await window.electronAPI.fillStdWeb([{ tag: 1, von: '09:00', bis: '18:00', pause: '00:45', bemerkung: 'Test', reise: '2,5' }]);
       setStatus(res && res.success ? 'Test ausgeführt.' : `Fehler: ${res && res.error}`);
       setOutput(JSON.stringify(res && res.report, null, 2));
     } finally {
