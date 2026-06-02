@@ -33,6 +33,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   deleteDispo: (storedName) => ipcRenderer.invoke('dispo-delete', storedName),
   computeDistance: (homeAddress, motivAddress) => ipcRenderer.invoke('compute-distance', homeAddress, motivAddress),
   organizeDispo: (folder, filename, year, project) => ipcRenderer.invoke('dispo-organize', folder, filename, year, project),
+  openDispoFolder: (folder) => ipcRenderer.invoke('dispo-open-folder', folder),
+  revealDispo: (folder, filename) => ipcRenderer.invoke('dispo-reveal', folder, filename),
+  openExternal: (url) => ipcRenderer.invoke('open-external', url),
   onN8NChanged: (callback) => {
     const handler = (_event, data) => callback(data);
     ipcRenderer.on('n8n-files-changed', handler);

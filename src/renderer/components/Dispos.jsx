@@ -168,11 +168,6 @@ export default function Dispos({ dispos = [], onChange, projects = {}, n8nFolder
         if (!imp || !imp.success) continue;
         const parsed = parseDispoFilename(file, projects, fallbackYear);
         const motive = (imp.addresses && imp.addresses.motive) || [];
-        // Original-PDF im Quellordner nach Jahr/Projekt einsortieren (best effort).
-        if (window.electronAPI.organizeDispo) {
-          const year = parsed.datumISO ? parsed.datumISO.slice(0, 4) : '';
-          try { await window.electronAPI.organizeDispo(folder, file, year, parsed.projektGuess || ''); } catch (_) {}
-        }
         added.push({
           id: Date.now().toString(36) + Math.random().toString(36).slice(2, 8),
           storedName: imp.storedName,
@@ -186,11 +181,20 @@ export default function Dispos({ dispos = [], onChange, projects = {}, n8nFolder
           motivAdresse: (imp.addresses && imp.addresses.suggested) || '', // gewählte/editierte Adresse
         });
       }
+      const allDispos = [...(dispos || []), ...added];
       if (added.length) {
-        onChange([...(dispos || []), ...added]);
+        onChange(allDispos);
         setSyncMsg(`${added.length} neue Disposition${added.length > 1 ? 'en' : ''} importiert`);
       } else {
         setSyncMsg('Keine neuen Dispos gefunden');
+      }
+      // Alle Dispos (neue + bereits bekannte) nach Jahr/Projekt einsortieren.
+      // Idempotent: bereits korrekt liegende Dateien werden nicht bewegt.
+      if (window.electronAPI.organizeDispo) {
+        for (const d of allDispos) {
+          const year = d.datumISO ? d.datumISO.slice(0, 4) : '';
+          try { await window.electronAPI.organizeDispo(folder, d.originalName, year, d.projekt || ''); } catch (_) {}
+        }
       }
     } catch (e) {
       setSyncMsg('Fehler beim Synchronisieren');
@@ -285,6 +289,19 @@ export default function Dispos({ dispos = [], onChange, projects = {}, n8nFolder
     onChange((dispos || []).filter(x => x.id !== d.id));
   }, [dispos, onChange]);
 
+  // ----- Ordner / Datei im Finder öffnen -----
+  const openDispoFolder = useCallback(async () => {
+    if (!window.electronAPI || !window.electronAPI.openDispoFolder) return;
+    const res = await window.electronAPI.openDispoFolder(n8nFolder);
+    if (!res || !res.success) setSyncMsg(res?.error || 'Ordner konnte nicht geöffnet werden');
+  }, [n8nFolder]);
+
+  const revealDispo = useCallback(async (d) => {
+    if (!window.electronAPI || !window.electronAPI.revealDispo) return;
+    const res = await window.electronAPI.revealDispo(n8nFolder, d.originalName);
+    if (!res || !res.success) setSyncMsg(res?.error || 'Datei konnte nicht angezeigt werden');
+  }, [n8nFolder]);
+
   // ----- PDF öffnen (eingebauter Viewer) -----
   const openViewer = useCallback(async (d) => {
     if (!window.electronAPI || !window.electronAPI.readDispo) return;
@@ -348,6 +365,9 @@ export default function Dispos({ dispos = [], onChange, projects = {}, n8nFolder
         <span className="dispos-count">{total} Disposition{total === 1 ? '' : 'en'}</span>
         <div className="dispos-head-spacer" />
         {syncMsg && <span className="dispos-sync-msg">{syncMsg}</span>}
+        <button className="btn btn-secondary" onClick={openDispoFolder} title="Dispos-Ordner im Finder öffnen">
+          📂 Ordner
+        </button>
         <button className="btn btn-secondary" onClick={() => setShowKmReport(true)} title="Fahrtkosten / KM-Pauschale für die Steuer">
           📊 Fahrtkosten
         </button>
@@ -400,6 +420,7 @@ export default function Dispos({ dispos = [], onChange, projects = {}, n8nFolder
                 onDelete={handleDelete}
                 onSetMotiv={setMotivAddress}
                 onComputeDistance={computeDistanceFor}
+                onReveal={revealDispo}
                 computing={computingIds.has(d.id)}
                 homeAddress={homeAddress}
               />
@@ -428,7 +449,7 @@ export default function Dispos({ dispos = [], onChange, projects = {}, n8nFolder
   );
 }
 
-function DispoCard({ dispo, projectNames, onAssign, onOpen, onDelete, onSetMotiv, onComputeDistance, computing, homeAddress }) {
+function DispoCard({ dispo, projectNames, onAssign, onOpen, onDelete, onSetMotiv, onComputeDistance, onReveal, computing, homeAddress }) {
   const hasHome = !!homeAddress;
   const [menuOpen, setMenuOpen] = useState(false);
   const [editingMotiv, setEditingMotiv] = useState(false);
@@ -550,6 +571,7 @@ function DispoCard({ dispo, projectNames, onAssign, onOpen, onDelete, onSetMotiv
           <button className="dispo-icon-btn" onClick={() => setMenuOpen(o => !o)} aria-label="Mehr">⋯</button>
           {menuOpen && (
             <div className="dispo-menu" onMouseLeave={() => setMenuOpen(false)}>
+              <button className="dispo-menu-item" onClick={() => { setMenuOpen(false); onReveal && onReveal(dispo); }}>📂 Im Finder zeigen</button>
               <button className="dispo-menu-item dispo-menu-item--danger" onClick={() => { setMenuOpen(false); onDelete(dispo); }}>Entfernen</button>
             </div>
           )}

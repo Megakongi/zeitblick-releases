@@ -106,6 +106,49 @@ function N8NSetupGuide({ folder }) {
   );
 }
 
+/**
+ * Apple-Shortcuts zum Download. Erfassen Zeiten / Zusätze auf dem iPhone und
+ * legen sie in den ZeitBlick-Ordner. Links öffnen sich extern in Safari.
+ */
+const APPLE_SHORTCUTS = [
+  { id: 'zeiten', icon: '⏱', name: 'Zeiten erfassen', desc: 'Arbeitszeiten am iPhone eingeben und in den ZeitBlick-Ordner legen.', url: 'https://www.icloud.com/shortcuts/c59af2c869cb4805a00e2cf956df81d3' },
+  { id: 'zusaetze', icon: '➕', name: 'Zusätze erfassen', desc: 'Zusatzpersonal / Vertretungen am iPhone erfassen und ablegen.', url: 'https://www.icloud.com/shortcuts/121e78f02c464660bdb8ca0e8b319c94' },
+];
+
+function AppleShortcutsCard() {
+  const [copied, setCopied] = useState('');
+  const open = (url) => { if (window.electronAPI && window.electronAPI.openExternal) window.electronAPI.openExternal(url); };
+  const copy = (id, url) => {
+    try { navigator.clipboard.writeText(url); setCopied(id); setTimeout(() => setCopied(''), 1500); } catch { /* ignore */ }
+  };
+  return (
+    <div className="settings-card">
+      <h3>📱 Apple Shortcuts</h3>
+      <p className="settings-description">
+        Diese Kurzbefehle erfassen <strong>Zeiten</strong> und <strong>Zusätze</strong> direkt am iPhone und legen sie in deinen ZeitBlick-Ordner – ZeitBlick verarbeitet sie dann automatisch. Auf dem iPhone öffnen, um den Kurzbefehl hinzuzufügen.
+      </p>
+      <div className="shortcuts-list">
+        {APPLE_SHORTCUTS.map(s => (
+          <div key={s.id} className="shortcut-row">
+            <span className="shortcut-ic">{s.icon}</span>
+            <div className="shortcut-info">
+              <div className="shortcut-name">{s.name}</div>
+              <div className="shortcut-desc">{s.desc}</div>
+            </div>
+            <div className="shortcut-actions">
+              <button className="backup-btn" onClick={() => open(s.url)}>↗ Öffnen / Laden</button>
+              <button className="backup-btn" onClick={() => copy(s.id, s.url)}>{copied === s.id ? '✓ Kopiert' : 'Link kopieren'}</button>
+            </div>
+          </div>
+        ))}
+      </div>
+      <p className="settings-description" style={{ marginTop: 8 }}>
+        💡 Tipp: Den kopierten Link kannst du dir per Nachricht aufs iPhone schicken und dort öffnen.
+      </p>
+    </div>
+  );
+}
+
 export default function Settings({ settings, onSave, timesheets, setTimesheets, onSyncN8N, onRestartTour }) {
   const [newPosition, setNewPosition] = useState('');
   const [newPositionGage, setNewPositionGage] = useState('');
@@ -343,6 +386,8 @@ export default function Settings({ settings, onSave, timesheets, setTimesheets, 
         </div>
 
         <N8NSetupGuide folder={n8nFolderInput || n8nDefaultFolder} />
+
+        <AppleShortcutsCard />
       </div>
       )}
       {settingsTab === 'projekte' && (

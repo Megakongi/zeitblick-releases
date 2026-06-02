@@ -970,6 +970,48 @@ ipcMain.handle('dispo-import', async (event, folder, filename) => {
   }
 });
 
+// Öffnet den Dispo-Quellordner (Dispos/) im Finder/Explorer.
+ipcMain.handle('dispo-open-folder', async (event, folder) => {
+  try {
+    const dir = resolveDispoSourceDir(folder);
+    if (!dir || !fs.existsSync(dir)) return { success: false, error: 'Ordner nicht gefunden' };
+    const err = await shell.openPath(dir);
+    if (err) return { success: false, error: err };
+    return { success: true, path: dir };
+  } catch (e) {
+    return { success: false, error: e.message };
+  }
+});
+
+// Zeigt eine bestimmte Dispo-PDF im Finder (findet sie im Jahr/Projekt-Baum).
+// Fällt auf das Öffnen des Ordners zurück, wenn die Datei nicht gefunden wird.
+ipcMain.handle('dispo-reveal', async (event, folder, filename) => {
+  try {
+    const root = resolveDispoSourceDir(folder);
+    if (!root || !fs.existsSync(root)) return { success: false, error: 'Ordner nicht gefunden' };
+    const file = findDispoFile(root, filename);
+    if (file) { shell.showItemInFolder(file); return { success: true, path: file }; }
+    const err = await shell.openPath(root);
+    if (err) return { success: false, error: err };
+    return { success: true, path: root, fallback: true };
+  } catch (e) {
+    return { success: false, error: e.message };
+  }
+});
+
+// Öffnet einen externen Link (nur http/https) im Standardbrowser.
+ipcMain.handle('open-external', async (event, url) => {
+  try {
+    if (typeof url !== 'string' || !/^https?:\/\//i.test(url)) {
+      return { success: false, error: 'Ungültiger Link' };
+    }
+    await shell.openExternal(url);
+    return { success: true };
+  } catch (e) {
+    return { success: false, error: e.message };
+  }
+});
+
 // Berechnet die Fahrstrecke (km) zwischen Heim- und Motiv-Adresse.
 ipcMain.handle('compute-distance', async (event, homeAddress, motivAddress) => {
   try {
