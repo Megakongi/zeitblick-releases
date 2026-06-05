@@ -6076,6 +6076,33 @@ a:focus-visible {
   opacity: 0.7;
 }
 
+.project-zeitkonto-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 0 4px;
+  border-top: 1px solid var(--border-color, #2a2e3a);
+  margin-top: 8px;
+}
+
+.project-zeitkonto-label {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.project-zeitkonto-label span:first-child {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--text-primary, #e4e8f0);
+}
+
+.project-zeitkonto-desc {
+  font-size: 0.72rem;
+  color: var(--text-secondary, #8b95a5);
+  opacity: 0.8;
+}
+
 .project-crew-select {
   padding: 8px 10px;
   background: var(--bg-primary, #0f1117);
@@ -10275,6 +10302,73 @@ tr:hover .row-actions { opacity: 1; }
   flex-direction: column;
   min-height: 0;
   flex: 1;
+  position: relative;
+}
+
+/* Drag & Drop: Overlay beim Ziehen von Dispo-PDFs (z.B. aus Mail) */
+.dispos-drop-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: color-mix(in oklch, var(--color-accent, #4f7cff) 12%, rgba(20, 24, 36, 0.55));
+  backdrop-filter: blur(2px);
+  border-radius: 14px;
+  pointer-events: none;
+  animation: dispos-drop-in var(--duration-fast, 150ms) ease-out;
+}
+.dispos-drop-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 32px 44px;
+  border-radius: 16px;
+  background: var(--color-surface, #fff);
+  border: 2px dashed var(--color-accent, #4f7cff);
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.28);
+}
+/* Hinweis: Dispos ohne Motiv-Adresse */
+.dispos-addr-warn {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  margin-bottom: 14px;
+  border-radius: 10px;
+  background: color-mix(in oklch, #f5a623 14%, transparent);
+  border: 1px solid color-mix(in oklch, #f5a623 45%, transparent);
+  color: var(--color-text, #1a1d24);
+  font-size: 13px;
+}
+.dispos-addr-warn-ic { font-size: 16px; line-height: 1; }
+.dispos-addr-warn-text { flex: 1; }
+.dispos-addr-warn-btn {
+  flex: none;
+  padding: 5px 12px;
+  border-radius: 8px;
+  border: 1px solid color-mix(in oklch, #f5a623 55%, transparent);
+  background: color-mix(in oklch, #f5a623 22%, var(--color-surface, #fff));
+  color: var(--color-text, #1a1d24);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background var(--duration-fast, 150ms) ease, transform var(--duration-fast, 150ms) ease;
+}
+.dispos-addr-warn-btn:hover:not(:disabled) { background: color-mix(in oklch, #f5a623 34%, var(--color-surface, #fff)); }
+.dispos-addr-warn-btn:active:not(:disabled) { transform: translateY(1px); }
+.dispos-addr-warn-btn:disabled { opacity: 0.5; cursor: default; }
+.dispos-addr-warn-btn.ghost { background: transparent; }
+.dispos-addr-warn-btn.ghost:hover:not(:disabled) { background: color-mix(in oklch, #f5a623 16%, transparent); }
+
+.dispos-drop-icon { font-size: 44px; line-height: 1; }
+.dispos-drop-title { font-size: 18px; font-weight: 700; color: var(--color-text, #1a1d24); }
+.dispos-drop-sub { font-size: 13px; opacity: 0.7; }
+@keyframes dispos-drop-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
 }
 
 .dispos-head {
@@ -10362,6 +10456,99 @@ tr:hover .row-actions { opacity: 1; }
   color: var(--text-muted);
   margin: 18px 0 10px;
 }
+
+/* View-Mode-Toggle (Projekte / Monate) */
+.dispos-view-toggle {
+  display: flex;
+  gap: 2px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 3px;
+  flex-shrink: 0;
+}
+.dispos-view-btn {
+  padding: 5px 12px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background var(--transition), color var(--transition);
+  white-space: nowrap;
+}
+.dispos-view-btn:hover { color: var(--text-primary); }
+.dispos-view-btn.active {
+  background: var(--card);
+  color: var(--text-primary);
+  box-shadow: var(--shadow-sm);
+}
+
+/* Klappbarer Projekt-Header */
+.dispos-proj-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: none;
+  border-radius: 8px;
+  padding: 8px 4px;
+  margin: 14px 0 6px;
+  cursor: pointer;
+  color: var(--text-primary);
+  transition: background var(--transition);
+}
+.dispos-proj-header:hover { background: var(--surface); }
+.dispos-proj-header--none .dispos-proj-name { color: var(--text-muted); }
+
+.dispos-proj-arrow {
+  font-size: 9px;
+  color: var(--text-muted);
+  width: 14px;
+  flex-shrink: 0;
+  transition: transform 0.15s ease;
+}
+.dispos-proj-name {
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  flex: 1;
+}
+.dispos-proj-count {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 99px;
+  padding: 1px 8px;
+  flex-shrink: 0;
+}
+
+/* Klappbarer Monats-Header (Monatsansicht) */
+.dispos-month-btn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: none;
+  padding: 6px 4px;
+  margin: 18px 0 6px;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  transition: color var(--transition);
+}
+.dispos-month-btn:hover { color: var(--text-primary); }
 
 /* Dispo card */
 .dispo-card {
@@ -10466,6 +10653,10 @@ tr:hover .row-actions { opacity: 1; }
   background: rgba(20,184,166,0.14); color: var(--accent-teal);
 }
 .dispo-distance-val:hover:not(:disabled) { border-color: var(--accent-teal); }
+.dispo-distance-val.is-approx {
+  background: rgba(245,166,35,0.14); color: var(--accent-orange);
+}
+.dispo-distance-val.is-approx:hover:not(:disabled) { border-color: var(--accent-orange); }
 .dispo-distance-btn {
   background: var(--bg-input); color: var(--text-secondary);
   border-color: var(--border); border-style: dashed; font-weight: 600;
@@ -10489,6 +10680,9 @@ tr:hover .row-actions { opacity: 1; }
   cursor: pointer; font-weight: 500;
 }
 .team-form-checkbox input { width: 16px; height: 16px; cursor: pointer; }
+.team-sesam-head { font-weight: 700; font-size: 13px; margin-top: 4px; }
+.team-sesam-hint { font-weight: 400; font-size: 12px; color: var(--text-secondary); }
+.team-sesam-saved { font-size: 11px; color: var(--accent-green, #1FB97A); font-weight: 700; margin-left: 6px; }
 
 /* ----- Fahrtkosten-Übersicht (KM-Pauschale) ----- */
 .km-report {
@@ -10551,6 +10745,18 @@ tr:hover .row-actions { opacity: 1; }
 .shortcut-name { font-weight: 700; font-size: 14px; }
 .shortcut-desc { font-size: 12px; color: var(--text-secondary); margin-top: 2px; }
 .shortcut-actions { display: flex; gap: 8px; flex-shrink: 0; }
+
+/* StdWeb-Produktions-Dialog */
+.stdweb-prod-modal {
+  background: var(--bg-card); border-radius: 14px; width: min(440px, 92vw);
+  padding: 22px 24px; box-shadow: 0 24px 60px rgba(0,0,0,0.32);
+}
+.stdweb-prod-title { margin: 0 0 6px; font-size: 17px; font-weight: 800; }
+.stdweb-prod-input {
+  width: 100%; margin-top: 10px; padding: 9px 11px; border-radius: 8px;
+  border: 1px solid var(--border); background: var(--bg-input); color: var(--text-primary); font-size: 14px;
+}
+.stdweb-prod-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 16px; }
 
 /* StdWeb-Übertragungs-Banner (Feedback nach „An StdWeb") */
 .stdweb-banner {

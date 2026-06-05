@@ -153,11 +153,29 @@ function AppleShortcutsCard() {
  * StdWeb-Test (Stufe 1): öffnet das eingebettete StdWeb-Fenster und füllt
  * testweise einen Tag, um die Klick-Choreografie live zu prüfen.
  */
-function StdWebTestCard() {
+function StdWebTestCard({ team = [] }) {
   const [status, setStatus] = useState('');
   const [output, setOutput] = useState('');
   const [busy, setBusy] = useState(false);
   const [navDate, setNavDate] = useState('01.06.2026');
+  const [prod, setProd] = useState('Doll Film – ROLAND');
+
+  const loginPerson = useMemo(() => (team || []).find(m => m.isMe && m.sesamPwEnc) || (team || []).find(m => m.sesamPwEnc), [team]);
+
+  const loginTest = async (doSubmit) => {
+    if (!window.electronAPI || !window.electronAPI.loginStdWeb) return;
+    if (!loginPerson) { setStatus('Keine Person mit gespeichertem StdWeb-Login gefunden (Tab Personen).'); return; }
+    setBusy(true);
+    setStatus(`${doSubmit ? 'Login (absenden)' : 'Login-Test (nur Felder/Produktionsliste)'} als ${loginPerson.sesamVorname} ${loginPerson.sesamName}…`);
+    try {
+      const creds = { name: loginPerson.sesamName, vorname: loginPerson.sesamVorname, pwEnc: loginPerson.sesamPwEnc, produktion: prod };
+      const res = await window.electronAPI.loginStdWeb(creds, doSubmit);
+      setStatus(res && res.success ? 'Login-Aufruf ausgeführt.' : `Fehler: ${res && res.error}`);
+      setOutput(JSON.stringify(res && res.report, null, 2));
+    } finally {
+      setBusy(false);
+    }
+  };
 
   const navigate = async () => {
     if (!window.electronAPI || !window.electronAPI.navigateStdWeb) return;
@@ -221,6 +239,15 @@ function StdWebTestCard() {
         <input type="text" value={navDate} onChange={e => setNavDate(e.target.value)} placeholder="DD.MM.YYYY" style={{ width: 110, padding: '5px 8px', borderRadius: 7, border: '1px solid var(--border)' }} />
         <button className="backup-btn" onClick={navigate} disabled={busy}>🗓️ Woche ansteuern</button>
       </div>
+      <div className="backup-actions" style={{ marginTop: 8, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+        <span style={{ fontSize: 12, color: 'var(--muted)' }}>Produktion:</span>
+        <input type="text" value={prod} onChange={e => setProd(e.target.value)} placeholder="StdWeb-Produktionsname" style={{ width: 200, padding: '5px 8px', borderRadius: 7, border: '1px solid var(--border)' }} />
+        <button className="backup-btn" onClick={() => loginTest(false)} disabled={busy}>🔑 Login-Test (Felder/Liste)</button>
+        <button className="backup-btn" onClick={() => loginTest(true)} disabled={busy}>🔑 Login absenden</button>
+      </div>
+      {loginPerson
+        ? <p className="settings-description" style={{ marginTop: 6 }}>Login-Test nutzt: <strong>{loginPerson.sesamVorname} {loginPerson.sesamName}</strong> (🔐 gespeichert)</p>
+        : <p className="settings-description" style={{ marginTop: 6 }}>Hinterlege zuerst bei dir (Tab Personen, „Das bin ich") einen StdWeb-Login.</p>}
       {status && <p className="settings-description" style={{ marginTop: 8, wordBreak: 'break-word' }}>{status}</p>}
       {output && (
         <textarea
@@ -474,7 +501,7 @@ export default function Settings({ settings, onSave, timesheets, setTimesheets, 
 
         <AppleShortcutsCard />
 
-        <StdWebTestCard />
+        <StdWebTestCard team={settings.team || []} />
       </div>
       )}
       {settingsTab === 'projekte' && (
@@ -482,126 +509,201 @@ export default function Settings({ settings, onSave, timesheets, setTimesheets, 
         <div className="v3-settings-panel-title">Projekte verwalten</div>
         <div className="v3-settings-panel-sub">Erstelle Projekte mit Produktionsname und Firma.</div>
 
-      {/* Alle Einstellungs-Sektionen — scrollbar im Panel */}
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 0 }}>
-        <div style={{ fontSize: 12, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '.5px', fontWeight: 600, marginBottom: 12 }}>🎬 Projekte</div>
-        <p className="settings-description" style={{ marginBottom: 16 }}>Erstelle Projekte mit Produktionsname und Firma. Beim Erstellen von Stundenzetteln kannst du ein Projekt auswählen, um alle Felder automatisch auszufüllen.</p>
-        
-        {Object.keys(projects).length > 0 && (
-          <div className="crew-list">
-            {Object.entries(projects).map(([projectName, project]) => (
-              <div key={projectName} className={`crew-card ${editingProject === projectName ? 'crew-card-editing' : ''}`}>
-                <div className="crew-card-header">
-                  {renamingProject === projectName ? (
-                    <div className="crew-rename-row">
-                      <input
-                        type="text"
-                        value={renameProjectValue}
-                        onChange={e => setRenameProjectValue(e.target.value)}
-                        className="crew-rename-input"
-                        autoFocus
-                        onKeyDown={e => {
-                          if (e.key === 'Enter') { handleRenameProject(projectName, renameProjectValue); setRenamingProject(null); }
-                          if (e.key === 'Escape') setRenamingProject(null);
-                        }}
-                        onBlur={() => {
-                          if (renameProjectValue.trim() && renameProjectValue !== projectName) {
-                            handleRenameProject(projectName, renameProjectValue);
-                          }
-                          setRenamingProject(null);
-                        }}
-                        placeholder="Neuer Projektname..."
-                      />
-                      <button className="crew-rename-save" onClick={() => { handleRenameProject(projectName, renameProjectValue); setRenamingProject(null); }} title="Speichern">✓</button>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 0 }}>
+          <p className="settings-description" style={{ marginBottom: 16 }}>Beim Erstellen von Stundenzetteln kannst du ein Projekt auswählen, um alle Felder automatisch auszufüllen.</p>
+
+          {Object.keys(projects).length > 0 && (
+            <div className="crew-list">
+              {Object.entries(projects).map(([projectName, project]) => (
+                <div key={projectName} className={`crew-card ${editingProject === projectName ? 'crew-card-editing' : ''}`}>
+                  <div className="crew-card-header">
+                    {renamingProject === projectName ? (
+                      <div className="crew-rename-row">
+                        <input
+                          type="text"
+                          value={renameProjectValue}
+                          onChange={e => setRenameProjectValue(e.target.value)}
+                          className="crew-rename-input"
+                          autoFocus
+                          onKeyDown={e => {
+                            if (e.key === 'Enter') { handleRenameProject(projectName, renameProjectValue); setRenamingProject(null); }
+                            if (e.key === 'Escape') setRenamingProject(null);
+                          }}
+                          onBlur={() => {
+                            if (renameProjectValue.trim() && renameProjectValue !== projectName) {
+                              handleRenameProject(projectName, renameProjectValue);
+                            }
+                            setRenamingProject(null);
+                          }}
+                          placeholder="Neuer Projektname..."
+                        />
+                        <button className="crew-rename-save" onClick={() => { handleRenameProject(projectName, renameProjectValue); setRenamingProject(null); }} title="Speichern">✓</button>
+                      </div>
+                    ) : (
+                      <>
+                        <div className="crew-card-title" onClick={() => setEditingProject(editingProject === projectName ? null : projectName)}>
+                          <span className={`crew-chevron ${editingProject === projectName ? 'open' : ''}`}>›</span>
+                          <span className="crew-name">{projectName}</span>
+                          <span className="crew-member-count">{project.produktionsfirma || 'Keine Firma'}</span>
+                        </div>
+                        <div className="crew-header-actions">
+                          <button className="crew-action-btn" onClick={(e) => { e.stopPropagation(); setRenamingProject(projectName); setRenameProjectValue(projectName); }} title="Projekt umbenennen">✏️</button>
+                          <button className="crew-action-btn crew-action-delete" onClick={() => handleDeleteProject(projectName)} title="Projekt löschen">🗑</button>
+                        </div>
+                      </>
+                    )}
+                  </div>
+
+                  {editingProject === projectName && (
+                    <div className="crew-card-body">
+                      <div className="project-fields-grid">
+                        <div className="project-field">
+                          <label>Projektnummer</label>
+                          <input
+                            type="text"
+                            value={project.projektnummer || ''}
+                            onChange={e => handleUpdateProject(projectName, 'projektnummer', e.target.value)}
+                            placeholder="z.B. 12345"
+                          />
+                        </div>
+                        <div className="project-field">
+                          <label>Produktionsfirma</label>
+                          <input
+                            type="text"
+                            value={project.produktionsfirma || ''}
+                            onChange={e => handleUpdateProject(projectName, 'produktionsfirma', e.target.value)}
+                            placeholder="z.B. Bavaria Film"
+                            list="suggest-firmen-project"
+                          />
+                        </div>
+                        <div className="project-field">
+                          <label>Erster Drehtag</label>
+                          <input
+                            type="date"
+                            value={project.drehStartDatum || ''}
+                            onChange={e => handleUpdateProject(projectName, 'drehStartDatum', e.target.value)}
+                          />
+                          <span className="project-field-hint">Für automatische Drehtag-Berechnung</span>
+                        </div>
+                      </div>
+                      <div className="project-zeitkonto-row">
+                        <label className="project-zeitkonto-label">
+                          <span>Zeitkonto</span>
+                          <span className="project-zeitkonto-desc">Überstunden ins Zeitkonto statt Auszahlung</span>
+                        </label>
+                        <div
+                          className={`toggle-switch ${project.zeitkonto ? 'on' : ''}`}
+                          onClick={() => handleUpdateProject(projectName, 'zeitkonto', !project.zeitkonto)}
+                          role="switch"
+                          aria-checked={!!project.zeitkonto}
+                          aria-label="Zeitkonto aktivieren"
+                          style={{ cursor: 'pointer' }}
+                        >
+                          <div className="toggle-knob" />
+                        </div>
+                      </div>
                     </div>
-                  ) : (
-                    <>
-                      <div className="crew-card-title" onClick={() => setEditingProject(editingProject === projectName ? null : projectName)}>
-                        <span className={`crew-chevron ${editingProject === projectName ? 'open' : ''}`}>›</span>
-                        <span className="crew-name">{projectName}</span>
-                        <span className="crew-member-count">
-                          {project.produktionsfirma || 'Keine Firma'}
-                        </span>
-                      </div>
-                      <div className="crew-header-actions">
-                        <button className="crew-action-btn" onClick={(e) => { e.stopPropagation(); setRenamingProject(projectName); setRenameProjectValue(projectName); }} title="Projekt umbenennen">✏️</button>
-                        <button className="crew-action-btn crew-action-delete" onClick={() => handleDeleteProject(projectName)} title="Projekt löschen">🗑</button>
-                      </div>
-                    </>
                   )}
                 </div>
+              ))}
+            </div>
+          )}
 
-                {editingProject === projectName && (
-                  <div className="crew-card-body">
-                    <div className="project-fields-grid">
-                      <div className="project-field">
-                        <label>Projektnummer</label>
-                        <input
-                          type="text"
-                          value={project.projektnummer || ''}
-                          onChange={e => handleUpdateProject(projectName, 'projektnummer', e.target.value)}
-                          placeholder="z.B. 12345"
-                        />
-                      </div>
-                      <div className="project-field">
-                        <label>Produktionsfirma</label>
-                        <input
-                          type="text"
-                          value={project.produktionsfirma || ''}
-                          onChange={e => handleUpdateProject(projectName, 'produktionsfirma', e.target.value)}
-                          placeholder="z.B. Bavaria Film"
-                          list="suggest-firmen-project"
-                        />
-                      </div>
-                      <div className="project-field">
-                        <label>Erster Drehtag</label>
-                        <input
-                          type="date"
-                          value={project.drehStartDatum || ''}
-                          onChange={e => handleUpdateProject(projectName, 'drehStartDatum', e.target.value)}
-                        />
-                        <span className="project-field-hint">Für automatische Drehtag-Berechnung</span>
-                      </div>
-                    </div>
-                  </div>
-                )}
-              </div>
-            ))}
+          <div className="crew-add-row">
+            <input
+              type="text"
+              value={newProjectName}
+              onChange={e => setNewProjectName(e.target.value)}
+              className="crew-name-input"
+              placeholder="Neues Projekt erstellen..."
+              onKeyDown={e => e.key === 'Enter' && handleAddProject()}
+            />
+            <button className="spesen-add-btn" onClick={handleAddProject} title="Projekt erstellen">+</button>
           </div>
-        )}
 
-        <div className="crew-add-row">
-          <input
-            type="text"
-            value={newProjectName}
-            onChange={e => setNewProjectName(e.target.value)}
-            className="crew-name-input"
-            placeholder="Neues Projekt erstellen..."
-            onKeyDown={e => e.key === 'Enter' && handleAddProject()}
-          />
-          <button className="spesen-add-btn" onClick={handleAddProject} title="Projekt erstellen">+</button>
+          <datalist id="suggest-firmen-project">
+            {[...new Set(timesheets.map(ts => ts.produktionsfirma).filter(Boolean))].map(f => <option key={f} value={f} />)}
+          </datalist>
         </div>
-
-        {/* Datalist for firma suggestions in projects */}
-        <datalist id="suggest-firmen-project">
-          {[...new Set(timesheets.map(ts => ts.produktionsfirma).filter(Boolean))].map(f => <option key={f} value={f} />)}
-        </datalist>
       </div>
+      )}
 
-      {/* Name Aliases */}
-      {(Object.keys(nameAliases).length > 0 || nameGroups.length > 0) && (
+      {settingsTab === 'gagen' && (
+      <div className="v3-settings-panel">
+        <div className="v3-settings-panel-title">Gagen nach Position</div>
+        <div className="v3-settings-panel-sub">Standard-Gagen für Positionen festlegen. Diese werden automatisch für Personen mit der jeweiligen Position verwendet.</div>
+
         <div className="settings-card">
-          <h3>👤 Namen zusammenführen</h3>
-          <p className="settings-description">Gleiche Personen mit verschiedenen Schreibweisen zusammenfassen. Alle Einträge werden unter dem Hauptnamen zusammengeführt.</p>
-          
-          {/* Active aliases */}
+          <div className="person-gage-list">
+            {allPositions.map(pos => {
+              const pg = positionGagen[pos] || {};
+              const gt = pg.gageType || 'tag';
+              return (
+                <div key={pos} className="person-gage-row">
+                  <div className="person-gage-info">
+                    <span className="person-gage-name">{pos}</span>
+                  </div>
+                  <div className="person-gage-inputs">
+                    <div className="mini-gage-toggle">
+                      <button className={`mini-toggle-btn ${gt === 'tag' ? 'active' : ''}`} onClick={() => handlePositionGageTypeChange(pos, 'tag')}>Tag</button>
+                      <button className={`mini-toggle-btn ${gt === 'woche' ? 'active' : ''}`} onClick={() => handlePositionGageTypeChange(pos, 'woche')}>Woche</button>
+                    </div>
+                    <div className="person-gage-input-group">
+                      <input
+                        type="text"
+                        className="person-gage-input"
+                        value={pg.tagesgage || ''}
+                        onChange={e => handlePositionGageChange(pos, e.target.value)}
+                        placeholder={gt === 'tag' ? 'z.B. 500' : 'z.B. 2.500'}
+                      />
+                      <span className="person-gage-unit">€/{gt === 'tag' ? 'Tag' : 'Wo.'}</span>
+                    </div>
+                    {!defaultPositions.includes(pos) && (
+                      <button className="spesen-delete-btn" onClick={() => handleDeletePosition(pos)} title="Position entfernen">×</button>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+            <div className="person-gage-row person-gage-add">
+              <input
+                type="text"
+                className="person-gage-input"
+                placeholder="Neue Position..."
+                value={newPosition}
+                onChange={e => setNewPosition(e.target.value)}
+                onKeyDown={e => e.key === 'Enter' && handleAddPosition()}
+              />
+              <input
+                type="text"
+                className="person-gage-input"
+                placeholder="Gage"
+                value={newPositionGage}
+                onChange={e => setNewPositionGage(e.target.value)}
+                onKeyDown={e => e.key === 'Enter' && handleAddPosition()}
+              />
+              <button className="spesen-add-btn" onClick={handleAddPosition} title="Position hinzufügen">+</button>
+            </div>
+          </div>
+        </div>
+      </div>
+      )}
+
+      {settingsTab === 'namen' && (
+      <div className="v3-settings-panel">
+        <div className="v3-settings-panel-title">Namen & Aliases</div>
+        <div className="v3-settings-panel-sub">Gleiche Personen mit verschiedenen Schreibweisen zusammenfassen.</div>
+
+        <div className="settings-card">
+          <p className="settings-description">Alle Einträge werden unter dem Hauptnamen zusammengeführt.</p>
+
           {Object.keys(nameAliases).length > 0 && (
-            <div className="person-gage-list" style={{ marginBottom: '12px' }}>
+            <div className="person-gage-list" style={{ marginBottom: 12 }}>
               {Object.entries(nameAliases).map(([alias, canonical]) => (
                 <div key={alias} className="person-gage-row">
                   <div className="person-gage-info">
                     <span className="person-gage-name">{alias}</span>
-                    <span className="person-gage-position">→ wird als "{canonical}" behandelt</span>
+                    <span className="person-gage-position">→ wird als „{canonical}" behandelt</span>
                   </div>
                   <button className="spesen-delete-btn" onClick={() => handleRemoveAlias(alias)} title="Alias entfernen">×</button>
                 </div>
@@ -609,14 +711,13 @@ export default function Settings({ settings, onSave, timesheets, setTimesheets, 
             </div>
           )}
 
-          {/* Suggestions */}
           {nameGroups.filter(s => !nameAliases[s.alias]).length > 0 && (
-            <div className="person-gage-list">
-              <p className="settings-description" style={{ marginBottom: '8px', fontSize: '0.8rem', color: 'var(--accent-yellow, #f9ca24)' }}>⚠️ Mögliche Duplikate erkannt:</p>
+            <div className="person-gage-list" style={{ marginBottom: 12 }}>
+              <p className="settings-description" style={{ marginBottom: 8, fontSize: '0.8rem', color: 'var(--accent-yellow, #f9ca24)' }}>⚠️ Mögliche Duplikate erkannt:</p>
               {nameGroups.filter(s => !nameAliases[s.alias]).map(s => (
                 <div key={s.alias} className="person-gage-row" style={{ borderColor: 'var(--accent-yellow, #f9ca24)', borderStyle: 'dashed' }}>
                   <div className="person-gage-info">
-                    <span className="person-gage-name">"{s.alias}" → "{s.canonical}"</span>
+                    <span className="person-gage-name">„{s.alias}" → „{s.canonical}"</span>
                     <span className="person-gage-position">Gleiche Person?</span>
                   </div>
                   <button className="apply-position-btn" style={{ width: 'auto', padding: '5px 14px', marginTop: 0, fontSize: '0.8rem' }} onClick={() => handleAddAlias(s.alias, s.canonical)}>
@@ -627,281 +728,202 @@ export default function Settings({ settings, onSave, timesheets, setTimesheets, 
             </div>
           )}
 
-          {/* Manual alias */}
+          {Object.keys(nameAliases).length === 0 && nameGroups.length === 0 && (
+            <p className="settings-description" style={{ color: 'var(--muted)' }}>Keine Duplikate erkannt. Sobald Stundenzettel mit ähnlichen Namen vorliegen, erscheinen hier Vorschläge.</p>
+          )}
+
           {allNames.length > 1 && (
             <ManualAliasAdder names={allNames} existingAliases={nameAliases} onAdd={handleAddAlias} />
           )}
         </div>
+      </div>
       )}
 
-      {/* Position-based Gage Defaults */}
-      <div className="settings-card">
-        <h3>🎬 Gagen nach Position</h3>
-        <p className="settings-description">Standard-Gagen für Positionen festlegen. Diese Gagen werden automatisch für Personen mit der jeweiligen Position verwendet.</p>
-        <div className="person-gage-list">
-          {allPositions.map(pos => {
-            const pg = positionGagen[pos] || {};
-            const gt = pg.gageType || 'tag';
-            return (
-              <div key={pos} className="person-gage-row">
-                <div className="person-gage-info">
-                  <span className="person-gage-name">{pos}</span>
-                </div>
-                <div className="person-gage-inputs">
-                  <div className="mini-gage-toggle">
-                    <button className={`mini-toggle-btn ${gt === 'tag' ? 'active' : ''}`} onClick={() => handlePositionGageTypeChange(pos, 'tag')}>Tag</button>
-                    <button className={`mini-toggle-btn ${gt === 'woche' ? 'active' : ''}`} onClick={() => handlePositionGageTypeChange(pos, 'woche')}>Woche</button>
-                  </div>
-                  <div className="person-gage-input-group">
-                    <input
-                      type="text"
-                      className="person-gage-input"
-                      value={pg.tagesgage || ''}
-                      onChange={e => handlePositionGageChange(pos, e.target.value)}
-                      placeholder={gt === 'tag' ? 'z.B. 500' : 'z.B. 2.500'}
-                    />
-                    <span className="person-gage-unit">€/{gt === 'tag' ? 'Tag' : 'Wo.'}</span>
-                  </div>
-                  {!defaultPositions.includes(pos) && (
-                    <button className="spesen-delete-btn" onClick={() => handleDeletePosition(pos)} title="Position entfernen">×</button>
-                  )}
-                </div>
-              </div>
-            );
-          })}
-          <div className="person-gage-row person-gage-add">
-            <input
-              type="text"
-              className="person-gage-input"
-              placeholder="Neue Position..."
-              value={newPosition}
-              onChange={e => setNewPosition(e.target.value)}
-              onKeyDown={e => e.key === 'Enter' && handleAddPosition()}
-            />
-            <input
-              type="text"
-              className="person-gage-input"
-              placeholder="Gage"
-              value={newPositionGage}
-              onChange={e => setNewPositionGage(e.target.value)}
-              onKeyDown={e => e.key === 'Enter' && handleAddPosition()}
-            />
-            <button className="spesen-add-btn" onClick={handleAddPosition} title="Position hinzufügen">+</button>
-          </div>
-        </div>
-      </div>
+      {settingsTab === 'system' && (
+      <div className="v3-settings-panel">
+        <div className="v3-settings-panel-title">System & Export</div>
+        <div className="v3-settings-panel-sub">Backup, Daten-Import/Export, Updates und Tarifinfos.</div>
 
-      {/* Backup & Data Management */}
-      <div className="settings-card">
-        <h3>💾 Backup & Daten</h3>
-        <p className="settings-description">Erstelle Backups deiner Daten, stelle sie wieder her, oder exportiere/importiere alle Daten.</p>
-        
-        <div className="backup-actions-grid">
-          <div className="backup-action-group">
-            <h4 className="backup-group-title">Backup</h4>
-            <button className="backup-btn backup-btn-create" onClick={async () => {
-              try {
-                setBackupStatus('Erstelle Backup...');
-                const result = await window.electronAPI.createBackup();
-                if (result.success) {
-                  setBackupStatus(`✅ Backup erstellt: ${result.path.split('/').pop()}`);
-                  setBackupsLoaded(false); // refresh list
-                } else {
-                  setBackupStatus(`❌ Fehler: ${result.error}`);
-                }
-              } catch (e) { setBackupStatus(`❌ ${e.message}`); }
-            }}>
-              📦 Backup erstellen
-            </button>
-            <button className="backup-btn" onClick={async () => {
-              try {
-                const list = await window.electronAPI.listBackups();
-                if (list.success) {
-                  setBackups(list.backups || []);
-                  setBackupsLoaded(true);
-                } else {
-                  setBackupStatus(`❌ ${list.error}`);
-                }
-              } catch (e) { setBackupStatus(`❌ ${e.message}`); }
-            }}>
-              📋 Backups anzeigen
+        <div className="settings-card">
+          <h3>💾 Backup & Daten</h3>
+          <p className="settings-description">Erstelle Backups deiner Daten, stelle sie wieder her, oder exportiere/importiere alle Daten.</p>
+          <div style={{ marginBottom: 12 }}>
+            <button className="backup-btn" onClick={() => window.electronAPI?.openDataFolder?.()}>
+              📂 Datenordner im Finder öffnen
             </button>
           </div>
 
-          <div className="backup-action-group">
-            <h4 className="backup-group-title">Daten-Export/Import</h4>
-            <button className="backup-btn" onClick={async () => {
-              try {
-                setImportStatus('Exportiere...');
-                const result = await window.electronAPI.exportData();
-                if (result.success) {
-                  setImportStatus(`✅ Exportiert nach: ${result.path.split('/').pop()}`);
-                } else if (result.cancelled) {
-                  setImportStatus('');
-                } else {
-                  setImportStatus(`❌ ${result.error}`);
-                }
-              } catch (e) { setImportStatus(`❌ ${e.message}`); }
-            }}>
-              📤 Daten exportieren (JSON)
-            </button>
-            <button className="backup-btn" onClick={async () => {
-              if (!confirm('Importierte Daten ERSETZEN alle aktuellen Daten. Vorher ein Backup erstellen!\n\nFortfahren?')) return;
-              try {
-                setImportStatus('Importiere...');
-                const result = await window.electronAPI.importDataFile();
-                if (result.success) {
-                  setImportStatus(`✅ ${result.count || 0} Stundenzettel importiert. App wird neu geladen...`);
-                  setTimeout(() => window.location.reload(), 1500);
-                } else if (result.cancelled) {
-                  setImportStatus('');
-                } else {
-                  setImportStatus(`❌ ${result.error}`);
-                }
-              } catch (e) { setImportStatus(`❌ ${e.message}`); }
-            }}>
-              📥 Daten importieren (JSON)
-            </button>
-          </div>
-        </div>
-
-        {backupStatus && <p className="backup-status">{backupStatus}</p>}
-        {importStatus && <p className="backup-status">{importStatus}</p>}
-
-        {/* Backup list */}
-        {backupsLoaded && backups.length > 0 && (
-          <div className="backup-list">
-            <h4>Vorhandene Backups ({backups.length})</h4>
-            {backups.map((b, i) => (
-              <div key={i} className="backup-row">
-                <div className="backup-row-info">
-                  <span className="backup-row-name">{b.name}</span>
-                  <span className="backup-row-date">{new Date(b.created).toLocaleString('de-DE')}</span>
-                  <span className="backup-row-size">{(b.size / 1024).toFixed(0)} KB</span>
-                </div>
-                <button className="backup-btn backup-btn-restore" onClick={() => setRestoreConfirm(b)}>
-                  🔄 Wiederherstellen
-                </button>
-              </div>
-            ))}
-          </div>
-        )}
-        {backupsLoaded && backups.length === 0 && (
-          <p className="settings-description" style={{ marginTop: '8px' }}>Keine Backups vorhanden.</p>
-        )}
-
-        {/* Restore confirmation dialog */}
-        {restoreConfirm && (
-          <div className="confirm-overlay">
-            <div className="confirm-dialog">
-              <h3>Backup wiederherstellen?</h3>
-              <p>Alle aktuellen Daten werden durch das Backup <strong>{restoreConfirm.name}</strong> vom {new Date(restoreConfirm.created).toLocaleString('de-DE')} ersetzt.</p>
-              <p style={{ color: 'var(--accent-red, #e74c3c)' }}>⚠️ Diese Aktion kann nicht rückgängig gemacht werden!</p>
-              <div className="confirm-actions">
-                <button className="btn-cancel" onClick={() => setRestoreConfirm(null)} disabled={restoring}>Abbrechen</button>
-                <button className="btn-confirm-delete" onClick={async () => {
-                  setRestoring(true);
-                  try {
-                    const result = await window.electronAPI.restoreBackup(restoreConfirm.path);
-                    if (result.success) {
-                      setBackupStatus('✅ Backup wiederhergestellt. App wird neu geladen...');
-                      setRestoreConfirm(null);
-                      setTimeout(() => window.location.reload(), 1500);
-                    } else {
-                      setBackupStatus(`❌ ${result.error}`);
-                      setRestoreConfirm(null);
-                    }
-                  } catch (e) {
-                    setBackupStatus(`❌ ${e.message}`);
-                    setRestoreConfirm(null);
+          <div className="backup-actions-grid">
+            <div className="backup-action-group">
+              <h4 className="backup-group-title">Backup</h4>
+              <button className="backup-btn backup-btn-create" onClick={async () => {
+                try {
+                  setBackupStatus('Erstelle Backup...');
+                  const result = await window.electronAPI.createBackup();
+                  if (result.success) {
+                    setBackupStatus(`✅ Backup erstellt: ${result.path.split('/').pop()}`);
+                    setBackupsLoaded(false);
+                  } else {
+                    setBackupStatus(`❌ Fehler: ${result.error}`);
                   }
-                  setRestoring(false);
-                }} disabled={restoring}>
-                  {restoring ? '⏳ Wiederherstellung...' : 'Wiederherstellen'}
-                </button>
-              </div>
+                } catch (e) { setBackupStatus(`❌ ${e.message}`); }
+              }}>
+                📦 Backup erstellen
+              </button>
+              <button className="backup-btn" onClick={async () => {
+                try {
+                  const list = await window.electronAPI.listBackups();
+                  if (list.success) {
+                    setBackups(list.backups || []);
+                    setBackupsLoaded(true);
+                  } else {
+                    setBackupStatus(`❌ ${list.error}`);
+                  }
+                } catch (e) { setBackupStatus(`❌ ${e.message}`); }
+              }}>
+                📋 Backups anzeigen
+              </button>
+            </div>
+
+            <div className="backup-action-group">
+              <h4 className="backup-group-title">Daten-Export/Import</h4>
+              <button className="backup-btn" onClick={async () => {
+                try {
+                  setImportStatus('Exportiere...');
+                  const result = await window.electronAPI.exportData();
+                  if (result.success) {
+                    setImportStatus(`✅ Exportiert nach: ${result.path.split('/').pop()}`);
+                  } else if (result.cancelled) {
+                    setImportStatus('');
+                  } else {
+                    setImportStatus(`❌ ${result.error}`);
+                  }
+                } catch (e) { setImportStatus(`❌ ${e.message}`); }
+              }}>
+                📤 Daten exportieren (JSON)
+              </button>
+              <button className="backup-btn" onClick={async () => {
+                if (!confirm('Importierte Daten ERSETZEN alle aktuellen Daten. Vorher ein Backup erstellen!\n\nFortfahren?')) return;
+                try {
+                  setImportStatus('Importiere...');
+                  const result = await window.electronAPI.importDataFile();
+                  if (result.success) {
+                    setImportStatus(`✅ ${result.count || 0} Stundenzettel importiert. App wird neu geladen...`);
+                    setTimeout(() => window.location.reload(), 1500);
+                  } else if (result.cancelled) {
+                    setImportStatus('');
+                  } else {
+                    setImportStatus(`❌ ${result.error}`);
+                  }
+                } catch (e) { setImportStatus(`❌ ${e.message}`); }
+              }}>
+                📥 Daten importieren (JSON)
+              </button>
             </div>
           </div>
-        )}
-      </div>
 
-      {/* Einführung / Rundgang */}
-      <div className="settings-card">
-        <h3>🧭 Einführung</h3>
-        <p className="settings-description">Den Rundgang mit den wichtigsten Funktionen (inkl. n8n) erneut ansehen.</p>
-        <div className="backup-actions" style={{ marginTop: 8 }}>
-          <button className="backup-btn" onClick={() => onRestartTour && onRestartTour()}>🧭 Rundgang erneut starten</button>
-        </div>
-      </div>
+          {backupStatus && <p className="backup-status">{backupStatus}</p>}
+          {importStatus && <p className="backup-status">{importStatus}</p>}
 
-      {/* Updates */}
-      <div className="settings-card">
-        <h3>🔄 Updates</h3>
-        <p className="settings-description">ZeitBlick prüft automatisch auf neue Versionen. Du kannst auch manuell nach Updates suchen.</p>
-        <div className="update-check-section">
-          <button className="backup-btn" onClick={checkForUpdates} disabled={checking}>
-            {checking ? '⏳ Prüfe...' : '🔍 Nach Updates suchen'}
-          </button>
-          {updateResult && (
-            <span className="update-check-result">
-              {updateResult.error 
-                ? `❌ ${updateResult.error}` 
-                : updateResult.success && updateResult.updateInfo
-                  ? `✅ Version ${updateResult.updateInfo.version} verfügbar!`
-                  : '✅ Du hast die neueste Version.'
-              }
-            </span>
+          {backupsLoaded && backups.length > 0 && (
+            <div className="backup-list">
+              <h4>Vorhandene Backups ({backups.length})</h4>
+              {backups.map((b, i) => (
+                <div key={i} className="backup-row">
+                  <div className="backup-row-info">
+                    <span className="backup-row-name">{b.name}</span>
+                    <span className="backup-row-date">{new Date(b.created).toLocaleString('de-DE')}</span>
+                    <span className="backup-row-size">{(b.size / 1024).toFixed(0)} KB</span>
+                  </div>
+                  <button className="backup-btn backup-btn-restore" onClick={() => setRestoreConfirm(b)}>
+                    🔄 Wiederherstellen
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+          {backupsLoaded && backups.length === 0 && (
+            <p className="settings-description" style={{ marginTop: 8 }}>Keine Backups vorhanden.</p>
+          )}
+
+          {restoreConfirm && (
+            <div className="confirm-overlay">
+              <div className="confirm-dialog">
+                <h3>Backup wiederherstellen?</h3>
+                <p>Alle aktuellen Daten werden durch das Backup <strong>{restoreConfirm.name}</strong> vom {new Date(restoreConfirm.created).toLocaleString('de-DE')} ersetzt.</p>
+                <p style={{ color: 'var(--accent-red, #e74c3c)' }}>⚠️ Diese Aktion kann nicht rückgängig gemacht werden!</p>
+                <div className="confirm-actions">
+                  <button className="btn-cancel" onClick={() => setRestoreConfirm(null)} disabled={restoring}>Abbrechen</button>
+                  <button className="btn-confirm-delete" onClick={async () => {
+                    setRestoring(true);
+                    try {
+                      const result = await window.electronAPI.restoreBackup(restoreConfirm.path);
+                      if (result.success) {
+                        setBackupStatus('✅ Backup wiederhergestellt. App wird neu geladen...');
+                        setRestoreConfirm(null);
+                        setTimeout(() => window.location.reload(), 1500);
+                      } else {
+                        setBackupStatus(`❌ ${result.error}`);
+                        setRestoreConfirm(null);
+                      }
+                    } catch (e) {
+                      setBackupStatus(`❌ ${e.message}`);
+                      setRestoreConfirm(null);
+                    }
+                    setRestoring(false);
+                  }} disabled={restoring}>
+                    {restoring ? '⏳ Wiederherstellung...' : 'Wiederherstellen'}
+                  </button>
+                </div>
+              </div>
+            </div>
           )}
         </div>
-      </div>
 
-      <div className="settings-card">
-        <h3>TV-FFS 2025 – Berechnungsregeln</h3>
-        <p className="settings-description">Tarifvertrag vom 12. Oktober 2024, Gagentarifvertrag 2024-2026</p>
-        <div className="tvffs-info">
-          <div className="tvffs-rule">
-            <span className="rule-label">Wochengage (TZ 5.3.1)</span>
-            <span className="rule-value">5-Tage-Woche, bis 50h/Woche</span>
-          </div>
-          <div className="tvffs-rule">
-            <span className="rule-label">Stundengage (TZ 5.7.1)</span>
-            <span className="rule-value">1/10 Tagesgage = 1/50 Wochengage</span>
-          </div>
-          <div className="tvffs-rule">
-            <span className="rule-label">Tägl. Mehrarbeit (TZ 5.4.3.2)</span>
-            <span className="rule-value">11. Std: 25%, ab 12. Std: 50%</span>
-          </div>
-          <div className="tvffs-rule">
-            <span className="rule-label">Wöch. Mehrarbeit (TZ 5.4.3.3)</span>
-            <span className="rule-value">51.–55. Std: 25%, ab 56. Std: 50%</span>
-          </div>
-          <div className="tvffs-rule">
-            <span className="rule-label">Nachtzuschlag (TZ 5.5)</span>
-            <span className="rule-value">25% (22:00–06:00)</span>
-          </div>
-          <div className="tvffs-rule">
-            <span className="rule-label">Samstag (TZ 5.6.4)</span>
-            <span className="rule-value">25% Zuschlag</span>
-          </div>
-          <div className="tvffs-rule">
-            <span className="rule-label">Sonntag (TZ 5.6.3)</span>
-            <span className="rule-value">75% Zuschlag + Ruhetag</span>
-          </div>
-          <div className="tvffs-rule">
-            <span className="rule-label">Feiertag (TZ 5.6.3)</span>
-            <span className="rule-value">100% Zuschlag</span>
-          </div>
-          <div className="tvffs-rule">
-            <span className="rule-label">Urlaub (TZ 14.1)</span>
-            <span className="rule-value">0,5 Tage / 7 Tage Vertragszeit (gesammelt, nicht ausgezahlt)</span>
-          </div>
-          <div className="tvffs-rule">
-            <span className="rule-label">Krankheit (TZ 13.3)</span>
-            <span className="rule-value">Bezahlter Tag, bis 6 Wochen</span>
+        <div className="settings-card">
+          <h3>🧭 Einführung</h3>
+          <p className="settings-description">Den Rundgang mit den wichtigsten Funktionen (inkl. n8n) erneut ansehen.</p>
+          <div className="backup-actions" style={{ marginTop: 8 }}>
+            <button className="backup-btn" onClick={() => onRestartTour && onRestartTour()}>🧭 Rundgang erneut starten</button>
           </div>
         </div>
-      </div>
-      {/* Ende settings-card → v3-settings-panel → tab-conditional → right-panel → v3-settings-layout */}
+
+        <div className="settings-card">
+          <h3>🔄 Updates</h3>
+          <p className="settings-description">ZeitBlick prüft automatisch auf neue Versionen. Du kannst auch manuell nach Updates suchen.</p>
+          <div className="update-check-section">
+            <button className="backup-btn" onClick={checkForUpdates} disabled={checking}>
+              {checking ? '⏳ Prüfe...' : '🔍 Nach Updates suchen'}
+            </button>
+            {updateResult && (
+              <span className="update-check-result">
+                {updateResult.error
+                  ? `❌ ${updateResult.error}`
+                  : updateResult.success && updateResult.updateInfo
+                    ? `✅ Version ${updateResult.updateInfo.version} verfügbar!`
+                    : '✅ Du hast die neueste Version.'
+                }
+              </span>
+            )}
+          </div>
+        </div>
+
+        <div className="settings-card">
+          <h3>TV-FFS 2025 – Berechnungsregeln</h3>
+          <p className="settings-description">Tarifvertrag vom 12. Oktober 2024, Gagentarifvertrag 2024-2026</p>
+          <div className="tvffs-info">
+            <div className="tvffs-rule"><span className="rule-label">Wochengage (TZ 5.3.1)</span><span className="rule-value">5-Tage-Woche, bis 50h/Woche</span></div>
+            <div className="tvffs-rule"><span className="rule-label">Stundengage (TZ 5.7.1)</span><span className="rule-value">1/10 Tagesgage = 1/50 Wochengage</span></div>
+            <div className="tvffs-rule"><span className="rule-label">Tägl. Mehrarbeit (TZ 5.4.3.2)</span><span className="rule-value">11. Std: 25%, ab 12. Std: 50%</span></div>
+            <div className="tvffs-rule"><span className="rule-label">Wöch. Mehrarbeit (TZ 5.4.3.3)</span><span className="rule-value">51.–55. Std: 25%, ab 56. Std: 50%</span></div>
+            <div className="tvffs-rule"><span className="rule-label">Nachtzuschlag (TZ 5.5)</span><span className="rule-value">25% (22:00–06:00)</span></div>
+            <div className="tvffs-rule"><span className="rule-label">Samstag (TZ 5.6.4)</span><span className="rule-value">25% Zuschlag</span></div>
+            <div className="tvffs-rule"><span className="rule-label">Sonntag (TZ 5.6.3)</span><span className="rule-value">75% Zuschlag + Ruhetag</span></div>
+            <div className="tvffs-rule"><span className="rule-label">Feiertag (TZ 5.6.3)</span><span className="rule-value">100% Zuschlag</span></div>
+            <div className="tvffs-rule"><span className="rule-label">Urlaub (TZ 14.1)</span><span className="rule-value">0,5 Tage / 7 Tage Vertragszeit (gesammelt, nicht ausgezahlt)</span></div>
+            <div className="tvffs-rule"><span className="rule-label">Krankheit (TZ 13.3)</span><span className="rule-value">Bezahlter Tag, bis 6 Wochen</span></div>
+          </div>
+        </div>
       </div>
       )}
       </div>

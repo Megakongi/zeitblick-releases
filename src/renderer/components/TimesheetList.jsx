@@ -2,7 +2,7 @@ import React, { useState, useMemo, useCallback, useEffect } from 'react';
 import { getTimesheetKW, getTimesheetYear, formatKW } from '../utils/calendarWeek';
 import { generateTimesheetHTML } from '../utils/pdfExport';
 import { getInitials } from '../utils/helpers';
-import { sendTimesheetToStdWeb } from '../utils/stdweb';
+import { sendTimesheetToStdWeb, sendDepartmentToStdWeb, findStdWebMember } from '../utils/stdweb';
 
 /* Hash → Projektfarbe (konsistent mit Sidebar) */
 const PROJECT_PALETTE = ['#5159E8','#1FB97A','#E0A82E','#E83A3A','#06B6D4','#8B5CF6','#EC4899','#14B8A6','#F97316'];
@@ -29,21 +29,42 @@ function getSheetNacht(sheet) {
   return sheet.days ? sheet.days.reduce((sum, d) => sum + (Number(d.nacht25) || 0), 0) : 0;
 }
 
-export default function TimesheetList({ timesheets, onViewDetail, onDelete, onBulkDelete, personFilter, resolveName, getBaseProject, onRenameProject, completedProjects, onToggleProjectComplete, projectCrews }) {
+export default function TimesheetList({ timesheets, onViewDetail, onDelete, onBulkDelete, personFilter, resolveName, getBaseProject, onRenameProject, completedProjects, onToggleProjectComplete, projectCrews, team = [], stdwebProductions = {}, onSetStdwebProduction }) {
   const [confirmId, setConfirmId] = useState(null);
   const [bulkConfirm, setBulkConfirm] = useState(null);
   const [stdwebMsg, setStdwebMsg] = useState('');
 
+  // Einzel-Export: Produktion automatisch aus dem Zettel; Login nur wenn hinterlegt.
   const handleSendStdWeb = useCallback(async (sheet, e) => {
     if (e) e.stopPropagation();
+    const member = findStdWebMember(sheet, team, resolveName);
     setStdwebMsg('Übertrage an StdWeb…');
     try {
-      const res = await sendTimesheetToStdWeb(sheet);
+      const production = (stdwebProductions || {})[sheet.projekt || ''] || '';
+      const res = await sendTimesheetToStdWeb(sheet, { member, production });
       setStdwebMsg(res.message);
     } catch (err) {
       setStdwebMsg('Fehler bei der StdWeb-Übertragung.');
     }
-  }, []);
+  }, [team, resolveName, stdwebProductions]);
+
+  const handleSendDepartment = useCallback(async (shownSheets) => {
+    const jobs = [];
+    const skipped = [];
+    for (const sheet of (shownSheets || [])) {
+      const member = findStdWebMember(sheet, team, resolveName);
+      if (member) jobs.push({ sheet, member }); else skipped.push(sheet.name || '?');
+    }
+    if (!jobs.length) { setStdwebMsg('Keine Personen mit hinterlegtem StdWeb-Login in dieser Auswahl.'); return; }
+    try {
+      const res = await sendDepartmentToStdWeb(jobs, {
+        onProgress: (p) => setStdwebMsg(`(${p.index + 1}/${p.total}) ${p.name} – ${p.phase}…`),
+      });
+      setStdwebMsg(res.message + (skipped.length ? ` · ${skipped.length} ohne Login übersprungen` : ''));
+    } catch (err) {
+      setStdwebMsg('Fehler beim Abteilungs-Durchlauf.');
+    }
+  }, [team, resolveName]);
   const [collapsedPersons, setCollapsedPersons] = useState({});
   const [sortBy, setSortBy] = useState('date'); // 'date' | 'name' | 'kw' | 'projekt'
   const [sortDir, setSortDir] = useState('desc'); // 'asc' | 'desc'
@@ -581,6 +602,14 @@ export default function TimesheetList({ timesheets, onViewDetail, onDelete, onBu
             title={`Alle ${activeProjectSheets.length} Stundenzettel als PDF exportieren`}
           >
             {exporting ? '⏳ Exportiere…' : `📄 Alle ${activeProjectSheets.length} als PDF`}
+          </button>
+          <button
+            className="export-all-btn"
+            onClick={() => handleSendDepartment(activeProjectSheets)}
+            disabled={activeProjectSheets.length === 0}
+            title="Alle Personen mit hinterlegtem StdWeb-Login an StdWeb vorausfüllen (kein Absenden)"
+          >
+            📤 Alle an StdWeb
           </button>
           <button className="bulk-delete-btn" onClick={() => {
           const ids = activeProjectSheets.map(s => s.id);

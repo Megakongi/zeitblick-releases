@@ -130,7 +130,8 @@ function PersonenTab({ team, onTeamChange, timesheets, resolveName }) {
   const [selectMode, setSelectMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState(() => new Set());
   const [exporting, setExporting] = useState(false);
-  const [form, setForm] = useState({ name: '', position: '', email: '', phone: '', strasse: '', plz: '', ort: '', spezials: '', notizen: '', isMe: false });
+  const [form, setForm] = useState({ name: '', position: '', email: '', phone: '', strasse: '', plz: '', ort: '', spezials: '', notizen: '', isMe: false, sesamName: '', sesamVorname: '', sesamPasswort: '' });
+  const [hasSesamPw, setHasSesamPw] = useState(false); // ob für die bearbeitete Person bereits ein Passwort gespeichert ist
 
   const knownPersons = useMemo(() => {
     if (!timesheets) return [];
@@ -178,28 +179,49 @@ function PersonenTab({ team, onTeamChange, timesheets, resolveName }) {
   }, [team, searchQuery, positionRank]);
 
   const resetForm = useCallback(() => {
-    setForm({ name: '', position: '', email: '', phone: '', strasse: '', plz: '', ort: '', spezials: '', notizen: '', isMe: false });
+    setForm({ name: '', position: '', email: '', phone: '', strasse: '', plz: '', ort: '', spezials: '', notizen: '', isMe: false, sesamName: '', sesamVorname: '', sesamPasswort: '' });
+    setHasSesamPw(false);
     setEditingId(null);
     setShowForm(false);
   }, []);
 
-  const handleSave = useCallback(() => {
+  const handleSave = useCallback(async () => {
     if (!form.name.trim()) return;
     const current = team || [];
-    // „Das bin ich" ist exklusiv: beim Setzen das Flag bei allen anderen entfernen.
+    const existing = editingId ? current.find(m => m.id === editingId) : null;
+
+    // Sesam-Passwort verschlüsseln (nur wenn neu eingegeben), sonst bestehendes behalten.
+    let sesamPwEnc = existing ? existing.sesamPwEnc : undefined;
+    if (form.sesamPasswort && form.sesamPasswort.trim()) {
+      if (window.electronAPI && window.electronAPI.safeEncrypt) {
+        const enc = await window.electronAPI.safeEncrypt(form.sesamPasswort);
+        if (enc && enc.success) sesamPwEnc = enc.data;
+      }
+    }
+
+    const { sesamPasswort, ...rest } = form;
+    const fields = {
+      ...rest,
+      name: form.name.trim(),
+      sesamName: (form.sesamName || '').trim(),
+      sesamVorname: (form.sesamVorname || '').trim(),
+      ...(sesamPwEnc ? { sesamPwEnc } : {}),
+    };
+
     const clearOthers = (m) => (form.isMe ? { ...m, isMe: false } : m);
     let next;
     if (editingId) {
-      next = current.map(m => m.id === editingId ? { ...m, ...form, name: form.name.trim() } : clearOthers(m));
+      next = current.map(m => m.id === editingId ? { ...m, ...fields } : clearOthers(m));
     } else {
-      next = [...current.map(clearOthers), { id: generateId(), ...form, name: form.name.trim() }];
+      next = [...current.map(clearOthers), { id: generateId(), ...fields }];
     }
     onTeamChange(next);
     resetForm();
   }, [form, editingId, team, onTeamChange, resetForm]);
 
   const handleEdit = useCallback((member) => {
-    setForm({ name: member.name, position: member.position || '', email: member.email || '', phone: member.phone || '', strasse: member.strasse || '', plz: member.plz || '', ort: member.ort || '', spezials: member.spezials || '', notizen: member.notizen || '', isMe: !!member.isMe });
+    setForm({ name: member.name, position: member.position || '', email: member.email || '', phone: member.phone || '', strasse: member.strasse || '', plz: member.plz || '', ort: member.ort || '', spezials: member.spezials || '', notizen: member.notizen || '', isMe: !!member.isMe, sesamName: member.sesamName || '', sesamVorname: member.sesamVorname || '', sesamPasswort: '' });
+    setHasSesamPw(!!member.sesamPwEnc);
     setEditingId(member.id);
     setShowForm(true);
   }, []);
@@ -333,6 +355,22 @@ function PersonenTab({ team, onTeamChange, timesheets, resolveName }) {
                 <span>Das bin ich (Startadresse für Motiv-Entfernung)</span>
               </label>
             </div>
+
+            <div className="team-form-field team-form-full">
+              <div className="team-sesam-head">🔐 StdWeb-Login (Sesam) <span className="team-sesam-hint">– für die Stunden-Übertragung. Passwort wird verschlüsselt gespeichert.</span></div>
+            </div>
+            <div className="team-form-field">
+              <label>Sesam Nachname</label>
+              <input type="text" value={form.sesamName} onChange={e => setForm(f => ({ ...f, sesamName: e.target.value }))} placeholder="wie im StdWeb-Login" />
+            </div>
+            <div className="team-form-field">
+              <label>Sesam Vorname</label>
+              <input type="text" value={form.sesamVorname} onChange={e => setForm(f => ({ ...f, sesamVorname: e.target.value }))} placeholder="wie im StdWeb-Login" />
+            </div>
+            <div className="team-form-field team-form-full">
+              <label>Sesam Passwort {hasSesamPw && <span className="team-sesam-saved">✓ gespeichert</span>}</label>
+              <input type="password" value={form.sesamPasswort} onChange={e => setForm(f => ({ ...f, sesamPasswort: e.target.value }))} placeholder={hasSesamPw ? '•••••••• (leer lassen = unverändert)' : 'StdWeb-Passwort'} autoComplete="new-password" />
+            </div>
             <div className="team-form-field team-form-full">
               <label>Spezials</label>
               <input type="text" value={form.spezials} onChange={e => setForm(f => ({ ...f, spezials: e.target.value }))} placeholder="z.B. Führerschein, Kran, Spezialgerät…" />
@@ -383,6 +421,7 @@ function PersonenTab({ team, onTeamChange, timesheets, resolveName }) {
                   {member.email && <span className="team-card-contact">✉ {member.email}</span>}
                   {member.phone && <span className="team-card-contact">☎ {member.phone}</span>}
                   {(member.strasse || member.ort) && <span className="team-card-contact">📍 {[member.strasse, [member.plz, member.ort].filter(Boolean).join(' ')].filter(Boolean).join(', ')}</span>}
+                  {member.sesamPwEnc && <span className="team-card-contact" title="StdWeb-Login hinterlegt (verschlüsselt)">🔐 StdWeb</span>}
                 </div>
                 {member.spezials && <div className="team-card-notes">⭐ {member.spezials}</div>}
                 {member.notizen && <div className="team-card-notes">{member.notizen}</div>}

@@ -1,7 +1,7 @@
 import React, { useMemo, useState } from 'react';
 import { calculateSheetTVFFS } from '../utils/tvffsCalculator';
 import { isHoliday } from '../utils/holidays';
-import { sendTimesheetToStdWeb } from '../utils/stdweb';
+import { sendTimesheetToStdWeb, findStdWebMember } from '../utils/stdweb';
 
 /* Hilfsfunktion: Initialen aus Name */
 function getInitials(name = '') {
@@ -35,18 +35,25 @@ function dayLabel(datum = '') {
   return DAY_NAMES[date.getDay()] || '';
 }
 
-export default function TimesheetDetail({ sheet, settings, onBack, onEdit, allTimesheets, onSelectSheet }) {
+export default function TimesheetDetail({ sheet, settings, onBack, onEdit, allTimesheets, onSelectSheet, team = [], resolveName, stdwebProductions = {}, onSetStdwebProduction }) {
   const calc = calculateSheetTVFFS(sheet, settings);
   const hasGage = settings.tagesgage > 0;
   const [stdwebSending, setStdwebSending] = useState(false);
   const [stdwebMsg, setStdwebMsg] = useState('');
 
+  const member = findStdWebMember(sheet, team, resolveName);
+
+  // Produktion wird automatisch aus dem Stundenzettel (Projekt/Firma) abgeleitet –
+  // optionaler manueller Override über stdwebProductions[projekt].
   const handleSendStdWeb = async () => {
     setStdwebSending(true);
-    setStdwebMsg('');
+    setStdwebMsg('Übertrage an StdWeb…');
     try {
-      const res = await sendTimesheetToStdWeb(sheet);
+      const production = (stdwebProductions || {})[sheet.projekt || ''] || '';
+      const res = await sendTimesheetToStdWeb(sheet, { member, production });
       setStdwebMsg(res.message);
+    } catch (e) {
+      setStdwebMsg('Fehler bei der StdWeb-Übertragung.');
     } finally {
       setStdwebSending(false);
     }
@@ -232,6 +239,11 @@ export default function TimesheetDetail({ sheet, settings, onBack, onEdit, allTi
               <div className="v3-detail-day-num">
                 {fmtNum(day.fahrzeit) ?? '—'}
               </div>
+              {day.tagesgage > 0 && (
+                <div className="v3-detail-day-num" style={{ color: 'var(--p-500)', fontWeight: 600 }}>
+                  {day.tagesgage}€
+                </div>
+              )}
             </div>
           );
         })}

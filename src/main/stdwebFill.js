@@ -82,14 +82,14 @@ function buildStdWebFillScript(days) {
       // 1) Server-Fokus → Server merkt sich "dieses Feld wird editiert"
       const f = focusField(base);
       if (f !== true) { log.push(f); return false; }
-      await sleep(850);
+      await sleep(300);
       // 2) Zeit committen (wie Picker-onSelect)
       const c = commitTime(time);
       if (c !== true) { log.push(base + ': commit (' + c + ')'); return false; }
       // 3) warten bis der Wert (mit Ziffern) im Feld erscheint
       const hasDigits = () => /\\d/.test(((document.getElementById(innerId) || {}).value) || '');
-      await until(hasDigits, 4500);
-      await sleep(300);
+      await until(hasDigits, 4000);
+      await sleep(100);
       const got = (document.getElementById(innerId) || {}).value || '';
       log.push(base + ' = "' + got + '" (gesendet ' + time + ')');
       return /\\d/.test(got);
@@ -102,15 +102,15 @@ function buildStdWebFillScript(days) {
       const innerId = base + 'INNER_EINGABEFRAME';
       const f = focusField(base);
       if (f !== true) { log.push(f); return false; }
-      await sleep(750);
+      await sleep(300);
       const inp = document.getElementById(innerId);
       if (!inp) { log.push('Feld fehlt: ' + innerId); return false; }
       inp.value = String(value);
       try { inp.dispatchEvent(new Event('input', { bubbles: true })); inp.dispatchEvent(new Event('change', { bubbles: true })); } catch (_) {}
       window.AddChangedControl(innerId);
-      await sleep(150);
+      await sleep(100);
       focusField(base); // Flush: postet den geänderten Wert
-      await sleep(900);
+      await sleep(450);
       const got = (document.getElementById(innerId) || {}).value || '';
       log.push(base + ' = "' + got + '" (gesendet "' + value + '")');
       return true;
@@ -228,7 +228,7 @@ function buildStdWebNavigateScript(mondayDate) {
     if (hit) {
       window.CGSetHiddenInputVal('BROWSE_FRAME_SELROW', hit.id);
       window.executeAjaxEvent('&ajaxevent=JQGridOptions.OnSelectRow', window.BROWSE_FRAMEIWCL, 'BROWSE_FRAME.DoAjaxRequest', true, null, true);
-      await sleep(1200);
+      await sleep(700);
       rep.action = 'selected-existing'; rep.ok = true; rep.note = 'Vorhandene Woche gewählt (' + hit.id + ')';
       return rep;
     }
@@ -237,7 +237,7 @@ function buildStdWebNavigateScript(mondayDate) {
     if (typeof window.BTNNEU_FRAMEIWCL === 'undefined') { rep.note = 'BTNNEU_FRAMEIWCL fehlt'; return rep; }
     window.executeAjaxEvent('&ajaxevent=JQButtonOptions.OnClick', window.BTNNEU_FRAMEIWCL, 'BTNNEU_FRAME.DoAjaxRequest', true, null, true);
     await until(() => readRows('BROWSE_KWAUSWAHL').length > 0, 6000);
-    await sleep(400);
+    await sleep(250);
     rep.kwRows = readRows('BROWSE_KWAUSWAHL');
     hit = rep.kwRows.find(rowMatches);
     if (!hit) { rep.action = 'kw-not-available'; rep.note = 'KW nicht im Dialog (zu alt/zu weit in der Zukunft?)'; return rep; }
@@ -246,14 +246,134 @@ function buildStdWebNavigateScript(mondayDate) {
     const kwIWCL = window['BROWSE_KWAUSWAHLIWCL'];
     if (typeof kwIWCL === 'undefined') { rep.note = 'BROWSE_KWAUSWAHLIWCL fehlt'; return rep; }
     window.executeAjaxEvent('&ajaxevent=JQGridOptions.OnSelectRow', kwIWCL, 'BROWSE_KWAUSWAHL.DoAjaxRequest', true, null, true);
-    await sleep(700);
+    await sleep(400);
     const dlgIWCL = window['IWFRAMEREGION_KWAUSWAHLIWCL'];
     if (typeof dlgIWCL === 'undefined') { rep.note = 'IWFRAMEREGION_KWAUSWAHLIWCL fehlt'; return rep; }
     window.executeAjaxEvent('&ajaxevent=JQDialogOptions.Buttons.Items[1].OnClick', dlgIWCL, 'IWFRAMEREGION_KWAUSWAHL.DoAjaxRequest', true, null, true);
-    await sleep(1400);
+    await sleep(900);
     rep.action = 'created'; rep.ok = true; rep.note = 'Neue Woche angelegt (' + hit.id + ')';
     return rep;
   })();`;
 }
 
-module.exports = { buildStdWebFillScript, buildStdWebDiagnoseScript, buildStdWebNavigateScript };
+/**
+ * Loggt in StdWeb als gegebene Person ein (Login-Seite).
+ * Setzt Name/Vorname/Passwort, wählt die Produktion (select2-Dropdown) und
+ * klickt – wenn `doSubmit` – auf Login. Gibt einen Report (inkl. gelesener
+ * Produktions-Optionen) zurück.
+ * @param {{name:string, vorname:string, passwort:string, produktion:string}} creds
+ * @param {boolean} doSubmit
+ */
+function buildStdWebLoginScript(creds, doSubmit) {
+  const c = JSON.stringify(creds || {});
+  const submit = doSubmit ? 'true' : 'false';
+  return `(async () => {
+    const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+    const until = async (fn, t = 7000, s = 150) => { const t0 = Date.now(); while (Date.now()-t0 < t) { try { if (fn()) return true; } catch(_){} await sleep(s); } return false; };
+    const creds = ${c};
+    const rep = { prereq: {}, set: {}, steps: [], submitted: false, loggedIn: false, note: '' };
+    rep.prereq = {
+      $: typeof window.$, executeAjaxEvent: typeof window.executeAjaxEvent,
+      AddChangedControl: typeof window.AddChangedControl, BTNLOGINIWCL: typeof window.BTNLOGINIWCL,
+    };
+    if (typeof window.executeAjaxEvent !== 'function') { rep.note = 'Keine Login-Seite (executeAjaxEvent fehlt)'; return rep; }
+
+    // Zuverlässige Erkennung über DOM-Elemente (Globals bleiben veraltet hängen):
+    const inApp = () => !!document.getElementById('BTNNEU_FRAME') || !!document.getElementById('BROWSE_FRAME');
+    const onLogin = () => !!document.getElementById('EDITUSERPWINNER') || !!document.getElementById('EDITNAMEINNER');
+    const isLoggedIn = () => inApp();
+
+    function setInput(id, val) {
+      const el = document.getElementById(id);
+      if (!el || val == null) return false;
+      el.value = String(val);
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+      el.dispatchEvent(new Event('change', { bubbles: true }));
+      if (typeof window.AddChangedControl === 'function') window.AddChangedControl(id);
+      return true;
+    }
+    function readProductions() {
+      const sel = document.getElementById('DROPDOWNPRODUKTION_JQ');
+      if (!sel || !sel.options) return [];
+      return Array.from(sel.options).map(o => ({ value: o.value, text: (o.textContent || '').trim() })).filter(o => o.text);
+    }
+    const norm = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9äöü]+/g, ' ').trim();
+    // Wählt die Produktion, deren Text am besten zu einem der Kandidaten passt
+    // (z. B. Projektname "Roland" matcht "Doll Film – ROLAND"). Kandidaten in Prioritätsreihenfolge.
+    function selectProduction(candidates) {
+      const sel = document.getElementById('DROPDOWNPRODUKTION_JQ');
+      if (!sel || !sel.options) return null;
+      const opts = Array.from(sel.options).filter(o => (o.textContent || '').trim());
+      if (opts.length <= 1) return opts[0] ? (opts[0].textContent || '').trim() : null; // nur eine Option → nichts zu wählen
+      let chosen = null;
+      for (const cand of (candidates || [])) {
+        const words = norm(cand).split(' ').filter(w => w.length >= 3);
+        if (!words.length) continue;
+        chosen = opts.find(o => { const t = norm(o.textContent); return words.some(w => t.includes(w)); });
+        if (chosen) break;
+      }
+      if (!chosen) return null;
+      try { if (window.$ && window.$(sel).data('select2')) window.$(sel).select2('val', chosen.value); } catch (_) {}
+      sel.value = chosen.value;
+      sel.dispatchEvent(new Event('change', { bubbles: true }));
+      if (typeof window.CGSetHiddenInputVal === 'function') window.CGSetHiddenInputVal('DROPDOWNPRODUKTION_JQ_INDEX', chosen.value);
+      return (chosen.textContent || '').trim();
+    }
+    const prodCandidates = [creds.produktion, ...(creds.hints || [])].filter(Boolean);
+
+    // Falls noch eine Sitzung offen ist: erst ausloggen (sauberer Login als richtige Person)
+    if (inApp() && typeof window.BTNLOGOUTIWCL !== 'undefined' && window.BTNLOGOUTIWCL !== null) {
+      window.executeAjaxEvent('&ajaxevent=JQButtonOptions.OnClick', window.BTNLOGOUTIWCL, 'BTNLOGOUT.DoAjaxRequest', true, null, true);
+      await until(() => onLogin() && !inApp(), 5000);
+      await sleep(300);
+      rep.loggedOutFirst = true;
+    }
+
+    if (!(${submit})) {
+      // Nur-Test: Felder setzen + Produktionsliste melden, ohne Login
+      rep.set.name = setInput('EDITNAMEINNER', creds.name);
+      rep.set.vorname = setInput('EDITVORNAMEINNER', creds.vorname);
+      await sleep(1200);
+      rep.steps.push({ phase: 'pre', productionOptions: readProductions(), onLogin: onLogin(), inApp: inApp() });
+      rep.set.pw = setInput('EDITUSERPWINNER', creds.passwort);
+      return rep;
+    }
+
+    // Zweistufiger Login: absenden → ggf. Produktion wählen → erneut absenden,
+    // bis die App da ist (= wirklich eingeloggt). Max. 3 Versuche.
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      if (inApp()) { rep.loggedIn = true; break; }
+      setInput('EDITNAMEINNER', creds.name);
+      setInput('EDITVORNAMEINNER', creds.vorname);
+      setInput('EDITUSERPWINNER', creds.passwort);
+      await sleep(400);
+      const prod = selectProduction(prodCandidates);
+      if (prod) await sleep(300);
+      const opts = readProductions();
+      if (typeof window.BTNLOGINIWCL === 'undefined' || window.BTNLOGINIWCL === null) { rep.note = 'BTNLOGIN nicht gefunden (Schritt ' + attempt + ')'; break; }
+      window.executeAjaxEvent('&ajaxevent=JQButtonOptions.OnClick', window.BTNLOGINIWCL, 'BTNLOGIN.DoAjaxRequest', true, null, true);
+      rep.submitted = true;
+      await until(() => inApp(), 4000);
+      await sleep(300);
+      rep.steps.push({ attempt, selectedProduction: prod, productionOptions: opts, loggedIn: isLoggedIn() });
+      if (isLoggedIn()) { rep.loggedIn = true; break; }
+    }
+    if (!rep.loggedIn && !rep.note) rep.note = 'Nach mehreren Versuchen nicht eingeloggt (Produktion korrekt?)';
+    return rep;
+  })();`;
+}
+
+/** Loggt aus StdWeb aus (Button BTNLOGOUT) – für den Personen-Wechsel im Batch. */
+function buildStdWebLogoutScript() {
+  return `(async () => {
+    const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+    if (typeof window.executeAjaxEvent !== 'function' || typeof window.BTNLOGOUTIWCL === 'undefined') {
+      return { ok: !!document.getElementById('EDITUSERPWINNER'), note: 'bereits ausgeloggt / kein Logout-Button' };
+    }
+    window.executeAjaxEvent('&ajaxevent=JQButtonOptions.OnClick', window.BTNLOGOUTIWCL, 'BTNLOGOUT.DoAjaxRequest', true, null, true);
+    await sleep(900);
+    return { ok: !!document.getElementById('EDITUSERPWINNER'), loggedOut: !!document.getElementById('EDITUSERPWINNER') };
+  })();`;
+}
+
+module.exports = { buildStdWebFillScript, buildStdWebDiagnoseScript, buildStdWebNavigateScript, buildStdWebLoginScript, buildStdWebLogoutScript };

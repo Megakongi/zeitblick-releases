@@ -1,11 +1,12 @@
-const { app, BrowserWindow, ipcMain, dialog, globalShortcut, shell } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, globalShortcut, shell, safeStorage } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const { parsePDF } = require('./src/main/pdfParser');
+const { parseBillingPDF, isEncryptedPDF, parseSesamTimesheetPDF, parseSesamTimesheetData } = require('./src/main/billingParser');
 const { loadData, saveData, createBackup, restoreBackup, listBackups, exportData, importData } = require('./src/main/storage');
 const { extractDispoAddresses } = require('./src/main/dispoText');
 const { computeDistance } = require('./src/main/geo');
-const { buildStdWebFillScript, buildStdWebDiagnoseScript, buildStdWebNavigateScript } = require('./src/main/stdwebFill');
+const { buildStdWebFillScript, buildStdWebDiagnoseScript, buildStdWebNavigateScript, buildStdWebLoginScript, buildStdWebLogoutScript } = require('./src/main/stdwebFill');
 
 // Auto-updater
 let autoUpdater = null;
@@ -253,6 +254,480 @@ function setupAutoUpdater() {
     autoUpdater.checkForUpdates().catch(() => {});
   }, 5000);
 }
+
+// ── Billing password storage ──────────────────────────────────────────────────
+// Passwords are encrypted with Electron's safeStorage (OS keychain).
+// Patterns are plain JSON (no secrets — just format strings like "Sesam{MM}{YYYY}").
+
+function getBillingPasswordsPath() {
+  return path.join(app.getPath('userData'), 'billing-passwords.enc');
+}
+function getBillingPatternsPath() {
+  return path.join(app.getPath('userData'), 'billing-patterns.json');
+}
+
+function loadBillingPasswords() {
+  try {
+    const filePath = getBillingPasswordsPath();
+    if (!fs.existsSync(filePath)) return {};
+    const raw = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+    if (!safeStorage.isEncryptionAvailable()) return {};
+    const result = {};
+    for (const [prod, enc] of Object.entries(raw)) {
+      try {
+        result[prod] = safeStorage.decryptString(Buffer.from(enc, 'base64'));
+      } catch (e) {
+        console.error('[billing] Passwort für Produktion nicht entschlüsselbar (Keychain-Schlüssel geändert?):', prod, e.message);
+        result[prod] = null; // explizit markieren, damit die UI warnen kann
+      }
+    }
+    return result;
+  } catch { return {}; }
+}
+
+function saveBillingPasswords(passwords) {
+  if (!safeStorage.isEncryptionAvailable()) {
+    throw new Error('Keychain-Verschlüsselung nicht verfügbar – Passwort kann nicht sicher gespeichert werden');
+  }
+  try {
+    const toSave = {};
+    for (const [prod, pw] of Object.entries(passwords)) {
+      if (pw == null) continue; // null-Einträge (nicht entschlüsselbar) nicht zurückschreiben
+      toSave[prod] = safeStorage.encryptString(String(pw)).toString('base64');
+    }
+    fs.writeFileSync(getBillingPasswordsPath(), JSON.stringify(toSave, null, 2), 'utf-8');
+  } catch (e) {
+    throw new Error(`Billing-Passwörter konnten nicht gespeichert werden: ${e.message}`);
+  }
+}
+
+function loadBillingPatterns() {
+  try {
+    const f = getBillingPatternsPath();
+    return fs.existsSync(f) ? JSON.parse(fs.readFileSync(f, 'utf-8')) : {};
+  } catch { return {}; }
+}
+
+function saveBillingPatterns(patterns) {
+  try {
+    fs.writeFileSync(getBillingPatternsPath(), JSON.stringify(patterns, null, 2), 'utf-8');
+  } catch (e) { console.error('[billing] save patterns failed:', e.message); }
+}
+
+// Expand pattern placeholders ({MM}, {YYYY}, {YY}, {DD}) with the given date
+function expandPattern(pattern, dateStr) {
+  // dateStr = "dd.mm.yyyy" or "mm.yyyy" or null
+  let dd = '', mm = '', yyyy = '', yy = '';
+  if (dateStr) {
+    const parts = dateStr.split('.');
+    if (parts.length >= 3) { dd = parts[0].padStart(2, '0'); mm = parts[1].padStart(2, '0'); yyyy = parts[2]; yy = yyyy.slice(-2); }
+    else if (parts.length === 2) { mm = parts[0].padStart(2, '0'); yyyy = parts[1]; yy = yyyy.slice(-2); }
+  }
+  return pattern
+    .replace(/\{DD\}/g, dd)
+    .replace(/\{MM\}/g, mm)
+    .replace(/\{YYYY\}/g, yyyy)
+    .replace(/\{JJJJ\}/g, yyyy)
+    .replace(/\{YY\}/g, yy)
+    .replace(/\{JJ\}/g, yy);
+}
+
+// IPC: Billing password management
+ipcMain.handle('get-billing-passwords', () => loadBillingPasswords());
+ipcMain.handle('save-billing-password', (event, production, password) => {
+  if (typeof production !== 'string' || !production.trim()) return { success: false, error: 'Ungültiger Produktionsname' };
+  if (typeof password !== 'string' || !password) return { success: false, error: 'Ungültiges Passwort' };
+  if (production.length > 200 || password.length > 500) return { success: false, error: 'Eingabe zu lang' };
+  try {
+    const pw = loadBillingPasswords();
+    pw[production] = password;
+    saveBillingPasswords(pw);
+    return { success: true };
+  } catch (e) {
+    return { success: false, error: e.message };
+  }
+});
+ipcMain.handle('delete-billing-password', (event, production) => {
+  if (typeof production !== 'string' || !production.trim()) return { success: false, error: 'Ungültiger Produktionsname' };
+  try {
+    const pw = loadBillingPasswords();
+    delete pw[production];
+    saveBillingPasswords(pw);
+    return { success: true };
+  } catch (e) {
+    return { success: false, error: e.message };
+  }
+});
+
+ipcMain.handle('get-billing-patterns', () => loadBillingPatterns());
+ipcMain.handle('save-billing-pattern', (event, production, pattern) => {
+  const p = loadBillingPatterns();
+  p[production] = pattern;
+  saveBillingPatterns(p);
+  return { success: true };
+});
+ipcMain.handle('delete-billing-pattern', (event, production) => {
+  const p = loadBillingPatterns();
+  delete p[production];
+  saveBillingPatterns(p);
+  return { success: true };
+});
+
+// IPC: Open file dialog for billing PDFs
+ipcMain.handle('open-billing-dialog', async () => {
+  const result = await dialog.showOpenDialog(mainWindow, {
+    properties: ['openFile', 'multiSelections'],
+    filters: [{ name: 'PDF Abrechnungen', extensions: ['pdf'] }],
+    title: 'Abrechnungs-PDFs auswählen',
+  });
+  return result.filePaths || [];
+});
+
+// IPC: Import billing PDFs with optional passwords.
+// passwordMap: { [filePath]: 'password' } — renderer supplies passwords for encrypted files.
+// patternDate: optional date string ("dd.mm.yyyy") for pattern expansion.
+ipcMain.handle('import-billing-pdf', async (event, filePaths, passwordMap, patternDate) => {
+  const storedPasswords = loadBillingPasswords();
+  const patterns = loadBillingPatterns();
+  const results = [];
+
+  for (const filePath of filePaths) {
+    const filename = path.basename(filePath);
+
+    // Quick file-access check before attempting to parse
+    try { fs.accessSync(filePath, fs.constants.R_OK); } catch (e) {
+      results.push({ success: false, error: `Datei nicht lesbar: ${e.message}`, filePath, filename });
+      continue;
+    }
+
+    // Detect encryption — reads first + last 128 KB
+    const encrypted = isEncryptedPDF(filePath);
+
+    // Determine which password to try
+    // Priority: 1) explicit from renderer, 2) stored password, 3) pattern expansion
+    let password = (passwordMap && passwordMap[filePath]) || null;
+
+    if (!password) {
+      // Try stored passwords: match any key that appears in the filename
+      const exactKey = Object.keys(storedPasswords).find(k => filename.toLowerCase().includes(k.toLowerCase()));
+      if (exactKey) password = storedPasswords[exactKey];
+    }
+
+    if (!password) {
+      // Try pattern expansion for any production whose pattern matches the filename
+      const patternKey = Object.keys(patterns).find(k => filename.toLowerCase().includes(k.toLowerCase()));
+      if (patternKey) {
+        const dateStr = patternDate || new Date().toISOString().slice(0, 10);
+        password = expandPattern(patterns[patternKey], dateStr);
+      }
+    }
+
+    // If encrypted and no password found at all, ask the renderer
+    if (encrypted && !password) {
+      results.push({ success: false, encrypted: true, filePath, filename });
+      continue;
+    }
+
+    try {
+      const data = await parseBillingPDF(filePath, password || null);
+
+      // Copy PDF into iCloud ZeitBlick/Abrechnungen/<year>/
+      let savedPath = null;
+      try {
+        const icloudBase = path.join(
+          app.getPath('home'),
+          'Library', 'Mobile Documents', 'com~apple~CloudDocs', 'ZeitBlick', 'Abrechnungen'
+        );
+        // Determine year from parsed data or filename
+        const year = (() => {
+          const d = data.datum || data.zeitraumBis || data.zeitraumVon || '';
+          const m = d.match(/(\d{4})$/);
+          return m ? m[1] : String(new Date().getFullYear());
+        })();
+        const destDir = path.join(icloudBase, year);
+        fs.mkdirSync(destDir, { recursive: true });
+        // Avoid overwriting: append counter if needed
+        let destName = filename;
+        let dest = path.join(destDir, destName);
+        if (fs.existsSync(dest) && fs.realpathSync(dest) !== fs.realpathSync(filePath)) {
+          const ext = path.extname(filename);
+          const base = path.basename(filename, ext);
+          let i = 2;
+          while (fs.existsSync(path.join(destDir, `${base}_${i}${ext}`))) i++;
+          destName = `${base}_${i}${ext}`;
+          dest = path.join(destDir, destName);
+        }
+        if (!fs.existsSync(dest)) fs.copyFileSync(filePath, dest);
+        savedPath = dest;
+      } catch (_) { /* iCloud not available or no write permission — silently skip */ }
+
+      results.push({ success: true, filePath, filename, data, usedPassword: !!password, savedPath });
+    } catch (err) {
+      if (err.code === 'ENCRYPTED') {
+        results.push({ success: false, encrypted: true, filePath, filename, wrongPassword: !!password });
+      } else {
+        results.push({ success: false, error: err.message, filePath, filename });
+      }
+    }
+  }
+  return results;
+});
+
+// IPC: Copy an already-imported billing PDF into the iCloud folder (e.g. for mail-drag imports)
+ipcMain.handle('save-billing-pdf-to-icloud', async (event, sourcePath, datum) => {
+  if (!sourcePath) return { success: false, error: 'Kein Quellpfad angegeben' };
+  try {
+    fs.accessSync(sourcePath, fs.constants.R_OK);
+  } catch (e) {
+    return { success: false, error: `Quelldatei nicht mehr erreichbar: ${e.message}` };
+  }
+  try {
+    const icloudBase = path.join(
+      app.getPath('home'),
+      'Library', 'Mobile Documents', 'com~apple~CloudDocs', 'ZeitBlick', 'Abrechnungen'
+    );
+    const year = (() => {
+      const m = (datum || '').match(/(\d{4})$/);
+      return m ? m[1] : String(new Date().getFullYear());
+    })();
+    const destDir = path.join(icloudBase, year);
+    fs.mkdirSync(destDir, { recursive: true });
+    const filename = path.basename(sourcePath);
+    const ext = path.extname(filename);
+    const base = path.basename(filename, ext);
+    let dest = path.join(destDir, filename);
+    let i = 2;
+    while (fs.existsSync(dest)) {
+      // Skip if it's literally the same file already there
+      try { if (fs.realpathSync(dest) === fs.realpathSync(sourcePath)) return { success: true, savedPath: dest }; } catch (_) {}
+      dest = path.join(destDir, `${base}_${i}${ext}`);
+      i++;
+    }
+    fs.copyFileSync(sourcePath, dest);
+    return { success: true, savedPath: dest };
+  } catch (e) {
+    return { success: false, error: e.message };
+  }
+});
+
+// IPC: Open file dialog for Sesam Stundenzettel PDFs
+ipcMain.handle('open-sesam-timesheet-dialog', async () => {
+  const result = await dialog.showOpenDialog(mainWindow, {
+    properties: ['openFile', 'multiSelections'],
+    filters: [{ name: 'PDF Stundenzettel', extensions: ['pdf'] }],
+    title: 'Sesam Stundenzettel-PDFs auswählen',
+  });
+  return result.filePaths || [];
+});
+
+// IPC: Import Sesam Stundenzettel PDFs
+ipcMain.handle('import-sesam-timesheet', async (event, filePaths, passwordMap = {}) => {
+  const results = [];
+  for (const filePath of filePaths) {
+    const filename = path.basename(filePath);
+    try { fs.accessSync(filePath, fs.constants.R_OK); } catch (e) {
+      results.push({ success: false, error: `Datei nicht lesbar: ${e.message}`, filePath, filename });
+      continue;
+    }
+    const encrypted = isEncryptedPDF(filePath);
+    const password = passwordMap[filePath] || null;
+    if (encrypted && !password) {
+      results.push({ success: false, encrypted: true, filePath, filename });
+      continue;
+    }
+    try {
+      const data = await parseSesamTimesheetPDF(filePath, password || null);
+      results.push({ success: true, filePath, filename, data });
+    } catch (err) {
+      if (err.code === 'ENCRYPTED') {
+        results.push({ success: false, encrypted: true, filePath, filename, wrongPassword: !!password });
+      } else {
+        results.push({ success: false, error: err.message, filePath, filename });
+      }
+    }
+  }
+  return results;
+});
+
+// IPC: OCR a fully-graphical Sesam PDF using the bundled Swift ocr-helper binary
+ipcMain.handle('sesam-ocr-timesheet', async (event, filePath) => {
+  try {
+    // Locate ocr-helper binary (packaged vs. dev)
+    const ocrBin = app.isPackaged
+      ? path.join(process.resourcesPath, 'ocr-helper')
+      : path.join(__dirname, 'scripts', 'build', 'ocr-helper');
+
+    if (!fs.existsSync(ocrBin)) {
+      return { success: false, error: 'ocr-helper binary nicht gefunden. Bitte App neu builden.' };
+    }
+    // Make sure it is executable
+    try { fs.chmodSync(ocrBin, 0o755); } catch (_) {}
+
+    // Run OCR on every page (stop at first page that errors)
+    const { execFile } = require('child_process');
+    function runPage(pageNum) {
+      return new Promise((resolve) => {
+        execFile(ocrBin, [filePath, String(pageNum)], { timeout: 30000 }, (err, stdout) => {
+          if (!stdout || !stdout.trim()) { resolve(null); return; }
+          try { resolve(JSON.parse(stdout)); }
+          catch { resolve(null); }
+        });
+      });
+    }
+
+    // Reconstruct readable text from word-level OCR items
+    function ocrToText(items) {
+      if (!items || items.length === 0) return '';
+      const rows = [];
+      for (const item of items) {
+        let placed = false;
+        for (const row of rows) {
+          if (Math.abs(row.y - item.y) < 1.5) {
+            row.items.push(item);
+            row.y = (row.y * (row.items.length - 1) + item.y) / row.items.length;
+            placed = true;
+            break;
+          }
+        }
+        if (!placed) rows.push({ y: item.y, items: [item] });
+      }
+      rows.sort((a, b) => a.y - b.y);
+      return rows.map(row => {
+        row.items.sort((a, b) => a.x - b.x);
+        return row.items.map(i => i.text).join(' ');
+      }).join('\n');
+    }
+
+    const pages = [];
+    for (let p = 0; p < 10; p++) {
+      const res = await runPage(p);
+      if (!res || res.error) break;
+      pages.push(ocrToText(res.items));
+    }
+
+    if (pages.length === 0) {
+      return { success: false, error: 'OCR lieferte keine Ergebnisse. Seite leer oder nicht unterstützt.' };
+    }
+
+    const fullText = pages.join('\n\n');
+    const filename = path.basename(filePath);
+
+    // Convert "HH:MM" duration string or "HH,MM" decimal to decimal hours
+    function parseDuration(s) {
+      if (!s) return 0;
+      const str = String(s).trim();
+      if (str.includes(':')) {
+        const [h, m] = str.split(':').map(Number);
+        return (h || 0) + (m || 0) / 60;
+      }
+      return parseFloat(str.replace(',', '.')) || 0;
+    }
+
+    // OCR-specific parser — handles merged/split column artifacts from Vision OCR
+    function parseOcrSesam(text, fname) {
+      const result = { type: 'arbeitszeiterfassung' };
+
+      // Name: "Arbeitszeiterfassung (Lastname, Firstname (...))"
+      const azM = text.match(/Arbeitszeiterfassung\s+\(([^,(]+),\s*([^,(]+?)(?:\s*\([^)]*\))?\s*\)/);
+      if (azM) result.name = `${azM[2].trim()} ${azM[1].trim()}`;
+
+      // Project: OCR merges two columns → "SESAM-Lohn: Lizenz: 2026 UFA Fiction PDM2193 GmbH Herkunft"
+      // Take tokens after the contract number, skip known company suffixes
+      const projM = text.match(/SESAM-Lohn\s*:.*?(?:PDM|FLM|SER|DOK|RPM)\d+\s+(.+?)(?:\n|$)/);
+      if (projM) {
+        const skipWords = new Set(['GmbH','AG','UG','KG','GbR','Ltd','Film','Fernsehen','Filmproduktion','Television','Studios','Media']);
+        const words = projM[1].trim().split(/\s+/).filter(w => !skipWords.has(w));
+        result.projekt = words.join(' ').trim() || projM[1].trim();
+      }
+
+      // Firma: standalone "Lizenz: ..." line (not the merged SESAM-Lohn line)
+      for (const lm of text.matchAll(/Lizenz\s*:\s*(.+?)(?:\n|•|$)/g)) {
+        if (!/SESAM-Lohn/i.test(lm[0])) {
+          result.firma = lm[1].trim().replace(/\s+/g, ' ');
+          result.produktionsfirma = result.firma;
+          break;
+        }
+      }
+
+      // Approvals: OCR merges two columns into one line:
+      // "GENEHMIGT GENEHMIGT (FREIGABE (FREIGABE PERSON1: PERSON2: DD.MM.YYYY DD.MM.YYYY / HH:MM) / HH:MM)"
+      // Strategy: collect all person names, all dates, all times from GENEHMIGT lines, then zip.
+      const approvals = [];
+      const genLines = text.split('\n').filter(l => /GENEHMIGT|FREIGABE/.test(l));
+      const genText = genLines.join(' ');
+      // All-caps names with colon in approval lines, skip known non-person keywords
+      const skipNames = new Set(['FREIGABE','GENEHMIGT','SESAM','KW','PDM','FLM','DOK']);
+      const personMatches = [...genText.matchAll(/([A-ZÄÖÜ][A-ZÄÖÜ\-]{2,}):/g)]
+        .map(m => m[1])
+        .filter(p => !skipNames.has(p));
+      const dateMatches   = [...genText.matchAll(/(\d{2}\.\d{2}\.\d{4})/g)].map(m => m[1]);
+      const timeMatches   = [...genText.matchAll(/[\/|]\s*(\d{2}:\d{2})/g)].map(m => m[1]);
+      const count = Math.min(personMatches.length, dateMatches.length, timeMatches.length);
+      for (let i = 0; i < count; i++) {
+        approvals.push({ person: personMatches[i], datum: dateMatches[i], uhrzeit: timeMatches[i] });
+      }
+      result.approvals = approvals;
+
+      // Day rows with time-based entries:
+      // "Do, 30.04.2026 08:15 19:30 00:45 10:00 10,50 0,50 0,13"
+      // Pause and Reisezeit can appear as HH:MM or decimal
+      const dayRe = /(?:Mo|Di|Mi|Do|Fr|Sa|So),?\s+(\d{2}\.\d{2}\.\d{4})\s+(\d{1,2}:\d{2})\s+(\d{1,2}:\d{2})\s+([\d:,]+)\s+([\d:,]+)\s+([\d:,]+)(?:\s+([\d:,]+))?/g;
+      const days = [];
+      const DOW_LABEL = ['So','Mo','Di','Mi','Do','Fr','Sa'];
+      let dm;
+      while ((dm = dayRe.exec(text)) !== null) {
+        const dp = dm[1].split('.');
+        let y = parseInt(dp[2]); if (y < 100) y = 2000 + y;
+        const datum = `${dp[0]}.${dp[1]}.${y}`;
+        const wochentag = DOW_LABEL[new Date(y, parseInt(dp[1]) - 1, parseInt(dp[0])).getDay()];
+        days.push({
+          datum,
+          wochentag,
+          arbeitsbeginn: dm[2],
+          arbeitsende:   dm[3],
+          pausendauer:   parseDuration(dm[4]),
+          reisezeit:     parseDuration(dm[5]),
+          arbeitszeit:   parseDuration(dm[6]),
+          ueberstunden:  parseDuration(dm[7]),
+          beschreibung:  '',
+        });
+      }
+
+      // Fallback: day-label rows "Do: EFK" (Arbeitszeiterfassung style)
+      if (days.length === 0) {
+        const entryRe = /^(Mo|Di|Mi|Do|Fr|Sa|So)\s*:\s*(.+)$/mg;
+        const DOW_DE = { Mo:1, Di:2, Mi:3, Do:4, Fr:5, Sa:6, So:0 };
+        const filenameDate = fname.match(/(\d{2})(\d{2})(\d{2})(?:\.|$)/);
+        let cursor = filenameDate
+          ? new Date(2000 + parseInt(filenameDate[3]), parseInt(filenameDate[2]) - 1, parseInt(filenameDate[1]))
+          : null;
+        let em;
+        while ((em = entryRe.exec(text)) !== null) {
+          const { dow, beschreibung } = { dow: em[1], beschreibung: em[2].trim() };
+          const targetDow = DOW_DE[dow];
+          if (targetDow === undefined) continue;
+          if (cursor) {
+            while (cursor.getDay() !== targetDow) cursor.setDate(cursor.getDate() + 1);
+            const dd = String(cursor.getDate()).padStart(2,'0');
+            const mm = String(cursor.getMonth()+1).padStart(2,'0');
+            days.push({ datum: `${dd}.${mm}.${cursor.getFullYear()}`, wochentag: dow, beschreibung });
+            cursor = new Date(cursor); cursor.setDate(cursor.getDate() + 1);
+          } else {
+            days.push({ datum: null, wochentag: dow, beschreibung });
+          }
+        }
+      }
+
+      result.days = days;
+      return result;
+    }
+
+    const data = parseOcrSesam(fullText, filename);
+    return { success: true, data, filename };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+});
 
 // IPC: Check for updates manually (from renderer)
 ipcMain.handle('check-for-updates', async () => {
@@ -971,7 +1446,67 @@ ipcMain.handle('dispo-import', async (event, folder, filename) => {
   }
 });
 
+// Importiert eine per Drag&Drop fallengelassene PDF-Datei (z.B. aus Mail) von
+// einem beliebigen absoluten Pfad. Legt sie – wenn ein n8n-/ZeitBlick-Ordner
+// vorhanden ist – zusätzlich im Dispos-Quellordner ab, damit sie wie andere
+// Dispos einsortiert/„Im Finder gezeigt" werden kann; immer aber im internen
+// Store (für Vorschau/Lesen). Liest Motiv-Adressen aus dem PDF-Text.
+ipcMain.handle('dispo-import-file', async (event, folder, sourcePath) => {
+  try {
+    if (!sourcePath || !fs.existsSync(sourcePath)) return { success: false, error: 'Datei nicht gefunden' };
+    if (path.extname(sourcePath).toLowerCase() !== '.pdf') return { success: false, error: 'Nur PDF-Dateien werden unterstützt' };
+    const original = path.basename(sourcePath);
+
+    // 1) In den Quellordner kopieren (best effort), damit Organisieren/Reveal greift.
+    let sourceName = original;
+    try {
+      const srcDir = resolveDispoSourceDir(folder);
+      if (srcDir && fs.existsSync(srcDir)) {
+        let srcDest = path.join(srcDir, original);
+        if (fs.existsSync(srcDest)) {
+          // Schon vorhanden? Inhaltsgleich → nicht duplizieren, sonst eindeutigen Namen.
+          const same = (() => { try { return fs.statSync(srcDest).size === fs.statSync(sourcePath).size; } catch (_) { return false; } })();
+          if (!same) {
+            const ext = path.extname(original);
+            const stem = original.slice(0, -ext.length);
+            srcDest = path.join(srcDir, `${stem}-${Date.now().toString(36)}${ext}`);
+            fs.copyFileSync(sourcePath, srcDest);
+          }
+        } else {
+          fs.copyFileSync(sourcePath, srcDest);
+        }
+        sourceName = path.basename(srcDest);
+      }
+    } catch (_) { /* Quellkopie ist optional */ }
+
+    // 2) In den internen Store kopieren (für Vorschau/Lesen).
+    const dispoDir = getDispoDir();
+    let dest = path.join(dispoDir, sourceName);
+    if (fs.existsSync(dest)) {
+      const ext = path.extname(sourceName);
+      const stem = sourceName.slice(0, -ext.length);
+      dest = path.join(dispoDir, `${stem}-${Date.now().toString(36)}${ext}`);
+    }
+    fs.copyFileSync(sourcePath, dest);
+
+    // 3) Motiv-Adressen auslesen (best effort).
+    let addresses = { motive: [], suggested: '' };
+    try { addresses = await extractDispoAddresses(dest); } catch (_) { /* ignore */ }
+
+    return { success: true, storedName: path.basename(dest), originalName: sourceName, storedPath: dest, addresses };
+  } catch (e) {
+    return { success: false, error: e.message };
+  }
+});
+
 // Öffnet den Dispo-Quellordner (Dispos/) im Finder/Explorer.
+ipcMain.handle('open-data-folder', async () => {
+  const dir = app.getPath('userData');
+  const err = await shell.openPath(dir);
+  if (err) return { success: false, error: err };
+  return { success: true, path: dir };
+});
+
 ipcMain.handle('dispo-open-folder', async (event, folder) => {
   try {
     const dir = resolveDispoSourceDir(folder);
@@ -995,6 +1530,24 @@ ipcMain.handle('dispo-reveal', async (event, folder, filename) => {
     const err = await shell.openPath(root);
     if (err) return { success: false, error: err };
     return { success: true, path: root, fallback: true };
+  } catch (e) {
+    return { success: false, error: e.message };
+  }
+});
+
+// ===== Sichere Speicherung (macOS-Keychain via safeStorage) =====
+// Verschlüsselt Passwörter, die in den Karteikarten hinterlegt werden.
+function safeDecrypt(b64) {
+  try {
+    if (!b64 || !safeStorage.isEncryptionAvailable()) return '';
+    return safeStorage.decryptString(Buffer.from(b64, 'base64'));
+  } catch (_) { return ''; }
+}
+
+ipcMain.handle('safe-encrypt', async (event, text) => {
+  try {
+    if (!safeStorage.isEncryptionAvailable()) return { success: false, error: 'Keychain-Verschlüsselung nicht verfügbar' };
+    return { success: true, data: safeStorage.encryptString(String(text || '')).toString('base64') };
   } catch (e) {
     return { success: false, error: e.message };
   }
@@ -1027,6 +1580,31 @@ ipcMain.handle('stdweb-fill', async (event, days) => {
     if (!stdwebWindow || stdwebWindow.isDestroyed()) return { success: false, error: 'StdWeb-Fenster ist nicht offen' };
     const script = buildStdWebFillScript(days);
     const report = await stdwebWindow.webContents.executeJavaScript(script, true);
+    return { success: true, report };
+  } catch (e) {
+    return { success: false, error: e.message };
+  }
+});
+
+// Loggt in StdWeb als Person ein. Entschlüsselt das Passwort (pwEnc) im Main.
+// creds: { name, vorname, produktion, pwEnc?, passwort? }
+ipcMain.handle('stdweb-login', async (event, creds, doSubmit) => {
+  try {
+    if (!stdwebWindow || stdwebWindow.isDestroyed()) return { success: false, error: 'StdWeb-Fenster ist nicht offen' };
+    const pw = creds && creds.pwEnc ? safeDecrypt(creds.pwEnc) : ((creds && creds.passwort) || '');
+    const full = { name: (creds && creds.name) || '', vorname: (creds && creds.vorname) || '', passwort: pw, produktion: (creds && creds.produktion) || '', hints: (creds && creds.hints) || [] };
+    const report = await stdwebWindow.webContents.executeJavaScript(buildStdWebLoginScript(full, !!doSubmit), true);
+    return { success: true, report };
+  } catch (e) {
+    return { success: false, error: e.message };
+  }
+});
+
+// Loggt aus StdWeb aus (Personen-Wechsel im Batch).
+ipcMain.handle('stdweb-logout', async () => {
+  try {
+    if (!stdwebWindow || stdwebWindow.isDestroyed()) return { success: false, error: 'StdWeb-Fenster ist nicht offen' };
+    const report = await stdwebWindow.webContents.executeJavaScript(buildStdWebLogoutScript(), true);
     return { success: true, report };
   } catch (e) {
     return { success: false, error: e.message };
@@ -1097,6 +1675,20 @@ ipcMain.handle('dispo-read', async (event, storedName) => {
     if (!fs.existsSync(full)) return { success: false, error: 'Datei nicht gefunden' };
     const buffer = fs.readFileSync(full);
     return { success: true, data: buffer.toString('base64') };
+  } catch (e) {
+    return { success: false, error: e.message };
+  }
+});
+
+// Liest die Motiv-Adressen aus einem bereits gespeicherten Dispo-PDF neu aus.
+// Nützlich, wenn die Erkennung verbessert wurde und vorhandene Dispos
+// nachträglich aktualisiert werden sollen.
+ipcMain.handle('dispo-redetect', async (event, storedName) => {
+  try {
+    const full = path.join(getDispoDir(), path.basename(storedName));
+    if (!fs.existsSync(full)) return { success: false, error: 'Datei nicht gefunden' };
+    const addresses = await extractDispoAddresses(full);
+    return { success: true, addresses };
   } catch (e) {
     return { success: false, error: e.message };
   }

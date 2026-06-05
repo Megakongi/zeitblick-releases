@@ -71,6 +71,15 @@ export function calculateTVFFS(timesheets, settings) {
   let weeklyOT25 = 0;
   let weeklyOT50 = 0;
 
+  // Per-day gage accumulators (support variable tagesgage per day)
+  let grundgage = 0;
+  let zuschlag25 = 0;
+  let zuschlag50 = 0;
+  let zuschlag100 = 0;
+  let ueberstundenGrundverguetung = 0;
+  let nachtZuschlag = 0;
+  let fahrzeitVerguetung = 0;
+
   // Collect all days with sheet context for rest time check
   const allDays = [];
 
@@ -106,6 +115,14 @@ export function calculateTVFFS(timesheets, settings) {
         continue;
       }
 
+      // Fahrzeit on pure travel days (no work hours) must still be compensated
+      const dayFahrzeit = day.fahrzeit || 0;
+      totalFahrzeit += dayFahrzeit;
+      if (hasGage && dayFahrzeit > 0) {
+        const fzRate = (day.tagesgage > 0) ? day.tagesgage : tagesgage;
+        fahrzeitVerguetung += dayFahrzeit * (fzRate / HOURS_PER_DAY);
+      }
+
       const hasWork = Number(day.stundenTotal) > 0 || (day.start && String(day.start).trim().includes(':'));
       if (!hasWork) continue;
 
@@ -117,7 +134,18 @@ export function calculateTVFFS(timesheets, settings) {
       totalUeberstunden50 += day.ueberstunden50 || 0;
       totalUeberstunden100 += day.ueberstunden100 || 0;
       totalNacht += day.nacht25 || 0;
-      totalFahrzeit += day.fahrzeit || 0;
+
+      // Per-day effective rate: use day.tagesgage if set (and > 0), else global
+      if (hasGage) {
+        const dayRate = (day.tagesgage > 0) ? day.tagesgage : tagesgage;
+        const dayStundensatz = dayRate / HOURS_PER_DAY;
+        grundgage += dayRate;
+        ueberstundenGrundverguetung += ((day.ueberstunden25 || 0) + (day.ueberstunden50 || 0) + (day.ueberstunden100 || 0)) * dayStundensatz;
+        zuschlag25 += (day.ueberstunden25 || 0) * dayStundensatz * NIGHT_SURCHARGE;
+        zuschlag50 += (day.ueberstunden50 || 0) * dayStundensatz * 0.50;
+        zuschlag100 += (day.ueberstunden100 || 0) * dayStundensatz * HOLIDAY_SURCHARGE;
+        nachtZuschlag += (day.nacht25 || 0) * dayStundensatz * NIGHT_SURCHARGE;
+      }
 
       // Holiday detection
       const holiday = isHoliday(day.datum);
@@ -315,45 +343,51 @@ export function calculateTVFFS(timesheets, settings) {
     if (days.length === 0) continue;
     days.sort((a, b) => a.date - b.date);
 
-    // Find continuous employment blocks:
-    // A block starts at the first active day and extends as long as there is
-    // no gap of more than 7 days between consecutive active days.
+    // Build continuous employment blocks.
+    // Two active days belong to the same block if the gap between them is ≤ 5 calendar days
+    // (covers weekends + short breaks within one shoot week).
+    // A gap of 6+ days means a new separate engagement.
     const activeDays = days.filter(d => d.active);
     if (activeDays.length === 0) { personAnstellungstage[person] = 0; continue; }
 
-    let personTotalTage = 0;
-    let blockStart = activeDays[0].date;
-    let blockEnd = activeDays[0].date;
-
+    // Group active days into blocks
+    const blocks = [];
+    let currentBlock = [activeDays[0]];
     for (let i = 1; i < activeDays.length; i++) {
-      const gap = Math.round((activeDays[i].date - blockEnd) / (1000 * 60 * 60 * 24));
-      if (gap <= 7) {
-        // Still continuous — extend block
-        blockEnd = activeDays[i].date;
+      const gap = Math.round((activeDays[i].date - currentBlock[currentBlock.length - 1].date) / (1000 * 60 * 60 * 24));
+      if (gap <= 5) {
+        currentBlock.push(activeDays[i]);
       } else {
-        // Gap too large — close current block, start new one
-        personTotalTage += Math.round((blockEnd - blockStart) / (1000 * 60 * 60 * 24)) + 1;
-        blockStart = activeDays[i].date;
-        blockEnd = activeDays[i].date;
+        blocks.push(currentBlock);
+        currentBlock = [activeDays[i]];
       }
     }
-    // Close last block
-    personTotalTage += Math.round((blockEnd - blockStart) / (1000 * 60 * 60 * 24)) + 1;
+    blocks.push(currentBlock);
+
+    let personTotalTage = 0;
+    for (const block of blocks) {
+      const spanDays = Math.round((block[block.length - 1].date - block[0].date) / (1000 * 60 * 60 * 24)) + 1;
+      personTotalTage += spanDays;
+
+      // Vacation only accrues if there are ≥ 7 actual working days in the block.
+      // Fewer active days = individual day hire (Einzeltage) where no vacation entitlement applies.
+      // (TV-FFS TZ 14.1: vacation is per 7-Tage-Vertragszeit, but only for real ongoing contracts.)
+      if (block.length >= 7) {
+        const wochen = Math.floor(spanDays / 7);
+        totalWochen += wochen;
+        urlaubstage += Math.ceil(wochen * VACATION_DAYS_PER_WEEK);
+      }
+    }
 
     personAnstellungstage[person] = personTotalTage;
-    const wochen = Math.floor(personTotalTage / 7);
-    totalWochen += wochen;
-    // Halbe Urlaubstage aufrunden (z.B. 2.5 → 3)
-    urlaubstage += Math.ceil(wochen * VACATION_DAYS_PER_WEEK);
   }
   // For single-person: show their individual value
   // For multi-person: sum all person values
+  // (totalWochen is already accumulated per block above)
   const personCount = Object.keys(contractDaysByPerson).length;
   if (personCount === 1) {
     anstellungstage = Object.values(personAnstellungstage)[0] || 0;
-    totalWochen = Math.floor(anstellungstage / 7);
   } else if (personCount > 1) {
-    // Sum all person anstellungstage (e.g. same person with different name variants)
     anstellungstage = Object.values(personAnstellungstage).reduce((s, v) => s + v, 0);
   }
 
@@ -381,42 +415,45 @@ export function calculateTVFFS(timesheets, settings) {
     };
   }
 
-  // Grundgage — Vertretung-Tage werden gleich vergütet (selbe Tagesgage)
-  const grundgage = totalBezahlteTage * tagesgage;
+  // grundgage, zuschlag25/50/100, ueberstundenGrundverguetung, nachtZuschlag
+  // are already accumulated per-day in the loop above.
 
-  // Zuschläge
-  const zuschlag25 = totalUeberstunden25 * stundensatz * NIGHT_SURCHARGE;
-  const zuschlag50 = totalUeberstunden50 * stundensatz * 0.50;
-  const zuschlag100 = totalUeberstunden100 * stundensatz * HOLIDAY_SURCHARGE;
+  // Add Grundgage for Krank/AZV days (no per-day override for non-work days — use global rate)
+  const kranktageGage = bezahlteKranktage * tagesgage;
+  const azvGage = totalAZVTage * tagesgage;
+  const totalGrundgage = grundgage + kranktageGage + azvGage;
+
+  // Average stundensatz for weekend/feiertag surcharges (which accumulate total hours, not per-day)
+  const avgTagesgage = totalArbeitstage > 0 ? grundgage / totalArbeitstage : tagesgage;
+  const avgStundensatz = avgTagesgage / HOURS_PER_DAY;
+
   const totalUeberstundenZuschlag = zuschlag25 + zuschlag50 + zuschlag100;
-  const ueberstundenGrundverguetung = totalUeberstunden * stundensatz;
 
-  const nachtZuschlag = totalNacht * stundensatz * NIGHT_SURCHARGE;
-  const samstagZuschlag = totalSamstagsstunden * stundensatz * SATURDAY_SURCHARGE;
-  const sonntagZuschlag = totalSonntagsstunden * stundensatz * SUNDAY_SURCHARGE;
+  const samstagZuschlag = totalSamstagsstunden * avgStundensatz * SATURDAY_SURCHARGE;
+  const sonntagZuschlag = totalSonntagsstunden * avgStundensatz * SUNDAY_SURCHARGE;
 
   // Feiertagszuschlag 100% (TZ 5.6.3) - only for holidays that aren't already Sunday
-  const feiertagZuschlag = totalFeiertagsstunden * stundensatz * HOLIDAY_SURCHARGE;
+  const feiertagZuschlag = totalFeiertagsstunden * avgStundensatz * HOLIDAY_SURCHARGE;
 
-  // Weekly OT zuschläge (TZ 5.4.3.3 — additional to daily OT)
-  const weeklyOTZuschlag25 = weeklyOT25 * stundensatz * NIGHT_SURCHARGE;
-  const weeklyOTZuschlag50 = weeklyOT50 * stundensatz * 0.50;
-  const weeklyOTGrundverguetung = (weeklyOT25 + weeklyOT50) * stundensatz;
+  // Weekly OT zuschläge (TZ 5.4.3.3 — additional to daily OT), use average stundensatz
+  const weeklyOTZuschlag25 = weeklyOT25 * avgStundensatz * NIGHT_SURCHARGE;
+  const weeklyOTZuschlag50 = weeklyOT50 * avgStundensatz * 0.50;
+  const weeklyOTGrundverguetung = (weeklyOT25 + weeklyOT50) * avgStundensatz;
 
   // Zeitkonto
   const zeitkontoStunden = zeitkonto ? round2(totalUeberstunden) : 0;
-  const zeitkontoWert = zeitkonto ? round2(zeitkontoStunden * stundensatz) : 0;
+  const zeitkontoWert = zeitkonto ? round2(zeitkontoStunden * avgStundensatz) : 0;
   const zeitkontoTage = zeitkonto ? round2(zeitkontoStunden / HOURS_PER_DAY) : 0;
-  const zeitkontoTageAuszahlung = round2(zeitkontoTage * tagesgage);
+  const zeitkontoTageAuszahlung = round2(zeitkontoTage * avgTagesgage);
 
   // Urlaubstage offen (nicht genommen)
   const urlaubstageOffen = Math.max(0, urlaubstage - urlaubstageGenommen);
-  const urlaubstageAuszahlung = round2(urlaubstageOffen * tagesgage);
+  const urlaubstageAuszahlung = round2(urlaubstageOffen * avgTagesgage);
 
   // Brutto (includes weekly OT per TZ 5.4.3.3)
   const ueberstundenAuszahlung = zeitkonto ? 0 : ueberstundenGrundverguetung;
   const weeklyOTAuszahlung = zeitkonto ? 0 : weeklyOTGrundverguetung;
-  const bruttoGage = grundgage
+  const bruttoGage = totalGrundgage
     + ueberstundenAuszahlung
     + totalUeberstundenZuschlag
     + weeklyOTAuszahlung
@@ -425,7 +462,8 @@ export function calculateTVFFS(timesheets, settings) {
     + nachtZuschlag
     + samstagZuschlag
     + sonntagZuschlag
-    + feiertagZuschlag;
+    + feiertagZuschlag
+    + fahrzeitVerguetung;
 
   const gesamtVerdienst = bruttoGage + urlaubstageAuszahlung + zeitkontoTageAuszahlung;
 
@@ -453,15 +491,16 @@ export function calculateTVFFS(timesheets, settings) {
     weeklyOTGrundverguetung: round2(zeitkonto ? 0 : weeklyOTGrundverguetung),
     totalKranktageUnbezahlt, bezahlteKranktage,
 
-    tagesgageEffective: round2(tagesgage),
-    stundensatz: round2(stundensatz),
-    grundgage: round2(grundgage),
+    tagesgageEffective: round2(avgTagesgage),
+    stundensatz: round2(avgStundensatz),
+    grundgage: round2(totalGrundgage),
     ueberstundenGrundverguetung: round2(zeitkonto ? 0 : ueberstundenGrundverguetung),
     zuschlag25: round2(zuschlag25),
     zuschlag50: round2(zuschlag50),
     zuschlag100: round2(zuschlag100),
     totalUeberstundenZuschlag: round2(totalUeberstundenZuschlag),
     nachtZuschlag: round2(nachtZuschlag),
+    fahrzeitVerguetung: round2(fahrzeitVerguetung),
     samstagZuschlag: round2(samstagZuschlag),
     sonntagZuschlag: round2(sonntagZuschlag),
     feiertagZuschlag: round2(feiertagZuschlag),
@@ -493,7 +532,7 @@ function getEmptyCalculations() {
     tagesgageEffective: 0, stundensatz: 0, grundgage: 0,
     ueberstundenGrundverguetung: 0,
     zuschlag25: 0, zuschlag50: 0, zuschlag100: 0, totalUeberstundenZuschlag: 0,
-    nachtZuschlag: 0, samstagZuschlag: 0, sonntagZuschlag: 0, feiertagZuschlag: 0,
+    nachtZuschlag: 0, fahrzeitVerguetung: 0, samstagZuschlag: 0, sonntagZuschlag: 0, feiertagZuschlag: 0,
     bruttoGage: 0, urlaubstage: 0, urlaubstageGenommen: 0, anstellungstage: 0,
     zeitkonto: false, zeitkontoStunden: 0, zeitkontoWert: 0, zeitkontoTage: 0, zeitkontoTageAuszahlung: 0,
     gesamtVerdienst: 0, totalWochen: 0, urlaubstageOffen: 0, urlaubstageAuszahlung: 0,

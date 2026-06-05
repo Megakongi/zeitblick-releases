@@ -78,12 +78,21 @@ function weekMatches(stdwebLabel, sheet) {
   return stdwebLabel.includes(ddmm);
 }
 
+/** Findet das Teammitglied (mit hinterlegtem StdWeb-Login) zu einem Stundenzettel. */
+export function findStdWebMember(sheet, team, resolveName) {
+  const resolve = resolveName || ((x) => x);
+  return (team || []).find(m => m.sesamPwEnc && resolve(m.name) === resolve(sheet.name || '')) || null;
+}
+
 /**
- * Überträgt einen Stundenzettel ins offene StdWeb-Fenster.
- * Öffnet das Fenster bei Bedarf; prüft die offene Woche; fragt bei Unstimmigkeit nach.
+ * Überträgt einen Stundenzettel nach StdWeb.
+ * Mit `member` (StdWeb-Login) loggt es sich als die Person ein; sonst nutzt es
+ * die aktuell offene Sitzung. Steuert die Woche an und füllt. Sendet NICHT ab.
+ * @param {object} sheet
+ * @param {{ member?:object, production?:string }} [opts]
  * @returns {Promise<{ok:boolean, message:string, report?:any}>}
  */
-export async function sendTimesheetToStdWeb(sheet) {
+export async function sendTimesheetToStdWeb(sheet, opts = {}) {
   const api = window.electronAPI;
   if (!api || !api.fillStdWeb) return { ok: false, message: 'StdWeb-Funktion nicht verfügbar.' };
 
@@ -93,6 +102,16 @@ export async function sendTimesheetToStdWeb(sheet) {
   // Fenster sicherstellen
   const opened = await api.openStdWeb();
   if (!opened || !opened.success) return { ok: false, message: 'StdWeb-Fenster konnte nicht geöffnet werden.' };
+
+  // Als Person einloggen, wenn ein StdWeb-Login hinterlegt ist
+  const member = opts.member;
+  if (member && member.sesamPwEnc && api.loginStdWeb) {
+    const cred = { name: member.sesamName, vorname: member.sesamVorname, pwEnc: member.sesamPwEnc, produktion: opts.production || '', hints: [sheet.projekt, sheet.produktionsfirma].filter(Boolean) };
+    const lr = await api.loginStdWeb(cred, true);
+    if (!lr || !lr.success || !lr.report || !lr.report.loggedIn) {
+      return { ok: false, message: 'Login bei StdWeb fehlgeschlagen' + (member.name ? ' (' + member.name + ')' : '') + '. Produktion korrekt?' };
+    }
+  }
 
   // Richtige Woche ansteuern (vorhandene wählen oder neu anlegen)
   const monday = sheetMondayDate(sheet);
@@ -126,4 +145,47 @@ export async function sendTimesheetToStdWeb(sheet) {
     message: `${filled} Tag(e) in StdWeb vorausgefüllt. Bitte in StdWeb prüfen und selbst „Beantragen“.`,
     report: res.report,
   };
+}
+
+/**
+ * Abteilungs-Durchlauf: loggt sich nacheinander als jede Person ein, steuert
+ * deren Woche an und füllt sie. Sendet NICHT ab.
+ * @param {Array<{sheet:object, member:object}>} jobs
+ * @param {{ production?:string, onProgress?:Function }} options
+ */
+export async function sendDepartmentToStdWeb(jobs, { production = '', onProgress } = {}) {
+  const api = window.electronAPI;
+  if (!api || !api.loginStdWeb || !api.logoutStdWeb) return { ok: false, message: 'StdWeb-Funktionen nicht verfügbar.' };
+  await api.openStdWeb();
+
+  const results = [];
+  for (let i = 0; i < jobs.length; i++) {
+    const { sheet, member } = jobs[i];
+    const label = member.name || sheet.name || '?';
+    const progress = (phase) => onProgress && onProgress({ index: i, total: jobs.length, name: label, phase });
+    try {
+      progress('login');
+      await api.logoutStdWeb().catch(() => {});
+      const cred = { name: member.sesamName, vorname: member.sesamVorname, pwEnc: member.sesamPwEnc, produktion: production, hints: [sheet.projekt, sheet.produktionsfirma].filter(Boolean) };
+      const lr = await api.loginStdWeb(cred, true);
+      if (!lr || !lr.success || !lr.report || !lr.report.loggedIn) { results.push({ name: label, ok: false, note: 'Login fehlgeschlagen' }); continue; }
+
+      progress('navigate');
+      const monday = sheetMondayDate(sheet);
+      const nav = await api.navigateStdWeb(monday);
+      if (!nav || !nav.success || !nav.report || !nav.report.ok) { results.push({ name: label, ok: false, note: 'Woche: ' + ((nav && nav.report && nav.report.note) || 'Fehler') }); continue; }
+
+      progress('fill');
+      const days = timesheetToStdWebDays(sheet);
+      const fr = await api.fillStdWeb(days);
+      const filled = ((fr && fr.report) || []).filter(r => r.ok).length;
+      results.push({ name: label, ok: !!(fr && fr.success), note: filled + ' Tage' });
+    } catch (e) {
+      results.push({ name: label, ok: false, note: 'Fehler' });
+    }
+  }
+  await api.logoutStdWeb().catch(() => {});
+
+  const okCount = results.filter(r => r.ok).length;
+  return { ok: true, message: `${okCount}/${jobs.length} Personen vorausgefüllt (kein Absenden). In StdWeb prüfen.`, results };
 }

@@ -398,7 +398,7 @@ export default function Dashboard({ timesheets, calculations, settings: propSett
 
   const [gageInput, setGageInput] = useState(es.tagesgage || '');
   const [gageType, setGageType] = useState(es.gageType || 'tag');
-  const [zeitkonto, setZeitkonto] = useState(settings.zeitkonto || false);
+  const [zeitkonto, setZeitkonto] = useState(es.zeitkonto ?? settings.zeitkonto ?? false);
   const [showExport, setShowExport] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [spesenInput, setSpesenInput] = useState({ datum: '', beschreibung: '', betrag: '', kategorie: 'Fahrt' });
@@ -531,7 +531,7 @@ export default function Dashboard({ timesheets, calculations, settings: propSett
       setGageInput(es.tagesgage || '');
       setGageType(es.gageType || 'tag');
     }
-    setZeitkonto(settings.zeitkonto || false);
+    setZeitkonto(es.zeitkonto ?? settings.zeitkonto ?? false);
   }, [settings, es, personFilter, projectFilter]);
 
   // Auto-select first project when person is selected with no project
@@ -579,7 +579,13 @@ export default function Dashboard({ timesheets, calculations, settings: propSett
   const handleZeitkontoToggle = () => {
     const newVal = !zeitkonto;
     setZeitkonto(newVal);
-    onSettings({ ...settings, zeitkonto: newVal });
+    if (projectFilter !== 'all') {
+      const updatedProjects = { ...(settings.projects || {}) };
+      updatedProjects[projectFilter] = { ...(updatedProjects[projectFilter] || {}), zeitkonto: newVal };
+      onSettings({ ...settings, projects: updatedProjects });
+    } else {
+      onSettings({ ...settings, zeitkonto: newVal });
+    }
   };
 
   const handleAddSpesen = () => {

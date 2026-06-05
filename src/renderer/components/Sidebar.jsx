@@ -44,6 +44,23 @@ const IconDispo = () => (
     <line x1="11" y1="16" x2="16" y2="16" />
   </Icon>
 );
+const IconAbrechnung = () => (
+  <Icon>
+    <rect x="4" y="2" width="16" height="20" rx="2" />
+    <line x1="8" y1="7" x2="16" y2="7" />
+    <line x1="8" y1="11" x2="16" y2="11" />
+    <line x1="8" y1="15" x2="12" y2="15" />
+    <path d="M14 17l1.5 1.5L18 15" />
+  </Icon>
+);
+const IconSesam = () => (
+  <Icon>
+    <path d="M9 3H5a2 2 0 0 0-2 2v4"/><path d="M9 21H5a2 2 0 0 1-2-2v-4"/>
+    <path d="M15 3h4a2 2 0 0 1 2 2v4"/><path d="M15 21h4a2 2 0 0 0 2-2v-4"/>
+    <line x1="9" y1="12" x2="15" y2="12"/>
+    <line x1="12" y1="9" x2="12" y2="15"/>
+  </Icon>
+);
 const IconTeam = () => (
   <Icon>
     <path d="M17 20v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" />
@@ -97,6 +114,7 @@ export default function Sidebar({
   currentView,
   onNavigate,
   timesheetCount,
+  sesamCount = 0,
   projects = [],
   projectCounts = {},
   projectFilter = 'all',
@@ -109,9 +127,11 @@ export default function Sidebar({
   const isDark = theme === 'dark';
 
   const navItems = [
-    { id: 'dashboard',  label: 'Übersicht',       icon: <IconHome />,   badge: 0 },
-    { id: 'timesheets', label: 'Stundenzettel',    icon: <IconSheets />, badge: timesheetCount },
-    { id: 'dispos',     label: 'Dispos',           icon: <IconDispo />,  badge: 0 },
+    { id: 'dashboard',     label: 'Übersicht',       icon: <IconHome />,        badge: 0 },
+    { id: 'timesheets',    label: 'Stundenzettel',    icon: <IconSheets />,      badge: timesheetCount },
+    { id: 'dispos',        label: 'Dispos',           icon: <IconDispo />,       badge: 0 },
+    { id: 'abrechnungen',  label: 'Abrechnungen',     icon: <IconAbrechnung />,  badge: 0 },
+    { id: 'sesam',         label: 'Sesam Abgleich',   icon: <IconSesam />,       badge: sesamCount },
   ];
   const masterItems = [
     { id: 'team',     label: 'Team & Projekte', icon: <IconTeam /> },

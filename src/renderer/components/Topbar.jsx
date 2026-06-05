@@ -87,8 +87,8 @@ export default function Topbar({
 
       {/* Actions */}
       <div className="topbar-actions">
-        {/* Import dropdown */}
-        <div style={{ position: 'relative' }}>
+        {/* Import dropdown — hidden on views that have their own import UI */}
+        {onImport && <div style={{ position: 'relative' }}>
           <button
             className="btn-secondary"
             type="button"
@@ -137,7 +137,7 @@ export default function Topbar({
               </div>
             </div>
           )}
-        </div>
+        </div>}
 
         <button className="btn-primary" type="button" onClick={onCreate}>
           <IconPlus />

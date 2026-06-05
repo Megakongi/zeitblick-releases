@@ -147,6 +147,18 @@ export default function Dispos({ dispos = [], onChange, projects = {}, n8nFolder
   const [computingIds, setComputingIds] = useState(() => new Set()); // Dispos, deren Entfernung gerade berechnet wird
   const [showKmReport, setShowKmReport] = useState(false);
   const [batchProgress, setBatchProgress] = useState(null); // { done, total } während Sammelberechnung
+  const [viewMode, setViewMode] = useState('project'); // 'month' | 'project'
+  const [collapsedGroups, setCollapsedGroups] = useState(new Set()); // group keys that are collapsed
+
+  const toggleGroup = useCallback((key) => {
+    setCollapsedGroups(prev => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key); else next.add(key);
+      return next;
+    });
+  }, []);
+  const [isDragging, setIsDragging] = useState(false); // Drag&Drop-Overlay aktiv
+  const dragDepth = useRef(0); // zählt enter/leave, damit Kind-Elemente nicht flackern
 
   const projectNames = useMemo(() => Object.keys(projects || {}).sort(), [projects]);
 
@@ -203,6 +215,103 @@ export default function Dispos({ dispos = [], onChange, projects = {}, n8nFolder
     }
   }, [dispos, onChange, projects, n8nFolder]);
 
+  // ----- Drag & Drop: alte Dispos (z.B. aus Mail) direkt hierher ziehen -----
+  const handleDroppedFiles = useCallback(async (fileList) => {
+    const api = window.electronAPI;
+    if (!api || !api.importDispoFile || !api.getPathForFile) {
+      setSyncMsg('Drag&Drop ist in dieser Version nicht verfügbar.');
+      return;
+    }
+    const pdfs = Array.from(fileList || []).filter(f => /\.pdf$/i.test(f.name || ''));
+    if (!pdfs.length) { setSyncMsg('Bitte PDF-Dateien ablegen.'); return; }
+
+    setSyncing(true);
+    setSyncMsg('');
+    try {
+      const folder = n8nFolder || (api.getDefaultN8NFolder ? await api.getDefaultN8NFolder() : '');
+      const knownOriginals = new Set((dispos || []).map(d => d.originalName));
+      const fallbackYear = new Date().getFullYear();
+      const added = [];
+      let skipped = 0;
+      for (const file of pdfs) {
+        let absPath = '';
+        try { absPath = api.getPathForFile(file); } catch (_) { /* file promise ohne Pfad */ }
+        if (!absPath) { skipped++; continue; }
+        const imp = await api.importDispoFile(folder, absPath);
+        if (!imp || !imp.success) { skipped++; continue; }
+        const original = imp.originalName || file.name;
+        if (knownOriginals.has(original)) { skipped++; continue; }
+        knownOriginals.add(original);
+        const parsed = parseDispoFilename(original, projects, fallbackYear);
+        const motive = (imp.addresses && imp.addresses.motive) || [];
+        added.push({
+          id: Date.now().toString(36) + Math.random().toString(36).slice(2, 8),
+          storedName: imp.storedName,
+          originalName: original,
+          datumISO: parsed.datumISO,
+          drehtag: parsed.drehtag,
+          projekt: parsed.projektGuess || '',
+          title: parsed.title,
+          importedAt: Date.now(),
+          motivAdressen: motive,
+          motivAdresse: (imp.addresses && imp.addresses.suggested) || '',
+        });
+      }
+      if (added.length) {
+        const allDispos = [...(dispos || []), ...added];
+        onChange(allDispos);
+        setSyncMsg(`${added.length} Dispo${added.length > 1 ? 's' : ''} hinzugefügt${skipped ? ` · ${skipped} übersprungen` : ''}`);
+        // Neue Dateien in die Jahr/Projekt-Struktur einsortieren.
+        if (api.organizeDispo) {
+          for (const d of added) {
+            const year = d.datumISO ? d.datumISO.slice(0, 4) : '';
+            try { await api.organizeDispo(folder, d.originalName, year, d.projekt || ''); } catch (_) {}
+          }
+        }
+      } else {
+        setSyncMsg(skipped ? 'Keine neuen Dispos (bereits vorhanden oder kein Pfad).' : 'Keine PDFs erkannt.');
+      }
+    } catch (e) {
+      setSyncMsg('Fehler beim Importieren der Dateien');
+    } finally {
+      setSyncing(false);
+    }
+  }, [dispos, onChange, projects, n8nFolder]);
+
+  const hasFiles = (e) => {
+    const t = e.dataTransfer && e.dataTransfer.types;
+    return !!t && Array.from(t).includes('Files');
+  };
+  // stopPropagation ist wichtig: sonst fängt der globale App-Drop-Handler die
+  // Datei ab und importiert sie als Stundenzettel statt als Dispo.
+  const onDragEnter = useCallback((e) => {
+    if (!hasFiles(e)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    dragDepth.current += 1;
+    setIsDragging(true);
+  }, []);
+  const onDragOver = useCallback((e) => {
+    if (!hasFiles(e)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    try { e.dataTransfer.dropEffect = 'copy'; } catch (_) {}
+  }, []);
+  const onDragLeave = useCallback((e) => {
+    if (!hasFiles(e)) return;
+    e.stopPropagation();
+    dragDepth.current = Math.max(0, dragDepth.current - 1);
+    if (dragDepth.current === 0) setIsDragging(false);
+  }, []);
+  const onDrop = useCallback((e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dragDepth.current = 0;
+    setIsDragging(false);
+    const files = e.dataTransfer && e.dataTransfer.files;
+    if (files && files.length) handleDroppedFiles(files);
+  }, [handleDroppedFiles]);
+
   // Auto-Sync beim ersten Öffnen
   const didInit = useRef(false);
   useEffect(() => {
@@ -225,7 +334,9 @@ export default function Dispos({ dispos = [], onChange, projects = {}, n8nFolder
   // Beim Ändern wird ein evtl. zwischengespeicherter km-Wert verworfen.
   const setMotivAddress = useCallback((id, address) => {
     onChange((dispos || []).map(d => d.id === id
-      ? { ...d, motivAdresse: address, distanzKm: undefined, distanzMin: undefined, distanzFuer: undefined, distanzError: undefined }
+      // motivAdresseManuell merkt sich, dass der Nutzer die Adresse selbst gesetzt
+      // hat – die automatische Neu-Erkennung überschreibt sie dann nicht mehr.
+      ? { ...d, motivAdresse: address, motivAdresseManuell: true, distanzKm: undefined, distanzMin: undefined, distanzFuer: undefined, distanzError: undefined }
       : d));
   }, [dispos, onChange]);
 
@@ -239,7 +350,7 @@ export default function Dispos({ dispos = [], onChange, projects = {}, n8nFolder
       const res = await window.electronAPI.computeDistance(homeAddress, dispo.motivAdresse);
       onChange((dispos || []).map(d => d.id === dispo.id
         ? (res && res.success
-            ? { ...d, distanzKm: res.km, distanzMin: res.durationMin, distanzFuer: { home: homeAddress, motiv: dispo.motivAdresse }, distanzError: '' }
+            ? { ...d, distanzKm: res.km, distanzMin: res.durationMin, distanzApprox: !!res.approx, distanzFuer: { home: homeAddress, motiv: dispo.motivAdresse }, distanzError: '' }
             : { ...d, distanzKm: undefined, distanzError: (res && res.error) || 'Berechnung fehlgeschlagen' })
         : d));
     } catch (e) {
@@ -265,7 +376,7 @@ export default function Dispos({ dispos = [], onChange, projects = {}, n8nFolder
       const d = todo[i];
       try {
         const res = await window.electronAPI.computeDistance(homeAddress, d.motivAdresse);
-        if (res && res.success) results.set(d.id, { km: res.km, min: res.durationMin });
+        if (res && res.success) results.set(d.id, { km: res.km, min: res.durationMin, approx: !!res.approx });
         else results.set(d.id, { error: (res && res.error) || 'Fehler' });
       } catch (_) {
         results.set(d.id, { error: 'Berechnung fehlgeschlagen' });
@@ -277,7 +388,7 @@ export default function Dispos({ dispos = [], onChange, projects = {}, n8nFolder
       if (!r) return d;
       return r.error
         ? { ...d, distanzError: r.error }
-        : { ...d, distanzKm: r.km, distanzMin: r.min, distanzFuer: { home: homeAddress, motiv: d.motivAdresse }, distanzError: '' };
+        : { ...d, distanzKm: r.km, distanzMin: r.min, distanzApprox: !!r.approx, distanzFuer: { home: homeAddress, motiv: d.motivAdresse }, distanzError: '' };
     }));
     setBatchProgress(null);
   }, [dispos, onChange, homeAddress]);
@@ -287,6 +398,61 @@ export default function Dispos({ dispos = [], onChange, projects = {}, n8nFolder
       try { await window.electronAPI.deleteDispo(d.storedName); } catch (_) {}
     }
     onChange((dispos || []).filter(x => x.id !== d.id));
+  }, [dispos, onChange]);
+
+  // ----- Adressen für bereits importierte Dispos neu erkennen -----
+  // Re-scannt alle Dispos, deren Adresse NICHT manuell gesetzt wurde. Damit
+  // werden sowohl leere Adressen gefüllt als auch falsch erkannte (z.B. früher
+  // versehentlich die Basis statt des Motivs) durch die verbesserte Erkennung
+  // korrigiert. Manuell editierte Adressen bleiben unangetastet.
+  const redetectableCount = useMemo(
+    () => (dispos || []).filter(d => d.storedName && !d.motivAdresseManuell).length,
+    [dispos]
+  );
+  const missingAddressCount = useMemo(
+    () => (dispos || []).filter(d => !d.motivAdresse && !(d.motivAdressen && d.motivAdressen.length)).length,
+    [dispos]
+  );
+  const redetectAddresses = useCallback(async () => {
+    const api = window.electronAPI;
+    if (!api || !api.redetectDispo) return;
+    setSyncing(true);
+    setSyncMsg('');
+    try {
+      const todo = (dispos || []).filter(d => d.storedName && !d.motivAdresseManuell);
+      if (!todo.length) { setSyncMsg('Keine automatisch erkennbaren Dispos.'); return; }
+      const updates = new Map(); // id → { motivAdressen, motivAdresse }
+      let filled = 0;   // vorher leer, jetzt erkannt
+      let fixed = 0;    // vorher andere Adresse, jetzt korrigiert
+      for (const d of todo) {
+        const res = await api.redetectDispo(d.storedName);
+        if (!res || !res.success || !res.addresses) continue;
+        const motive = res.addresses.motive || [];
+        const suggested = res.addresses.suggested || '';
+        if (!suggested && !motive.length) continue;
+        if (suggested === (d.motivAdresse || '')) {
+          // Adresse unverändert – nur die Vorschlagsliste aktualisieren.
+          updates.set(d.id, { motivAdressen: motive });
+          continue;
+        }
+        const upd = { motivAdressen: motive, motivAdresse: suggested };
+        // Geänderte Adresse → zwischengespeicherte Entfernung verwerfen.
+        if (suggested) { upd.distanzKm = undefined; upd.distanzMin = undefined; upd.distanzFuer = undefined; upd.distanzError = undefined; }
+        updates.set(d.id, upd);
+        if (!d.motivAdresse) filled++; else if (suggested) fixed++;
+      }
+      if (updates.size) {
+        onChange((dispos || []).map(d => updates.has(d.id) ? { ...d, ...updates.get(d.id) } : d));
+      }
+      const parts = [];
+      if (filled) parts.push(`${filled} ergänzt`);
+      if (fixed) parts.push(`${fixed} korrigiert`);
+      setSyncMsg(parts.length ? `Adressen: ${parts.join(', ')}` : 'Keine Änderungen – alles aktuell');
+    } catch (e) {
+      setSyncMsg('Fehler beim Erkennen der Adressen');
+    } finally {
+      setSyncing(false);
+    }
   }, [dispos, onChange]);
 
   // ----- Ordner / Datei im Finder öffnen -----
@@ -303,23 +469,45 @@ export default function Dispos({ dispos = [], onChange, projects = {}, n8nFolder
   }, [n8nFolder]);
 
   // ----- PDF öffnen (eingebauter Viewer) -----
+  // Wichtig: Große PDFs (mehrere MB) NICHT als data:-URL einbetten – Chromium
+  // verweigert dann die iframe-Navigation. Stattdessen aus base64 einen Blob
+  // bauen und per Object-URL anzeigen.
+  const viewerUrlRef = useRef(null);
+  const revokeViewerUrl = useCallback(() => {
+    if (viewerUrlRef.current) { try { URL.revokeObjectURL(viewerUrlRef.current); } catch (_) {} viewerUrlRef.current = null; }
+  }, []);
+  const closeViewer = useCallback(() => { revokeViewerUrl(); setViewer(null); }, [revokeViewerUrl]);
+
   const openViewer = useCallback(async (d) => {
     if (!window.electronAPI || !window.electronAPI.readDispo) return;
     const res = await window.electronAPI.readDispo(d.storedName);
     if (!res || !res.success) { setViewer({ id: d.id, title: d.title || d.originalName, error: res?.error || 'PDF konnte nicht geladen werden' }); return; }
-    setViewer({ id: d.id, title: d.title || d.originalName, dataUrl: `data:application/pdf;base64,${res.data}` });
-  }, []);
+    revokeViewerUrl();
+    try {
+      const bin = atob(res.data);
+      const bytes = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+      const url = URL.createObjectURL(new Blob([bytes], { type: 'application/pdf' }));
+      viewerUrlRef.current = url;
+      setViewer({ id: d.id, title: d.title || d.originalName, dataUrl: url });
+    } catch (e) {
+      setViewer({ id: d.id, title: d.title || d.originalName, error: 'PDF konnte nicht aufbereitet werden' });
+    }
+  }, [revokeViewerUrl]);
 
-  // ----- Filtern + sortieren + nach Monat gruppieren -----
-  const grouped = useMemo(() => {
+  // Object-URL beim Verlassen der Komponente freigeben.
+  useEffect(() => () => revokeViewerUrl(), [revokeViewerUrl]);
+
+  // ----- Gemeinsame Filterliste -----
+  const filteredDispos = useMemo(() => {
     const q = search.trim().toLowerCase();
     const now = new Date(); now.setHours(0, 0, 0, 0);
     const weekEnd = new Date(now); weekEnd.setDate(now.getDate() + 7);
-
-    let list = (dispos || []).filter(d => {
+    return (dispos || []).filter(d => {
       if (projectFilter && (d.projekt || '') !== projectFilter) return false;
       if (q && !(`${d.title || ''} ${d.originalName || ''} ${d.drehtag || ''} ${d.projekt || ''}`.toLowerCase().includes(q))) return false;
       if (quickFilter === 'unassigned' && d.projekt) return false;
+      if (quickFilter === 'noaddress' && d.motivAdresse) return false;
       if (quickFilter === 'upcoming' || quickFilter === 'week') {
         if (!d.datumISO) return false;
         const dt = new Date(d.datumISO + 'T12:00:00');
@@ -328,16 +516,19 @@ export default function Dispos({ dispos = [], onChange, projects = {}, n8nFolder
       }
       return true;
     });
+  }, [dispos, search, projectFilter, quickFilter]);
 
-    // Sortierung: nach Datum absteigend (neueste/kommende oben), undatierte ans Ende
-    list.sort((a, b) => {
-      if (!a.datumISO && !b.datumISO) return (b.importedAt || 0) - (a.importedAt || 0);
-      if (!a.datumISO) return 1;
-      if (!b.datumISO) return -1;
-      return b.datumISO.localeCompare(a.datumISO);
-    });
+  // Sortierung nach Datum (neueste oben, undatierte ans Ende) — geteilt von beiden Ansichten
+  const sortByDate = (a, b) => {
+    if (!a.datumISO && !b.datumISO) return (b.importedAt || 0) - (a.importedAt || 0);
+    if (!a.datumISO) return 1;
+    if (!b.datumISO) return -1;
+    return b.datumISO.localeCompare(a.datumISO);
+  };
 
-    // Nach Monat gruppieren
+  // ----- Monatsansicht -----
+  const grouped = useMemo(() => {
+    const list = [...filteredDispos].sort(sortByDate);
     const groups = [];
     let curKey = null, curGroup = null;
     for (const d of list) {
@@ -353,13 +544,52 @@ export default function Dispos({ dispos = [], onChange, projects = {}, n8nFolder
       curGroup.items.push(d);
     }
     return groups;
-  }, [dispos, search, projectFilter, quickFilter]);
+  }, [filteredDispos]);
+
+  // ----- Projektansicht -----
+  const groupedByProject = useMemo(() => {
+    const map = new Map();
+    for (const d of filteredDispos) {
+      const key = d.projekt || '';
+      if (!map.has(key)) map.set(key, []);
+      map.get(key).push(d);
+    }
+    return [...map.entries()]
+      .sort(([a], [b]) => {
+        if (!a && b) return 1; // "Ohne Projekt" ans Ende
+        if (a && !b) return -1;
+        return a.localeCompare(b, 'de');
+      })
+      .map(([proj, items]) => ({
+        key: proj || '__none__',
+        label: proj || 'Ohne Projekt',
+        items: [...items].sort(sortByDate),
+        isNone: !proj,
+      }));
+  }, [filteredDispos]);
 
   const total = (dispos || []).length;
   const unassignedCount = (dispos || []).filter(d => !d.projekt).length;
+  // Dispos ohne gewählte Motiv-Adresse – fehlen in der KM-/Fahrtkosten-Übersicht.
+  const emptyAddressCount = (dispos || []).filter(d => !d.motivAdresse).length;
 
   return (
-    <div className="dispos-container">
+    <div
+      className={`dispos-container${isDragging ? ' is-dragging' : ''}`}
+      onDragEnter={onDragEnter}
+      onDragOver={onDragOver}
+      onDragLeave={onDragLeave}
+      onDrop={onDrop}
+    >
+      {isDragging && (
+        <div className="dispos-drop-overlay">
+          <div className="dispos-drop-card">
+            <div className="dispos-drop-icon">📥</div>
+            <div className="dispos-drop-title">Dispos hier ablegen</div>
+            <div className="dispos-drop-sub">PDF-Dispos aus Mail oder Finder loslassen</div>
+          </div>
+        </div>
+      )}
       <div className="dispos-head">
         <h1 className="dispos-title">Dispos</h1>
         <span className="dispos-count">{total} Disposition{total === 1 ? '' : 'en'}</span>
@@ -368,6 +598,11 @@ export default function Dispos({ dispos = [], onChange, projects = {}, n8nFolder
         <button className="btn btn-secondary" onClick={openDispoFolder} title="Dispos-Ordner im Finder öffnen">
           📂 Ordner
         </button>
+        {redetectableCount > 0 && (
+          <button className="btn btn-secondary" onClick={redetectAddresses} disabled={syncing} title="Motiv-Adressen automatisch (neu) auslesen – ergänzt fehlende und korrigiert falsch erkannte. Manuell gesetzte bleiben erhalten.">
+            📍 Adressen erkennen{missingAddressCount > 0 ? ` (${missingAddressCount})` : ''}
+          </button>
+        )}
         <button className="btn btn-secondary" onClick={() => setShowKmReport(true)} title="Fahrtkosten / KM-Pauschale für die Steuer">
           📊 Fahrtkosten
         </button>
@@ -385,12 +620,47 @@ export default function Dispos({ dispos = [], onChange, projects = {}, n8nFolder
           <option value="">Alle Projekte</option>
           {projectNames.map(p => <option key={p} value={p}>{p}</option>)}
         </select>
+        {/* View-Mode-Toggle */}
+        <div className="dispos-view-toggle">
+          <button
+            className={`dispos-view-btn${viewMode === 'project' ? ' active' : ''}`}
+            onClick={() => setViewMode('project')}
+            title="Nach Projekt gruppieren"
+          >
+            ▤ Projekte
+          </button>
+          <button
+            className={`dispos-view-btn${viewMode === 'month' ? ' active' : ''}`}
+            onClick={() => setViewMode('month')}
+            title="Nach Monat gruppieren"
+          >
+            📅 Monate
+          </button>
+        </div>
         <div className="dispos-chips">
-          {[['all', 'Alle'], ['upcoming', 'Kommende'], ['week', 'Diese Woche'], ['unassigned', `⚠ Ohne Projekt${unassignedCount ? ` (${unassignedCount})` : ''}`]].map(([id, label]) => (
+          {[['all', 'Alle'], ['upcoming', 'Kommende'], ['week', 'Diese Woche'], ['unassigned', `⚠ Ohne Projekt${unassignedCount ? ` (${unassignedCount})` : ''}`], ['noaddress', `📍 Ohne Adresse${emptyAddressCount ? ` (${emptyAddressCount})` : ''}`]].map(([id, label]) => (
             <button key={id} className={`dispos-chip${quickFilter === id ? ' active' : ''}`} onClick={() => setQuickFilter(id)}>{label}</button>
           ))}
         </div>
       </div>
+
+      {emptyAddressCount > 0 && quickFilter !== 'noaddress' && (
+        <div className="dispos-addr-warn" role="status">
+          <span className="dispos-addr-warn-ic">⚠️</span>
+          <span className="dispos-addr-warn-text">
+            <strong>{emptyAddressCount}</strong> Dispo{emptyAddressCount === 1 ? '' : 's'} ohne Motiv-Adresse –
+            {' '}diese fehlen in der Fahrtkosten-/KM-Übersicht.
+          </span>
+          {missingAddressCount > 0 && (
+            <button className="dispos-addr-warn-btn" onClick={redetectAddresses} disabled={syncing}>
+              📍 Automatisch erkennen
+            </button>
+          )}
+          <button className="dispos-addr-warn-btn ghost" onClick={() => setQuickFilter('noaddress')}>
+            Anzeigen
+          </button>
+        </div>
+      )}
 
       {total === 0 ? (
         n8nFolder ? (
@@ -398,39 +668,83 @@ export default function Dispos({ dispos = [], onChange, projects = {}, n8nFolder
             <div className="dispos-empty-icon">📄</div>
             <div className="dispos-empty-title">Noch keine Dispos</div>
             <div className="dispos-empty-text">
-              Klicke auf „↻ Synchronisieren", um neue PDFs aus deinem Ordner zu laden.
+              Klicke auf „↻ Synchronisieren", um neue PDFs aus deinem Ordner zu laden –
+              oder zieh ältere Dispo-PDFs (z.B. aus deinen Mails) einfach hierher.
             </div>
           </div>
         ) : (
           <N8NDispoGuide n8nFolder={n8nFolder} onGoToSettings={onGoToSettings} />
         )
-      ) : grouped.length === 0 ? (
+      ) : (viewMode === 'project' ? groupedByProject : grouped).length === 0 ? (
         <div className="dispos-empty"><div className="dispos-empty-title">Keine Dispos für diesen Filter.</div></div>
+      ) : viewMode === 'project' ? (
+        groupedByProject.map(group => {
+          const isCollapsed = collapsedGroups.has(group.key);
+          return (
+            <div key={group.key} className="dispos-group">
+              <button
+                className={`dispos-proj-header${group.isNone ? ' dispos-proj-header--none' : ''}`}
+                onClick={() => toggleGroup(group.key)}
+                aria-expanded={!isCollapsed}
+              >
+                <span className="dispos-proj-arrow">{isCollapsed ? '▶' : '▼'}</span>
+                <span className="dispos-proj-name">{group.label}</span>
+                <span className="dispos-proj-count">{group.items.length}</span>
+              </button>
+              {!isCollapsed && group.items.map(d => (
+                <DispoCard
+                  key={d.id}
+                  dispo={d}
+                  projectNames={projectNames}
+                  onAssign={assignProject}
+                  onOpen={openViewer}
+                  onDelete={handleDelete}
+                  onSetMotiv={setMotivAddress}
+                  onComputeDistance={computeDistanceFor}
+                  onReveal={revealDispo}
+                  computing={computingIds.has(d.id)}
+                  homeAddress={homeAddress}
+                />
+              ))}
+            </div>
+          );
+        })
       ) : (
-        grouped.map(group => (
-          <div key={group.key} className="dispos-group">
-            <div className="dispos-month">{group.label}</div>
-            {group.items.map(d => (
-              <DispoCard
-                key={d.id}
-                dispo={d}
-                projectNames={projectNames}
-                onAssign={assignProject}
-                onOpen={openViewer}
-                onDelete={handleDelete}
-                onSetMotiv={setMotivAddress}
-                onComputeDistance={computeDistanceFor}
-                onReveal={revealDispo}
-                computing={computingIds.has(d.id)}
-                homeAddress={homeAddress}
-              />
-            ))}
-          </div>
-        ))
+        grouped.map(group => {
+          const isCollapsed = collapsedGroups.has(group.key);
+          return (
+            <div key={group.key} className="dispos-group">
+              <button
+                className="dispos-month-btn"
+                onClick={() => toggleGroup(group.key)}
+                aria-expanded={!isCollapsed}
+              >
+                <span className="dispos-proj-arrow">{isCollapsed ? '▶' : '▼'}</span>
+                {group.label}
+                <span className="dispos-proj-count">{group.items.length}</span>
+              </button>
+              {!isCollapsed && group.items.map(d => (
+                <DispoCard
+                  key={d.id}
+                  dispo={d}
+                  projectNames={projectNames}
+                  onAssign={assignProject}
+                  onOpen={openViewer}
+                  onDelete={handleDelete}
+                  onSetMotiv={setMotivAddress}
+                  onComputeDistance={computeDistanceFor}
+                  onReveal={revealDispo}
+                  computing={computingIds.has(d.id)}
+                  homeAddress={homeAddress}
+                />
+              ))}
+            </div>
+          );
+        })
       )}
 
       {viewer && (
-        <DispoViewer viewer={viewer} onClose={() => setViewer(null)} />
+        <DispoViewer viewer={viewer} onClose={closeViewer} />
       )}
 
       {showKmReport && (
@@ -532,12 +846,12 @@ function DispoCard({ dispo, projectNames, onAssign, onOpen, onDelete, onSetMotiv
                 <span className="dispo-distance-loading">berechne…</span>
               ) : distanceFresh && typeof dispo.distanzKm === 'number' ? (
                 <button
-                  className="dispo-distance-val"
+                  className={`dispo-distance-val${dispo.distanzApprox ? ' is-approx' : ''}`}
                   onClick={() => onComputeDistance(dispo)}
                   disabled={!hasHome}
-                  title={`${dispo.distanzMin ? `~${dispo.distanzMin} min Fahrt · ` : ''}Neu berechnen`}
+                  title={`${dispo.distanzMin ? `~${dispo.distanzMin} min Fahrt · ` : ''}${dispo.distanzApprox ? 'Näherung (nur PLZ/Ort gefunden) · ' : ''}Neu berechnen`}
                 >
-                  🚗 {dispo.distanzKm} km{dispo.distanzMin ? ` · ${dispo.distanzMin} min` : ''}
+                  🚗 {dispo.distanzApprox ? '≈ ' : ''}{dispo.distanzKm} km{dispo.distanzMin ? ` · ${dispo.distanzMin} min` : ''}
                 </button>
               ) : (
                 <button

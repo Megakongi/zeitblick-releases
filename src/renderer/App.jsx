@@ -10,6 +10,8 @@ import TimesheetCreate from './components/TimesheetCreate';
 import Settings from './components/Settings';
 import TeamManager from './components/TeamManager';
 import Dispos from './components/Dispos';
+import Abrechnungen from './components/Abrechnungen';
+import SesamAbgleich from './components/SesamAbgleich';
 import ImportOverlay from './components/ImportOverlay';
 import OnboardingTour from './components/OnboardingTour';
 import UpdateOverlay from './components/UpdateOverlay';
@@ -90,7 +92,9 @@ export default function App() {
   const [view, setView] = useState('dashboard');
   const [timesheets, setTimesheets] = useState([]);
   const [selectedSheet, setSelectedSheet] = useState(null);
-  const [settings, setSettings] = useState({ tagesgage: 0, gageType: 'tag', zeitkonto: false, theme: 'light', spesen: [], personGagen: {}, positionGagen: {}, nameAliases: {}, team: [], projectStaffing: {}, projects: {}, projectCrews: {}, calendarEntries: {}, n8nFolder: '', n8nEnabled: false, dispos: [], kmRate: 0.30, kmRoundTrip: false });
+  const [settings, setSettings] = useState({ tagesgage: 0, gageType: 'tag', zeitkonto: false, theme: 'light', spesen: [], personGagen: {}, positionGagen: {}, nameAliases: {}, team: [], projectStaffing: {}, projects: {}, projectCrews: {}, calendarEntries: {}, n8nFolder: '', n8nEnabled: false, dispos: [], kmRate: 0.30, kmRoundTrip: false, stdwebProduktionen: {} });
+  const [abrechnungen, setAbrechnungen] = useState([]);
+  const [sesamSheets, setSesamSheets] = useState([]);
   const [isImporting, setIsImporting] = useState(false);
   const [isDragOver, setIsDragOver] = useState(false);
   const [importMessage, setImportMessage] = useState(null);
@@ -157,6 +161,12 @@ export default function App() {
           console.log('[ZeitBlick] Migrated stored timesheet data (totals + project names)');
         }
       }
+      if (data.abrechnungen) {
+        setAbrechnungen(data.abrechnungen);
+      }
+      if (data.sesamSheets) {
+        setSesamSheets(data.sesamSheets);
+      }
       if (data.settings) {
         // Migrate drehStartDatum: fix 2-digit years (0026 → 2026)
         const s = { ...data.settings };
@@ -195,14 +205,14 @@ export default function App() {
     if (!dataLoaded.current) return;
     if (saveTimeout.current) clearTimeout(saveTimeout.current);
     saveTimeout.current = setTimeout(async () => {
-      const result = await window.electronAPI.saveData({ timesheets, settings });
+      const result = await window.electronAPI.saveData({ timesheets, settings, abrechnungen, sesamSheets });
       if (result && !result.success && result.error) {
         setSaveError(result.error);
         setTimeout(() => setSaveError(null), 6000);
       }
     }, 500);
     return () => { if (saveTimeout.current) clearTimeout(saveTimeout.current); };
-  }, [timesheets, settings]);
+  }, [timesheets, settings, abrechnungen, sesamSheets]);
 
   // Keyboard shortcuts
   useEffect(() => {
@@ -371,7 +381,10 @@ export default function App() {
 
   // Drag & Drop handlers — use counter to prevent flicker from child elements
   // Only show overlay for external file drags, not internal card drags
+  // Im Dispos-Tab übernimmt die Dispos-Komponente das Drag&Drop (PDFs werden
+  // dort als Dispos importiert, nicht als Stundenzettel).
   const handleDragEnter = useCallback((e) => {
+    if (view === 'dispos' || view === 'abrechnungen' || view === 'sesam') return;
     e.preventDefault();
     e.stopPropagation();
     if (!e.dataTransfer.types.includes('Files')) return;
@@ -379,14 +392,16 @@ export default function App() {
     if (dragCounter.current === 1) {
       setIsDragOver(true);
     }
-  }, []);
+  }, [view]);
 
   const handleDragOver = useCallback((e) => {
+    if (view === 'dispos' || view === 'abrechnungen' || view === 'sesam') return;
     e.preventDefault();
     e.stopPropagation();
-  }, []);
+  }, [view]);
 
   const handleDragLeave = useCallback((e) => {
+    if (view === 'dispos' || view === 'abrechnungen' || view === 'sesam') return;
     e.preventDefault();
     e.stopPropagation();
     if (!e.dataTransfer.types.includes('Files')) return;
@@ -395,9 +410,10 @@ export default function App() {
       dragCounter.current = 0;
       setIsDragOver(false);
     }
-  }, []);
+  }, [view]);
 
   const handleDrop = useCallback((e) => {
+    if (view === 'dispos' || view === 'abrechnungen' || view === 'sesam') return;
     e.preventDefault();
     e.stopPropagation();
     dragCounter.current = 0;
@@ -422,7 +438,7 @@ export default function App() {
     } else {
       console.warn('No file paths resolved from dropped files');
     }
-  }, [handleImport]);
+  }, [handleImport, view]);
 
   // File dialog
   const handleOpenDialog = useCallback(async () => {
@@ -769,30 +785,46 @@ export default function App() {
   const getPersonSettings = useCallback((personName, projectName) => {
     // 1. Check personProjectGagen (per-person-per-project override)
     const ppg = settings.personProjectGagen || {};
+    let base;
     if (personName && projectName && ppg[personName] && ppg[personName][projectName] && ppg[personName][projectName].tagesgage > 0) {
-      return { ...settings, tagesgage: ppg[personName][projectName].tagesgage, gageType: ppg[personName][projectName].gageType || settings.gageType };
-    }
-    // 2. Check personGagen (direct override per person)
-    const pg = settings.personGagen || {};
-    if (personName && pg[personName] && pg[personName].tagesgage > 0) {
-      return { ...settings, tagesgage: pg[personName].tagesgage, gageType: pg[personName].gageType || settings.gageType };
-    }
-    // 3. Look up by position from timesheets
-    if (personName) {
-      const posGagen = settings.positionGagen || {};
-      const resolvedName = resolveName(personName);
-      const ts = timesheets.find(t => resolveName(t.name || 'Unbekannt') === resolvedName && t.position);
-      if (ts && ts.position && posGagen[ts.position] && posGagen[ts.position].tagesgage > 0) {
-        return { ...settings, tagesgage: posGagen[ts.position].tagesgage, gageType: posGagen[ts.position].gageType || settings.gageType };
+      base = { ...settings, tagesgage: ppg[personName][projectName].tagesgage, gageType: ppg[personName][projectName].gageType || settings.gageType };
+    } else {
+      // 2. Check personGagen (direct override per person)
+      const pg = settings.personGagen || {};
+      if (personName && pg[personName] && pg[personName].tagesgage > 0) {
+        base = { ...settings, tagesgage: pg[personName].tagesgage, gageType: pg[personName].gageType || settings.gageType };
+      } else if (personName) {
+        // 3. Look up by position from timesheets
+        const posGagen = settings.positionGagen || {};
+        const resolvedName = resolveName(personName);
+        const ts = timesheets.find(t => resolveName(t.name || 'Unbekannt') === resolvedName && t.position);
+        if (ts && ts.position && posGagen[ts.position] && posGagen[ts.position].tagesgage > 0) {
+          base = { ...settings, tagesgage: posGagen[ts.position].tagesgage, gageType: posGagen[ts.position].gageType || settings.gageType };
+        }
       }
     }
-    return settings;
+    if (!base) base = settings;
+    // Apply project-level zeitkonto override when defined
+    const projZeitkonto = projectName && settings.projects?.[projectName]?.zeitkonto;
+    if (projectName && projZeitkonto !== undefined) {
+      return { ...base, zeitkonto: projZeitkonto };
+    }
+    return base;
   }, [settings, timesheets, resolveName]);
 
-  // TVFFS calculations — use per-person gage when filtered
-  const effectiveSettings = personFilter !== 'all'
-    ? getPersonSettings(personFilter, projectFilter !== 'all' ? projectFilter : undefined)
-    : settings;
+  // TVFFS calculations — use per-person/per-project settings when filtered
+  const effectiveSettings = useMemo(() => {
+    const personName = personFilter !== 'all' ? personFilter : null;
+    const projectName = projectFilter !== 'all' ? projectFilter : null;
+    const base = personName
+      ? getPersonSettings(personName, projectName)
+      : settings;
+    // Apply project-level zeitkonto even without a person filter
+    if (!personName && projectName && settings.projects?.[projectName]?.zeitkonto !== undefined) {
+      return { ...base, zeitkonto: settings.projects[projectName].zeitkonto };
+    }
+    return base;
+  }, [personFilter, projectFilter, settings, getPersonSettings]);
   const calculations = useMemo(() => calculateTVFFS(filteredTimesheets, effectiveSettings), [filteredTimesheets, effectiveSettings]);
 
   // Person sheet counts for sidebar (using resolved names)
@@ -824,7 +856,30 @@ export default function App() {
       case 'dashboard':
         return <SectionErrorBoundary label="Übersicht"><Dashboard timesheets={filteredTimesheets} calculations={calculations} settings={settings} effectiveSettings={effectiveSettings} onSettings={setSettings} onViewDetail={handleViewDetail} onUpdateTimesheets={setTimesheets} projects={filteredProjects} projectFilter={projectFilter} onProjectFilter={handleProjectFilter} personFilter={personFilter} onPersonFilter={handlePersonFilter} allTimesheets={timesheets} personFilteredTimesheets={personFiltered} getPersonSettings={getPersonSettings} resolveName={resolveName} getBaseProject={getBaseProject} completedProjects={settings.completedProjects || {}} /></SectionErrorBoundary>;
       case 'timesheets':
-        return <SectionErrorBoundary label="Stundenzettel-Liste"><TimesheetList timesheets={timesheets} onViewDetail={handleViewDetail} onDelete={handleDelete} onBulkDelete={handleBulkDelete} personFilter={personFilter} resolveName={resolveName} getBaseProject={getBaseProject} onRenameProject={handleRenameProject} completedProjects={settings.completedProjects || {}} onToggleProjectComplete={handleToggleProjectComplete} projectCrews={settings.projectCrews || {}} /></SectionErrorBoundary>;
+        return <SectionErrorBoundary label="Stundenzettel-Liste"><TimesheetList timesheets={timesheets} onViewDetail={handleViewDetail} onDelete={handleDelete} onBulkDelete={handleBulkDelete} personFilter={personFilter} resolveName={resolveName} getBaseProject={getBaseProject} onRenameProject={handleRenameProject} completedProjects={settings.completedProjects || {}} onToggleProjectComplete={handleToggleProjectComplete} projectCrews={settings.projectCrews || {}} team={settings.team || []} stdwebProductions={settings.stdwebProduktionen || {}} onSetStdwebProduction={(proj, prod) => setSettings(s => ({ ...s, stdwebProduktionen: { ...(s.stdwebProduktionen || {}), [proj]: prod } }))} /></SectionErrorBoundary>;
+      case 'abrechnungen':
+        return <SectionErrorBoundary label="Abrechnungen"><Abrechnungen
+          timesheets={timesheets}
+          abrechnungen={abrechnungen}
+          onAbrechnungenChange={setAbrechnungen}
+          settings={settings}
+          getPersonSettings={getPersonSettings}
+          resolveName={resolveName}
+          getBaseProject={getBaseProject}
+          team={settings.team || []}
+          completedProjects={settings.completedProjects || {}}
+          onToggleProjectComplete={handleToggleProjectComplete}
+        /></SectionErrorBoundary>;
+      case 'sesam':
+        return <SectionErrorBoundary label="Sesam Abgleich"><SesamAbgleich
+          timesheets={timesheets}
+          sesamSheets={sesamSheets}
+          onSesamSheetsChange={setSesamSheets}
+          resolveName={resolveName}
+          getBaseProject={getBaseProject}
+          completedProjects={settings.completedProjects || {}}
+          onToggleProjectComplete={handleToggleProjectComplete}
+        /></SectionErrorBoundary>;
       case 'dispos':
         return <SectionErrorBoundary label="Dispos"><Dispos
           dispos={settings.dispos || []}
@@ -838,7 +893,7 @@ export default function App() {
           onGoToSettings={() => setView('settings')}
         /></SectionErrorBoundary>;
       case 'detail':
-        return selectedSheet ? <SectionErrorBoundary label="Stundenzettel-Detail"><TimesheetDetail sheet={selectedSheet} settings={getPersonSettings(selectedSheet.name, getBaseProject(selectedSheet.projekt))} onBack={() => setView(prevView.current || 'timesheets')} onEdit={handleEditSheet} allTimesheets={timesheets} onSelectSheet={(s) => { setSelectedSheet(s); }} /></SectionErrorBoundary> : null;
+        return selectedSheet ? <SectionErrorBoundary label="Stundenzettel-Detail"><TimesheetDetail sheet={selectedSheet} settings={getPersonSettings(selectedSheet.name, getBaseProject(selectedSheet.projekt))} onBack={() => setView(prevView.current || 'timesheets')} onEdit={handleEditSheet} allTimesheets={timesheets} onSelectSheet={(s) => { setSelectedSheet(s); }} team={settings.team || []} resolveName={resolveName} stdwebProductions={settings.stdwebProduktionen || {}} onSetStdwebProduction={(proj, prod) => setSettings(s => ({ ...s, stdwebProduktionen: { ...(s.stdwebProduktionen || {}), [proj]: prod } }))} /></SectionErrorBoundary> : null;
       case 'create':
         return <SectionErrorBoundary label="Stundenzettel erstellen"><TimesheetCreate
           onSave={handleCreateSheet}
@@ -904,6 +959,7 @@ export default function App() {
         currentView={view}
         onNavigate={(v) => { if (v !== 'create') setSelectedSheet(null); setView(v); }}
         timesheetCount={timesheets.length}
+        sesamCount={sesamSheets.length}
         projects={filteredProjects}
         projectCounts={projectCounts}
         projectFilter={projectFilter}
@@ -921,8 +977,8 @@ export default function App() {
           ].filter(Boolean).join(' · ') || null
         }
         onCreate={() => { setSelectedSheet(null); setView('create'); }}
-        onImport={handleOpenDialog}
-        onImportFolder={handleOpenFolderDialog}
+        onImport={['abrechnungen', 'sesam', 'team', 'settings'].includes(view) ? null : handleOpenDialog}
+        onImportFolder={['abrechnungen', 'sesam', 'team', 'settings'].includes(view) ? null : handleOpenFolderDialog}
         onSearch={() => { setSearchOpen(true); setTimeout(() => searchInputRef.current?.focus(), 50); }}
         theme={settings.theme || 'light'}
         onToggleTheme={() => setSettings(s => ({ ...s, theme: s.theme === 'dark' ? 'light' : 'dark' }))}

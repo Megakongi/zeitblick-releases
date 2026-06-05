@@ -67,16 +67,22 @@ function parsePDF(filePath) {
         
         // Check if day rows are empty (handwritten PDF / broken font)
         const hasData = result.days.some(d => d.start || d.ende || d.stundenTotal > 0 || d.datum);
-        if (!hasData && result.days.length > 0 && process.platform === 'darwin') {
-          try {
-            const ocrResult = await ocrFallbackExtract(filePath, result);
-            if (ocrResult) {
-              resolve(ocrResult);
-              return;
+        if (!hasData && process.platform === 'darwin') {
+          const isAZE = isSeSAMAZEFormat(pdfData);
+          // Trigger OCR for: (a) handwritten PDFs with detected day rows, (b) Sesam AZE format
+          if (result.days.length > 0 || isAZE) {
+            try {
+              const ocrResult = isAZE
+                ? await parseSeSAMAZEFromOcr(filePath, pdfData)
+                : await ocrFallbackExtract(filePath, result);
+              if (ocrResult) {
+                resolve(ocrResult);
+                return;
+              }
+            } catch (ocrErr) {
+              // OCR failed, return what we have from text extraction
+              console.warn('OCR fallback failed:', ocrErr.message);
             }
-          } catch (ocrErr) {
-            // OCR failed, return what we have from text extraction
-            console.warn('OCR fallback failed:', ocrErr.message);
           }
         }
         
@@ -1992,6 +1998,207 @@ function fixOcrTime(text) {
     if (val >= 0 && val <= 23) return `${val}:00`;
   }
   return text;  // Return original if we can't fix
+}
+
+/**
+ * Detect if the PDF is a Sesam Arbeitszeiterfassung (AZE) — "Rave Report".
+ * These PDFs have all text at negative coordinates (form fields) and contain
+ * the "Arbeitszeiterfassung" title. The actual time data is in the rendered image.
+ */
+function isSeSAMAZEFormat(pdfData) {
+  const page = pdfData.Pages[0];
+  if (!page) return false;
+  return page.Texts.some(t => {
+    const text = decodeText(t.R.map(r => r.T).join(''));
+    return /Arbeitszeiterfassung/i.test(text);
+  });
+}
+
+/**
+ * Parse a Sesam AZE PDF using the OCR helper.
+ * Extracts: name, produktionsfirma, projekt, day rows (date, start, end, pause,
+ * stundenTotal, nacht25) from the OCR output.
+ */
+async function parseSeSAMAZEFromOcr(filePath, pdfData) {
+  const ocrBinary = findOcrBinary();
+  if (!ocrBinary) return null;
+
+  const ocrData = await runOcrHelper(ocrBinary, filePath);
+  if (!ocrData?.items?.length) return null;
+
+  const items = ocrData.items
+    .filter(it => it.text?.trim())
+    .sort((a, b) => a.y - b.y || a.x - b.x);
+
+  // Form texts from pdf2json (header/footer text layer)
+  const page = pdfData.Pages[0];
+  const formTexts = page.Texts.map(t => decodeText(t.R.map(r => r.T).join('')));
+
+  // ── Name ─────────────────────────────────────────────────────────
+  // "Arbeitszeiterfassung (Pallapies, Till   (PDM2193106))"
+  let name = '';
+  const azeFormText = formTexts.find(t => /Arbeitszeiterfassung/i.test(t));
+  if (azeFormText) {
+    const m = azeFormText.match(/\(([A-ZÄÖÜ][a-zäöüß\-]+),\s*([A-ZÄÖÜ][a-zäöüß\-]+)/);
+    if (m) name = `${m[2].trim()} ${m[1].trim()}`;
+  }
+
+  // ── Production (Lizenz label) ─────────────────────────────────────
+  let produktionsfirma = '';
+  const lizenzOcr = items.find(it => /^Lizenz:?$/i.test(it.text.trim()) && it.x < 12);
+  if (lizenzOcr) {
+    const rowItems = items.filter(it =>
+      Math.abs(it.y - lizenzOcr.y) < 0.8 && it.x > lizenzOcr.x + 2
+    );
+    produktionsfirma = rowItems.map(it => it.text).join(' ').trim();
+  }
+
+  // ── Project name from SESAM header "2026 PDM2193 Herkunft" ────────
+  let projekt = '';
+  const sesamFormText = formTexts.find(t => /PDM\d+/i.test(t));
+  if (sesamFormText) {
+    const m = sesamFormText.match(/PDM\d+\s+(.+)/);
+    if (m) projekt = m[1].trim();
+  }
+
+  // ── Column positions from OCR header row (y ≈ 48-53) ─────────────
+  const colItems = items.filter(it => it.y >= 47 && it.y <= 53);
+  function findColX(patterns) {
+    const it = colItems.find(ci => patterns.some(p => p.test(ci.text.trim())));
+    return it ? it.x : null;
+  }
+  const vonX    = findColX([/^von$/i]);
+  const bisX    = findColX([/^bis$/i]);
+  const pauseX  = findColX([/^Pause$/i]);
+  const gesamtX = findColX([/^gesamt$/i]);
+
+  // ── Day rows ──────────────────────────────────────────────────────
+  const DAY_SHORT = {
+    'Mo,': 'Montag',  'Di,': 'Dienstag',  'Mi,': 'Mittwoch',
+    'Do,': 'Donnerstag', 'Fr,': 'Freitag', 'Sa,': 'Samstag', 'So,': 'Sonntag',
+    'Mo':  'Montag',  'Di':  'Dienstag',  'Mi':  'Mittwoch',
+    'Do':  'Donnerstag', 'Fr':  'Freitag', 'Sa':  'Samstag', 'So':  'Sonntag',
+  };
+
+  const days = [];
+  const seenY = new Set();
+
+  for (const item of items) {
+    const dayFull = DAY_SHORT[item.text.trim()];
+    if (!dayFull || item.x > 12) continue;
+    const yKey = Math.round(item.y * 2); // 0.5-unit resolution
+    if (seenY.has(yKey)) continue;
+    seenY.add(yKey);
+
+    const rowItems = items.filter(it => Math.abs(it.y - item.y) < 2.5 && it !== item);
+
+    const day = {
+      tag: dayFull, datum: '', start: '', ende: '',
+      pause: 0, stundenTotal: 0, ueberstunden25: 0, ueberstunden50: 0,
+      ueberstunden100: 0, nacht25: 0, fahrzeit: 0, anmerkungen: '',
+    };
+
+    // Date: dd.mm.yyyy near left column (x < 20)
+    const dateItem = rowItems.find(it => /^\d{2}\.\d{2}\.\d{4}$/.test(it.text) && it.x < 20);
+    if (dateItem) day.datum = dateItem.text;
+
+    // Times — classify by column x position
+    const timeItems = rowItems.filter(it => /^\d{1,2}:\d{2}$/.test(it.text));
+    for (const ti of timeItems) {
+      if (vonX !== null && Math.abs(ti.x - vonX) < 6 && !day.start) {
+        day.start = ti.text;
+      } else if (bisX !== null && Math.abs(ti.x - bisX) < 6 && !day.ende) {
+        day.ende = ti.text;
+      } else if (pauseX !== null && Math.abs(ti.x - pauseX) < 6 && !day.pause) {
+        day.pause = parseTimeToDecimal(ti.text);
+      } else if (!day.start) {
+        day.start = ti.text;
+      } else if (!day.ende) {
+        day.ende = ti.text;
+      } else if (!day.pause && ti.x < 44) {
+        day.pause = parseTimeToDecimal(ti.text);
+      }
+    }
+
+    // stundenTotal: decimal number aligned with "gesamt" column
+    const numItems = rowItems.filter(it => /^\d+[,]\d+$/.test(it.text));
+    for (const ni of numItems) {
+      if (gesamtX !== null && Math.abs(ni.x - gesamtX) < 6) {
+        day.stundenTotal = parseNum(ni.text);
+        break;
+      }
+    }
+
+    // Fallback: calculate from start/end/pause
+    if (!day.stundenTotal && day.start && day.ende) {
+      const s = parseTimeValue(day.start);
+      const e = parseTimeValue(day.ende);
+      if (s !== null && e !== null) {
+        let diff = e - s;
+        if (diff < 0) diff += 24;
+        diff -= day.pause || 0;
+        day.stundenTotal = Math.max(0, round2(diff));
+      }
+    }
+
+    days.push(day);
+  }
+
+  if (!days.length && !name) return null;
+
+  // ── Night hours: "Nacht: X,XX * 25% = Y,YY" ───────────────────────
+  const nachtLabel = items.find(it => /^Nacht:?$/i.test(it.text.trim()));
+  if (nachtLabel && days.length > 0) {
+    // Use tight tolerance (1.0) to avoid picking up items from adjacent rows (e.g. Feiertag)
+    const nachtRow = items.filter(it => Math.abs(it.y - nachtLabel.y) < 1.0);
+    const eqItem = nachtRow.find(it => it.text.trim() === '=' && it.x > nachtLabel.x);
+    if (eqItem) {
+      const afterEq = nachtRow.find(it => it.x > eqItem.x && /^\d+[,.]\d+$/.test(it.text));
+      if (afterEq) {
+        const nightHrs = parseNum(afterEq.text);
+        const workDay = [...days].reverse().find(d => d.stundenTotal > 0);
+        if (workDay) workDay.nacht25 = nightHrs;
+      }
+    }
+  }
+
+  // ── Set/location notes: "Fr: Vorbau Tankstelle" ───────────────────
+  const setFormText = formTexts.find(t => /^(Mo|Di|Mi|Do|Fr|Sa|So):\s/i.test(t));
+  if (setFormText && days.length > 0) {
+    const prefix = setFormText.match(/^(\w{2}):/)?.[1];
+    const setNote = setFormText.replace(/^\w{2}:\s*/, '').trim();
+    const dayMap = { Mo:'Montag',Di:'Dienstag',Mi:'Mittwoch',Do:'Donnerstag',Fr:'Freitag',Sa:'Samstag',So:'Sonntag' };
+    const targetDay = prefix ? dayMap[prefix] : null;
+    const matchDay = targetDay ? days.find(d => d.tag === targetDay) : (days.length === 1 ? days[0] : null);
+    if (matchDay && setNote) {
+      matchDay.anmerkungen = matchDay.anmerkungen ? `${matchDay.anmerkungen} / ${setNote}` : setNote;
+    }
+  }
+
+  // ── Totals ────────────────────────────────────────────────────────
+  const totals = {
+    stundenTotal:   round2(days.reduce((s, d) => s + (d.stundenTotal   || 0), 0)),
+    ueberstunden25: round2(days.reduce((s, d) => s + (d.ueberstunden25 || 0), 0)),
+    ueberstunden50: round2(days.reduce((s, d) => s + (d.ueberstunden50 || 0), 0)),
+    ueberstunden100:round2(days.reduce((s, d) => s + (d.ueberstunden100|| 0), 0)),
+    nacht25:        round2(days.reduce((s, d) => s + (d.nacht25        || 0), 0)),
+    fahrzeit:       round2(days.reduce((s, d) => s + (d.fahrzeit       || 0), 0)),
+  };
+
+  return {
+    id: generateId(),
+    importDate: new Date().toISOString(),
+    filePath: '',
+    name,
+    projekt,
+    projektnummer: '',
+    produktionsfirma,
+    position: '',
+    abteilung: '',
+    pause: 0,
+    days,
+    totals,
+  };
 }
 
 function generateId() {

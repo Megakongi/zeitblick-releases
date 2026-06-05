@@ -701,6 +701,7 @@ export default function TimesheetCreate({ onSave, onSaveBatch, onCancel, editShe
                 <th>Ü 100%</th>
                 <th>Nacht</th>
                 <th>Fahrzeit</th>
+                <th title="Tagesgage für diesen Tag (leer = globale Einstellung)">Gage €</th>
                 <th>Anmerkungen</th>
               </tr>
             </thead>
@@ -800,6 +801,18 @@ export default function TimesheetCreate({ onSave, onSaveBatch, onCancel, editShe
                     />
                   </td>
                   <td>
+                    <input
+                      type="number"
+                      value={day.tagesgage || ''}
+                      onChange={e => updateDay(idx, 'tagesgage', parseFloat(e.target.value) || 0)}
+                      className="table-input num-input"
+                      step="10"
+                      min="0"
+                      placeholder="—"
+                      title="Tagesgage für diesen Tag (leer = globale Einstellung)"
+                    />
+                  </td>
+                  <td>
                     <textarea
                       value={day.anmerkungen || ''}
                       onChange={e => updateDay(idx, 'anmerkungen', e.target.value)}
@@ -821,6 +834,7 @@ export default function TimesheetCreate({ onSave, onSaveBatch, onCancel, editShe
                 <td><strong>{totals.ueberstunden100 || '—'}</strong></td>
                 <td><strong>{totals.nacht25 || '—'}</strong></td>
                 <td><strong>{totals.fahrzeit || '—'}</strong></td>
+                <td></td>
                 <td></td>
               </tr>
             </tfoot>
