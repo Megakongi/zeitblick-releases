@@ -112,6 +112,10 @@ export default function App() {
   const dataLoaded = useRef(false);
   const [n8nOverlay, setN8nOverlay] = useState(null); // { sheets, deviations, unknownNames, files, folder }
   const n8nRunning = useRef(false);
+  const [appVersion, setAppVersion] = useState('');
+  useEffect(() => {
+    window.electronAPI?.getAppVersion?.().then(v => setAppVersion(v)).catch(() => {});
+  }, []);
 
   // Load data on startup
   useEffect(() => {
@@ -1026,6 +1030,7 @@ export default function App() {
         onSearch={() => { setSearchOpen(true); setTimeout(() => searchInputRef.current?.focus(), 50); }}
         theme={settings.theme || 'light'}
         onToggleTheme={() => setSettings(s => ({ ...s, theme: s.theme === 'dark' ? 'light' : 'dark' }))}
+        appVersion={appVersion}
       />
       <Topbar
         currentView={view}

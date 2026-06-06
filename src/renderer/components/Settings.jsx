@@ -265,12 +265,6 @@ export default function Settings({ settings, onSave, timesheets, setTimesheets, 
   const [newPosition, setNewPosition] = useState('');
   const [newPositionGage, setNewPositionGage] = useState('');
 
-  // Project management state
-  const [newProjectName, setNewProjectName] = useState('');
-  const [editingProject, setEditingProject] = useState(null);
-  const [renamingProject, setRenamingProject] = useState(null);
-  const [renameProjectValue, setRenameProjectValue] = useState('');
-
   // Backup state
   const [backups, setBackups] = useState([]);
   const [backupsLoaded, setBackupsLoaded] = useState(false);
@@ -282,50 +276,14 @@ export default function Settings({ settings, onSave, timesheets, setTimesheets, 
   // Auto-Updater
   const { checking, result: updateResult, checkForUpdates } = useUpdateChecker();
 
+  // App-Version
+  const [appVersion, setAppVersion] = useState('');
+  useEffect(() => {
+    window.electronAPI?.getAppVersion?.().then(v => setAppVersion(v)).catch(() => {});
+  }, []);
+
   const positionGagen = settings.positionGagen || {};
   const nameAliases = settings.nameAliases || {};
-  const projects = settings.projects || {};
-
-  // ===== Project Management Handlers =====
-  const handleAddProject = () => {
-    if (!newProjectName.trim()) return;
-    const updatedProjects = { ...projects, [newProjectName.trim()]: { projektnummer: '', produktionsfirma: '', drehStartDatum: '' } };
-    onSave({ ...settings, projects: updatedProjects });
-    setNewProjectName('');
-    setEditingProject(newProjectName.trim());
-  };
-
-  const handleDeleteProject = (name) => {
-    const updatedProjects = { ...projects };
-    delete updatedProjects[name];
-    onSave({ ...settings, projects: updatedProjects });
-    if (editingProject === name) setEditingProject(null);
-  };
-
-  const handleRenameProject = (oldName, newName) => {
-    if (!newName.trim() || newName === oldName || projects[newName]) return;
-    const updatedProjects = { ...projects };
-    updatedProjects[newName.trim()] = updatedProjects[oldName];
-    delete updatedProjects[oldName];
-    onSave({ ...settings, projects: updatedProjects });
-    if (editingProject === oldName) setEditingProject(newName.trim());
-  };
-
-  const handleUpdateProject = (projectName, field, value) => {
-    let normalizedValue = value;
-    // Normalize drehStartDatum: ensure 4-digit year (HTML date inputs may store 2-digit years)
-    if (field === 'drehStartDatum' && value) {
-      const parts = value.split('-');
-      if (parts.length === 3) {
-        let y = parseInt(parts[0]);
-        if (y < 100) y += 2000;
-        normalizedValue = String(y) + '-' + parts[1] + '-' + parts[2];
-      }
-    }
-    const updatedProjects = { ...projects };
-    updatedProjects[projectName] = { ...(updatedProjects[projectName] || {}), [field]: normalizedValue };
-    onSave({ ...settings, projects: updatedProjects });
-  };
 
   // Default positions if none configured yet
   const defaultPositions = ['Oberbeleuchter', 'Best-Boy', 'Beleuchter', 'Lichtassistent'];
@@ -416,7 +374,7 @@ export default function Settings({ settings, onSave, timesheets, setTimesheets, 
     onSave({ ...settings, nameAliases: na });
   };
 
-  const [settingsTab, setSettingsTab] = useState('projekte');
+  const [settingsTab, setSettingsTab] = useState('gagen');
 
   // n8n-Anbindung
   const [n8nFolderInput, setN8nFolderInput] = useState(settings.n8nFolder || '');
@@ -432,7 +390,6 @@ export default function Settings({ settings, onSave, timesheets, setTimesheets, 
   const handleSyncN8n = async () => { setN8nStatus('Synchronisiere…'); try { await (onSyncN8N && onSyncN8N()); setN8nStatus('Synchronisierung gestartet.'); } catch { setN8nStatus('Fehler bei der Synchronisierung.'); } setTimeout(() => setN8nStatus(''), 4000); };
 
   const settingsNavItems = [
-    { id: 'projekte', label: 'Projekte', icon: '🎬' },
     { id: 'gagen', label: 'Gagen', icon: '💶' },
     { id: 'namen', label: 'Namen & Aliases', icon: '👤' },
     { id: 'n8n', label: 'n8n', icon: '🔗' },
@@ -444,7 +401,7 @@ export default function Settings({ settings, onSave, timesheets, setTimesheets, 
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 20 }}>
         <div>
           <div style={{ fontSize: 20, fontWeight: 700, letterSpacing: '-.3px', color: 'var(--ink)' }}>Einstellungen</div>
-          <div style={{ fontSize: 13, color: 'var(--muted)', marginTop: 3 }}>Projekte, Gagen und App-Konfiguration</div>
+          <div style={{ fontSize: 13, color: 'var(--muted)', marginTop: 3 }}>Gagen, Namen und App-Konfiguration</div>
         </div>
       </div>
       <div className="v3-settings-layout">
@@ -504,130 +461,6 @@ export default function Settings({ settings, onSave, timesheets, setTimesheets, 
         <StdWebTestCard team={settings.team || []} />
       </div>
       )}
-      {settingsTab === 'projekte' && (
-      <div className="v3-settings-panel">
-        <div className="v3-settings-panel-title">Projekte verwalten</div>
-        <div className="v3-settings-panel-sub">Erstelle Projekte mit Produktionsname und Firma.</div>
-
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 0 }}>
-          <p className="settings-description" style={{ marginBottom: 16 }}>Beim Erstellen von Stundenzetteln kannst du ein Projekt auswählen, um alle Felder automatisch auszufüllen.</p>
-
-          {Object.keys(projects).length > 0 && (
-            <div className="crew-list">
-              {Object.entries(projects).map(([projectName, project]) => (
-                <div key={projectName} className={`crew-card ${editingProject === projectName ? 'crew-card-editing' : ''}`}>
-                  <div className="crew-card-header">
-                    {renamingProject === projectName ? (
-                      <div className="crew-rename-row">
-                        <input
-                          type="text"
-                          value={renameProjectValue}
-                          onChange={e => setRenameProjectValue(e.target.value)}
-                          className="crew-rename-input"
-                          autoFocus
-                          onKeyDown={e => {
-                            if (e.key === 'Enter') { handleRenameProject(projectName, renameProjectValue); setRenamingProject(null); }
-                            if (e.key === 'Escape') setRenamingProject(null);
-                          }}
-                          onBlur={() => {
-                            if (renameProjectValue.trim() && renameProjectValue !== projectName) {
-                              handleRenameProject(projectName, renameProjectValue);
-                            }
-                            setRenamingProject(null);
-                          }}
-                          placeholder="Neuer Projektname..."
-                        />
-                        <button className="crew-rename-save" onClick={() => { handleRenameProject(projectName, renameProjectValue); setRenamingProject(null); }} title="Speichern">✓</button>
-                      </div>
-                    ) : (
-                      <>
-                        <div className="crew-card-title" onClick={() => setEditingProject(editingProject === projectName ? null : projectName)}>
-                          <span className={`crew-chevron ${editingProject === projectName ? 'open' : ''}`}>›</span>
-                          <span className="crew-name">{projectName}</span>
-                          <span className="crew-member-count">{project.produktionsfirma || 'Keine Firma'}</span>
-                        </div>
-                        <div className="crew-header-actions">
-                          <button className="crew-action-btn" onClick={(e) => { e.stopPropagation(); setRenamingProject(projectName); setRenameProjectValue(projectName); }} title="Projekt umbenennen">✏️</button>
-                          <button className="crew-action-btn crew-action-delete" onClick={() => handleDeleteProject(projectName)} title="Projekt löschen">🗑</button>
-                        </div>
-                      </>
-                    )}
-                  </div>
-
-                  {editingProject === projectName && (
-                    <div className="crew-card-body">
-                      <div className="project-fields-grid">
-                        <div className="project-field">
-                          <label>Projektnummer</label>
-                          <input
-                            type="text"
-                            value={project.projektnummer || ''}
-                            onChange={e => handleUpdateProject(projectName, 'projektnummer', e.target.value)}
-                            placeholder="z.B. 12345"
-                          />
-                        </div>
-                        <div className="project-field">
-                          <label>Produktionsfirma</label>
-                          <input
-                            type="text"
-                            value={project.produktionsfirma || ''}
-                            onChange={e => handleUpdateProject(projectName, 'produktionsfirma', e.target.value)}
-                            placeholder="z.B. Bavaria Film"
-                            list="suggest-firmen-project"
-                          />
-                        </div>
-                        <div className="project-field">
-                          <label>Erster Drehtag</label>
-                          <input
-                            type="date"
-                            value={project.drehStartDatum || ''}
-                            onChange={e => handleUpdateProject(projectName, 'drehStartDatum', e.target.value)}
-                          />
-                          <span className="project-field-hint">Für automatische Drehtag-Berechnung</span>
-                        </div>
-                      </div>
-                      <div className="project-zeitkonto-row">
-                        <label className="project-zeitkonto-label">
-                          <span>Zeitkonto</span>
-                          <span className="project-zeitkonto-desc">Überstunden ins Zeitkonto statt Auszahlung</span>
-                        </label>
-                        <div
-                          className={`toggle-switch ${project.zeitkonto ? 'on' : ''}`}
-                          onClick={() => handleUpdateProject(projectName, 'zeitkonto', !project.zeitkonto)}
-                          role="switch"
-                          aria-checked={!!project.zeitkonto}
-                          aria-label="Zeitkonto aktivieren"
-                          style={{ cursor: 'pointer' }}
-                        >
-                          <div className="toggle-knob" />
-                        </div>
-                      </div>
-                    </div>
-                  )}
-                </div>
-              ))}
-            </div>
-          )}
-
-          <div className="crew-add-row">
-            <input
-              type="text"
-              value={newProjectName}
-              onChange={e => setNewProjectName(e.target.value)}
-              className="crew-name-input"
-              placeholder="Neues Projekt erstellen..."
-              onKeyDown={e => e.key === 'Enter' && handleAddProject()}
-            />
-            <button className="spesen-add-btn" onClick={handleAddProject} title="Projekt erstellen">+</button>
-          </div>
-
-          <datalist id="suggest-firmen-project">
-            {[...new Set(timesheets.map(ts => ts.produktionsfirma).filter(Boolean))].map(f => <option key={f} value={f} />)}
-          </datalist>
-        </div>
-      </div>
-      )}
-
       {settingsTab === 'gagen' && (
       <div className="v3-settings-panel">
         <div className="v3-settings-panel-title">Gagen nach Position</div>
@@ -890,6 +723,11 @@ export default function Settings({ settings, onSave, timesheets, setTimesheets, 
 
         <div className="settings-card">
           <h3>🔄 Updates</h3>
+          {appVersion && (
+            <p style={{ fontSize: 12, color: 'var(--muted)', marginBottom: 8, marginTop: -4 }}>
+              Installierte Version: <strong style={{ color: 'var(--text)', fontVariantNumeric: 'tabular-nums' }}>v{appVersion}</strong>
+            </p>
+          )}
           <p className="settings-description">ZeitBlick prüft automatisch auf neue Versionen. Du kannst auch manuell nach Updates suchen.</p>
           <div className="update-check-section">
             <button className="backup-btn" onClick={checkForUpdates} disabled={checking}>

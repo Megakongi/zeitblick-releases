@@ -149,20 +149,35 @@ export default function OnboardingTour({ onComplete, onEnableN8N }) {
     }
 
     const tooltipWidth = 340;
-    const tooltipHeight = 220;
+    const tooltipHeight = 240;
     const gap = 16;
+    const margin = 16;
 
-    let top = targetRect.originalTop + targetRect.originalHeight / 2 - tooltipHeight / 2;
-    let left = targetRect.left + targetRect.width + gap;
+    const { originalTop, originalLeft, originalWidth, originalHeight } = targetRect;
+    let top, left;
 
-    // Keep within viewport
-    if (top < 20) top = 20;
-    if (top + tooltipHeight > window.innerHeight - 20) {
-      top = window.innerHeight - tooltipHeight - 20;
+    if (step.position === 'bottom') {
+      top = originalTop + originalHeight + gap;
+      left = originalLeft + originalWidth / 2 - tooltipWidth / 2;
+
+      // If it would go off the bottom, place above
+      if (top + tooltipHeight > window.innerHeight - margin) {
+        top = originalTop - tooltipHeight - gap;
+      }
+    } else {
+      // 'right': prefer right side, fall back to left
+      top = originalTop + originalHeight / 2 - tooltipHeight / 2;
+      left = originalLeft + originalWidth + gap;
+
+      if (left + tooltipWidth > window.innerWidth - margin) {
+        left = originalLeft - tooltipWidth - gap;
+      }
     }
-    if (left + tooltipWidth > window.innerWidth - 20) {
-      left = targetRect.left - tooltipWidth - gap;
-    }
+
+    // Clamp vertically
+    top = Math.max(margin, Math.min(top, window.innerHeight - tooltipHeight - margin));
+    // Clamp horizontally — never let the tooltip go off either edge
+    left = Math.max(margin, Math.min(left, window.innerWidth - tooltipWidth - margin));
 
     return {
       position: 'fixed',

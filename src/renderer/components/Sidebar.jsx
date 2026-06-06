@@ -123,6 +123,7 @@ export default function Sidebar({
   theme = 'light',
   onToggleTheme,
   userInitials = 'TP',
+  appVersion = '',
 }) {
   const isDark = theme === 'dark';
 
@@ -198,7 +199,7 @@ export default function Sidebar({
 
       <div className="app-sidebar-spacer" />
 
-      {/* Bottom: avatar + theme toggle */}
+      {/* Bottom: settings + theme toggle + version */}
       <div className="app-sidebar-bottom">
         <button
           className={`app-sidebar-theme-btn${currentView === 'settings' ? ' active' : ''}`}
@@ -216,6 +217,12 @@ export default function Sidebar({
         >
           {isDark ? <IconSun /> : <IconMoon />}
         </button>
+        {appVersion && (
+          <span style={{ fontSize: 10, color: 'var(--hint)', marginLeft: 'auto', letterSpacing: '0.03em', userSelect: 'none' }}
+            title={`ZeitBlick v${appVersion}`}>
+            v{appVersion}
+          </span>
+        )}
       </div>
     </aside>
   );
