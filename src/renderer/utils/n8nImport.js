@@ -48,6 +48,30 @@ function weekday(dateStr) { const d = parseDMY(dateStr); return d ? DAY_NAMES[d.
 function toMin(t) { const m = (t || '').match(/^(\d{1,2}):(\d{2})$/); return m ? (+m[1]) * 60 + (+m[2]) : null; }
 function fromMin(min) { if (min == null) return ''; const m = ((min % 1440) + 1440) % 1440; return `${pad(Math.floor(m / 60))}:${pad(m % 60)}`; }
 
+function getMondayOf(date) {
+  const d = new Date(date);
+  const day = d.getDay();
+  d.setDate(d.getDate() - (day === 0 ? 6 : day - 1));
+  return d;
+}
+
+// Füllt die Tage-Map auf volle Kalenderwochen auf (Mo–So).
+export function expandToFullWeeks(dayMap) {
+  const dates = Object.keys(dayMap).map(d => parseDMY(d)).filter(Boolean);
+  if (dates.length === 0) return [];
+  const minD = new Date(Math.min(...dates.map(d => d.getTime())));
+  const maxD = new Date(Math.max(...dates.map(d => d.getTime())));
+  const start = getMondayOf(minD);
+  const end = getMondayOf(maxD);
+  end.setDate(end.getDate() + 6); // Sonntag
+  const result = [];
+  for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
+    const datum = fmtDMY(d);
+    result.push(dayMap[datum] || emptyDay(datum));
+  }
+  return result;
+}
+
 export function expandZeitraeume(zeitraeume, year) {
   const out = [];
   for (const z of (zeitraeume || [])) {
@@ -107,8 +131,9 @@ function initialsMatch(name, ini) {
  *   unknownNames, newProjects, errors
  * }
  */
-export function processN8N(entries, { resolveName, projectCrews = {}, team = [], projects = {}, calendarEntries = {} } = {}) {
+export function processN8N(entries, { resolveName, projectCrews = {}, team = [], projects = {}, calendarEntries = {}, projectStaffing = {} } = {}) {
   const resolve = resolveName || ((n) => n);
+  const me = (team || []).find(m => m.isMe) || null;
   const teamNames = new Set((team || []).map(m => (m.name || '').toLowerCase()));
   const isKnown = (name) => teamNames.has((name || '').toLowerCase()) || teamNames.has(resolve(name || '').toLowerCase());
   const posOf = (name) => {
@@ -194,11 +219,16 @@ export function processN8N(entries, { resolveName, projectCrews = {}, team = [],
       if (!hasTimes) continue; // nur Tage mit Zeiten erzeugen Zettel
       const pause = typeof teamTime.pause === 'number' ? teamTime.pause : 0.75;
 
-      // Anwesende: Stammcrew + alle Kalender-Personen (Zusatz/Vertretung) an dem Tag
+      // Anwesende: Stammcrew + alle Kalender-Personen (Zusatz/Vertretung) + ich selbst an dem Tag
       const present = new Map(); // name → { kind }
       for (const n of crewNames) present.set(n, { kind: 'crew' });
       for (const e of (presence[presKey(projekt, iso)] ? presence[presKey(projekt, iso)].values() : [])) {
         present.set(e.name, { kind: e.kind, position: e.position });
+      }
+      if (me && me.name && !present.has(me.name)) {
+        const staffEntry = (projectStaffing[projekt] || []).find(m => (m.name || '').toLowerCase() === me.name.toLowerCase());
+        const mePos = (staffEntry && staffEntry.position) || me.position || '';
+        present.set(me.name, { kind: 'crew', position: mePos });
       }
 
       for (const [name, info] of present) {
@@ -230,7 +260,7 @@ export function processN8N(entries, { resolveName, projectCrews = {}, team = [],
     }
 
     for (const [name, info] of Object.entries(personDays)) {
-      const days = Object.values(info.days).sort((a, b) => (parseDMY(a.datum) - parseDMY(b.datum)));
+      const days = expandToFullWeeks(info.days);
       if (days.length === 0) continue;
       sheets.push(makeSheet({ projekt, name, position: info.position }, days));
     }

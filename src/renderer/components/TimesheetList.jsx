@@ -509,10 +509,11 @@ export default function TimesheetList({ timesheets, onViewDetail, onDelete, onBu
     byPerson[person].push(sheet);
   }
 
-  // Sort within groups if sorting by date
+  // Sort within groups if sorting by date — respect sortDir (default: desc = newest first)
   if (sortBy === 'date') {
+    const dir = sortDir === 'asc' ? 1 : -1;
     for (const person of Object.keys(byPerson)) {
-      byPerson[person].sort((a, b) => getFirstDate(a) - getFirstDate(b));
+      byPerson[person].sort((a, b) => dir * (getFirstDate(a) - getFirstDate(b)));
     }
   }
 

@@ -128,14 +128,13 @@ export default function Sidebar({
 
   const navItems = [
     { id: 'dashboard',     label: 'Übersicht',       icon: <IconHome />,        badge: 0 },
-    { id: 'timesheets',    label: 'Stundenzettel',    icon: <IconSheets />,      badge: timesheetCount },
+    { id: 'timesheets',    label: 'Stundenzettel',    icon: <IconSheets />,      badge: 0 },
+    { id: 'team',          label: 'Team & Projekte',  icon: <IconTeam />,        badge: 0 },
     { id: 'dispos',        label: 'Dispos',           icon: <IconDispo />,       badge: 0 },
     { id: 'abrechnungen',  label: 'Abrechnungen',     icon: <IconAbrechnung />,  badge: 0 },
     { id: 'sesam',         label: 'Sesam Abgleich',   icon: <IconSesam />,       badge: sesamCount },
   ];
-  const masterItems = [
-    { id: 'team',     label: 'Team & Projekte', icon: <IconTeam /> },
-  ];
+  const masterItems = [];
 
   return (
     <aside className="app-sidebar" role="navigation" aria-label="Hauptnavigation">

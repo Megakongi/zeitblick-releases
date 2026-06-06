@@ -16,7 +16,7 @@ import ImportOverlay from './components/ImportOverlay';
 import OnboardingTour from './components/OnboardingTour';
 import UpdateOverlay from './components/UpdateOverlay';
 import N8NImportOverlay from './components/N8NImportOverlay';
-import { processN8N, applyDeviation, applySubstitution } from './utils/n8nImport';
+import { processN8N, applyDeviation, applySubstitution, expandToFullWeeks } from './utils/n8nImport';
 import { calculateTVFFS } from './utils/tvffsCalculator';
 import { getTimesheetKW } from './utils/calendarWeek';
 import { FilterContext, SettingsContext } from './contexts';
@@ -148,6 +148,62 @@ export default function App() {
                 ueberstunden100: Math.round(s.days.reduce((sum, d) => sum + (Number(d.ueberstunden100) || 0), 0) * 100) / 100,
                 nacht25: Math.round(s.days.reduce((sum, d) => sum + (Number(d.nacht25) || 0), 0) * 100) / 100,
                 fahrzeit: Math.round(s.days.reduce((sum, d) => sum + (Number(d.fahrzeit) || 0), 0) * 100) / 100,
+              };
+              changed = true;
+            }
+          }
+
+          // Korrigiere Tag-Namen (tag) anhand des tatsächlichen datum
+          const weekTagNames = ['Sonntag','Montag','Dienstag','Mittwoch','Donnerstag','Freitag','Samstag'];
+          const parseDMYLocal = (str) => { const p = (str||'').split('.'); return p.length===3 ? new Date(+p[2],+p[1]-1,+p[0]) : null; };
+          if (s.days) {
+            const fixed = s.days.map(d => {
+              if (!d.datum) return d;
+              const dt = parseDMYLocal(d.datum);
+              if (!dt || isNaN(dt.getTime())) return d;
+              const correctTag = weekTagNames[dt.getDay()];
+              return (d.tag !== correctTag) ? { ...d, tag: correctTag } : d;
+            });
+            if (fixed.some((d, i) => d !== s.days[i])) { s.days = fixed; changed = true; }
+          }
+
+          // Expand Zettel mit weniger als 7 Tagen auf volle Kalenderwochen (Mo–So)
+          // TimesheetCreate erstellt immer exakt 7 Tage – Zettel mit <7 Tagen stammen aus Importen
+          if (s.days && s.days.length > 0 && s.days.length < 7) {
+            // Zeiten vom falschen Tag auf den Tag laut tag-Name verschieben
+            // (z.B. Eintrag datum=01.06 tag=Freitag → Zeiten gehören auf den Freitag der Woche)
+            const fixedDays = s.days.map(d => {
+              if (!d.start || !d.ende || !d.datum) return d;
+              const dt = parseDMYLocal(d.datum);
+              if (!dt || isNaN(dt.getTime())) return d;
+              const actualDow = dt.getDay(); // 0=So..6=Sa
+              // Montag der Woche berechnen
+              const mon = new Date(dt);
+              mon.setDate(dt.getDate() - (actualDow === 0 ? 6 : actualDow - 1));
+              // Ziel-Wochentag aus tag-Name ermitteln (vor der tag-Korrektur oben noch original)
+              const targetDow = weekTagNames.indexOf(d.tag);
+              if (targetDow > 0 && targetDow !== actualDow) {
+                // Zeiten auf das Datum mit dem richtigen Wochentag verschieben
+                const targetDate = new Date(mon);
+                targetDate.setDate(mon.getDate() + (targetDow === 0 ? 6 : targetDow - 1));
+                const pad2 = n => String(n).padStart(2,'0');
+                const newDatum = `${pad2(targetDate.getDate())}.${pad2(targetDate.getMonth()+1)}.${targetDate.getFullYear()}`;
+                return { ...d, datum: newDatum, tag: weekTagNames[targetDow] };
+              }
+              return d;
+            });
+            const dayMap = {};
+            for (const d of fixedDays) if (d.datum) dayMap[d.datum] = d;
+            const expanded = expandToFullWeeks(dayMap);
+            if (expanded.length >= s.days.length) {
+              s.days = expanded;
+              s.totals = {
+                stundenTotal: Math.round(expanded.reduce((sum, d) => sum + (Number(d.stundenTotal) || 0), 0) * 100) / 100,
+                ueberstunden25: Math.round(expanded.reduce((sum, d) => sum + (Number(d.ueberstunden25) || 0), 0) * 100) / 100,
+                ueberstunden50: Math.round(expanded.reduce((sum, d) => sum + (Number(d.ueberstunden50) || 0), 0) * 100) / 100,
+                ueberstunden100: Math.round(expanded.reduce((sum, d) => sum + (Number(d.ueberstunden100) || 0), 0) * 100) / 100,
+                nacht25: Math.round(expanded.reduce((sum, d) => sum + (Number(d.nacht25) || 0), 0) * 100) / 100,
+                fahrzeit: Math.round(expanded.reduce((sum, d) => sum + (Number(d.fahrzeit) || 0), 0) * 100) / 100,
               };
               changed = true;
             }
@@ -551,6 +607,7 @@ export default function App() {
         team: settings.team || [],
         projects: settings.projects || {},
         calendarEntries: settings.calendarEntries || {},
+        projectStaffing: settings.projectStaffing || {},
       });
       const files = res.entries.map(e => e.file);
       const needsOverlay = sheets.length > 0 || deviations.length > 0 || substitutions.length > 0 || unknownNames.length > 0 || newProjects.length > 0;
@@ -848,7 +905,7 @@ export default function App() {
 
   const handleProjectFilter = useCallback((proj) => {
     setProjectFilter(proj);
-    setPersonFilter('all');
+    if (proj === 'all') setPersonFilter('all');
   }, []);
 
   const renderView = () => {
@@ -885,12 +942,14 @@ export default function App() {
           dispos={settings.dispos || []}
           onChange={(dispos) => setSettings(s => ({ ...s, dispos }))}
           projects={settings.projects || {}}
+          completedProjects={settings.completedProjects || {}}
           n8nFolder={settings.n8nFolder || ''}
           homeAddress={homeAddress}
           kmRate={settings.kmRate ?? 0.30}
           kmRoundTrip={settings.kmRoundTrip === true}
           onKmSettingsChange={(patch) => setSettings(s => ({ ...s, ...patch }))}
           onGoToSettings={() => setView('settings')}
+          timesheets={timesheets}
         /></SectionErrorBoundary>;
       case 'detail':
         return selectedSheet ? <SectionErrorBoundary label="Stundenzettel-Detail"><TimesheetDetail sheet={selectedSheet} settings={getPersonSettings(selectedSheet.name, getBaseProject(selectedSheet.projekt))} onBack={() => setView(prevView.current || 'timesheets')} onEdit={handleEditSheet} allTimesheets={timesheets} onSelectSheet={(s) => { setSelectedSheet(s); }} team={settings.team || []} resolveName={resolveName} stdwebProductions={settings.stdwebProduktionen || {}} onSetStdwebProduction={(proj, prod) => setSettings(s => ({ ...s, stdwebProduktionen: { ...(s.stdwebProduktionen || {}), [proj]: prod } }))} /></SectionErrorBoundary> : null;

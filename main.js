@@ -149,6 +149,34 @@ function createWindow() {
 
   // In dev, load from Vite dev server
   const isDev = !app.isPackaged;
+
+  // Set Content-Security-Policy for the main window session
+  const scriptSrc = isDev
+    ? "'self' 'unsafe-eval' 'unsafe-inline'"  // Vite HMR + react-refresh require eval/inline in dev
+    : "'self'";
+  const connectSrc = isDev
+    ? "'self' ws://localhost:5173 http://localhost:5173"
+    : "'self'";
+  const csp = [
+    `default-src 'self'`,
+    `script-src ${scriptSrc}`,
+    `style-src 'self' 'unsafe-inline' https://fonts.googleapis.com`,
+    `font-src 'self' https://fonts.gstatic.com`,
+    `img-src 'self' data: file:`,
+    `connect-src ${connectSrc}`,
+    `object-src 'none'`,
+    `base-uri 'self'`,
+  ].join('; ');
+
+  mainWindow.webContents.session.webRequest.onHeadersReceived((details, callback) => {
+    callback({
+      responseHeaders: {
+        ...details.responseHeaders,
+        'Content-Security-Policy': [csp],
+      },
+    });
+  });
+
   if (isDev) {
     mainWindow.loadURL('http://localhost:5173');
     mainWindow.webContents.openDevTools({ mode: 'detach' });
@@ -422,14 +450,24 @@ ipcMain.handle('import-billing-pdf', async (event, filePaths, passwordMap, patte
       }
     }
 
-    // If encrypted and no password found at all, ask the renderer
-    if (encrypted && !password) {
-      results.push({ success: false, encrypted: true, filePath, filename });
-      continue;
-    }
-
     try {
-      const data = await parseBillingPDF(filePath, password || null);
+      // Always attempt to parse — even encrypted PDFs may have an empty user password
+      // (owner-only encryption for print/copy protection) and succeed without any password.
+      // If a stored password is available, try it first; on failure retry without password.
+      // Only if both fail do we surface the password dialog to the user.
+      let data;
+      let usedPassword = !!password;
+      try {
+        data = await parseBillingPDF(filePath, password || null);
+      } catch (innerErr) {
+        if (innerErr.code === 'ENCRYPTED' && password) {
+          // Stored password wrong — try with no password (handles owner-only encrypted PDFs)
+          data = await parseBillingPDF(filePath, null);
+          usedPassword = false;
+        } else {
+          throw innerErr;
+        }
+      }
 
       // Copy PDF into iCloud ZeitBlick/Abrechnungen/<year>/
       let savedPath = null;
@@ -439,8 +477,9 @@ ipcMain.handle('import-billing-pdf', async (event, filePaths, passwordMap, patte
           'Library', 'Mobile Documents', 'com~apple~CloudDocs', 'ZeitBlick', 'Abrechnungen'
         );
         // Determine year from parsed data or filename
+        const firstEntry = (data.entries && data.entries[0]) || data;
         const year = (() => {
-          const d = data.datum || data.zeitraumBis || data.zeitraumVon || '';
+          const d = firstEntry.datum || firstEntry.zeitraumBis || firstEntry.zeitraumVon || '';
           const m = d.match(/(\d{4})$/);
           return m ? m[1] : String(new Date().getFullYear());
         })();
@@ -461,7 +500,11 @@ ipcMain.handle('import-billing-pdf', async (event, filePaths, passwordMap, patte
         savedPath = dest;
       } catch (_) { /* iCloud not available or no write permission — silently skip */ }
 
-      results.push({ success: true, filePath, filename, data, usedPassword: !!password, savedPath });
+      // Push one result per billing entry (multi-page PDFs may contain several)
+      const entries = data.entries || [data];
+      for (let ei = 0; ei < entries.length; ei++) {
+        results.push({ success: true, filePath, filename, data: entries[ei], usedPassword, savedPath: ei === 0 ? savedPath : null });
+      }
     } catch (err) {
       if (err.code === 'ENCRYPTED') {
         results.push({ success: false, encrypted: true, filePath, filename, wrongPassword: !!password });
@@ -1245,6 +1288,62 @@ ipcMain.handle('export-pdfs-to-folder', async (event, htmlContentArray) => {
 
 // ===== n8n Integration =====
 
+/**
+ * Parst eine einfache Klartext-Zeitdatei.
+ * Format pro Zeile: DD.MM[.YYYY] HH:MM-HH:MM [Pause]
+ * Beispiel: "05.06 8:00-18:45" oder "05.06.2026 8:00-18:45 0.5"
+ * Projekt wird aus dem Dateinamen gelesen: "Zeiten <Projekt>.txt" → "<Projekt>"
+ */
+function parsePlainTextZeiten(raw, filename) {
+  const year = new Date().getFullYear();
+  const base = path.basename(filename, path.extname(filename));
+  const zeitenMatch = base.match(/^Zeiten\s+(.+)$/i);
+  const projekt = zeitenMatch ? zeitenMatch[1].trim() : base.trim();
+  const pad = n => String(n).padStart(2, '0');
+  const normTime = t => { const [h, mi] = t.split(':'); return `${pad(+h)}:${mi}`; };
+  const tage = [];
+  for (const line of raw.split('\n')) {
+    const l = line.trim();
+    if (!l || l.startsWith('#')) continue;
+    const m = l.match(/^(\d{1,2})\.(\d{1,2})(?:\.(\d{2,4}))?\s+(\d{1,2}:\d{2})-(\d{1,2}:\d{2})(?:\s+([\d.,]+))?/);
+    if (!m) continue;
+    const [, d, mo, yr, start, ende, pauseStr] = m;
+    const y = yr ? (yr.length === 2 ? '20' + yr : yr) : String(year);
+    const datum = `${pad(+d)}.${pad(+mo)}.${y}`;
+    const pause = pauseStr ? parseFloat(pauseStr.replace(',', '.')) : 0.75;
+    tage.push({ datum, team: { start: normTime(start), ende: normTime(ende), pause } });
+  }
+  if (tage.length === 0) return null;
+  return { typ: 'zeiten', projekt, tage };
+}
+
+function parsePlainTextZusatzVertretung(raw, filename) {
+  // Erkennt Dateien wie "<Projekt>_Zusatzpersonal.txt" oder "<Projekt>_Vertretung.txt"
+  const base = path.basename(filename, path.extname(filename)).trim();
+  const zusatzMatch = base.match(/^(.+?)_Zusatzpersonal\s*$/i);
+  const vertretungMatch = base.match(/^(.+?)_Vertretung\s*$/i);
+  if (!zusatzMatch && !vertretungMatch) return null;
+  const typ = zusatzMatch ? 'zusatzpersonal' : 'vertretung';
+  const projekt = (zusatzMatch || vertretungMatch)[1].trim();
+  const personen = [];
+  for (const line of raw.split('\n')) {
+    const l = line.trim();
+    if (!l || l.startsWith('#')) continue;
+    const parts = l.split(';').map(p => p.trim());
+    if (parts.length < 2) continue;
+    const name = parts[0];
+    if (!name) continue;
+    // Letzter Teil immer Datumsangaben, optionaler mittlerer Teil = Position
+    const datesRaw = parts[parts.length - 1];
+    const position = parts.length >= 3 ? parts[1] : '';
+    const zeitraeume = datesRaw.split(/,\s*/).map(d => d.trim()).filter(Boolean);
+    if (zeitraeume.length === 0) continue;
+    personen.push({ name, position, zeitraeume });
+  }
+  if (personen.length === 0) return null;
+  return { typ, projekt, personen };
+}
+
 function getDefaultN8NFolder() {
   return path.join(app.getPath('home'), 'Library', 'Mobile Documents', 'com~apple~CloudDocs', 'ZeitBlick');
 }
@@ -1277,6 +1376,36 @@ ipcMain.handle('get-default-n8n-folder', () => getDefaultN8NFolder());
 
 ipcMain.handle('n8n-watch', (event, folder) => startN8NWatch(folder));
 
+// ===== Dispos-Ordner-Watcher =====
+let dispoWatcher = null;
+let dispoWatchDebounce = null;
+
+function startDispoWatch(folder) {
+  try {
+    if (dispoWatcher) { try { dispoWatcher.close(); } catch (_) {} dispoWatcher = null; }
+    const base = folder || getDefaultN8NFolder();
+    const dir = (() => {
+      const sub = path.join(base, 'Dispos');
+      try { if (fs.existsSync(sub) && fs.statSync(sub).isDirectory()) return sub; } catch (_) {}
+      return base;
+    })();
+    if (!dir || !fs.existsSync(dir)) return { success: false, error: 'Ordner nicht gefunden' };
+    dispoWatcher = fs.watch(dir, { persistent: false, recursive: true }, (eventType, filename) => {
+      if (filename && !filename.toLowerCase().endsWith('.pdf')) return;
+      if (dispoWatchDebounce) clearTimeout(dispoWatchDebounce);
+      dispoWatchDebounce = setTimeout(() => {
+        sendUpdateStatus('dispo-files-changed', { folder });
+      }, 1500);
+    });
+    return { success: true };
+  } catch (e) {
+    console.error('[dispo] watch failed:', e.message);
+    return { success: false, error: e.message };
+  }
+}
+
+ipcMain.handle('dispo-watch', (event, folder) => startDispoWatch(folder));
+
 ipcMain.handle('n8n-scan', async (event, folder) => {
   try {
     const dir = folder || getDefaultN8NFolder();
@@ -1287,7 +1416,14 @@ ipcMain.handle('n8n-scan', async (event, folder) => {
     for (const file of files) {
       try {
         const raw = fs.readFileSync(path.join(dir, file), 'utf-8');
-        entries.push({ file, data: JSON.parse(raw) });
+        let data;
+        try {
+          data = JSON.parse(raw);
+        } catch (_) {
+          data = parsePlainTextZeiten(raw, file) || parsePlainTextZusatzVertretung(raw, file);
+        }
+        if (data) entries.push({ file, data });
+        else errors.push({ file, error: 'Kein erkanntes Format (weder JSON noch Zeiten/Zusatz-Plaintext)' });
       } catch (e) {
         errors.push({ file, error: e.message });
       }
@@ -1401,19 +1537,33 @@ ipcMain.handle('dispo-organize', async (event, folder, filename, year, project) 
   }
 });
 
-// Listet alle PDF-Dateien im Dispo-Quellordner (für die Dispo-Erkennung).
+// Listet alle PDF-Dateien im Dispo-Quellordner rekursiv (max 3 Ebenen tief).
+// Gibt relative Pfade zurück (z.B. "Call sheet/dispo.pdf") damit Unterordner
+// wie "Call sheet", "Dispos", "Callsheets" etc. automatisch erkannt werden.
 ipcMain.handle('dispo-scan', async (event, folder) => {
   try {
     const dir = resolveDispoSourceDir(folder);
     if (!dir || !fs.existsSync(dir)) return { success: false, error: 'Ordner nicht gefunden', files: [] };
-    const files = fs.readdirSync(dir)
-      .filter(f => f.toLowerCase().endsWith('.pdf'))
-      .map(f => {
-        const full = path.join(dir, f);
-        let mtime = 0, size = 0;
-        try { const st = fs.statSync(full); mtime = st.mtimeMs; size = st.size; } catch (_) {}
-        return { file: f, mtime, size };
-      });
+
+    function collectPDFs(root, rel, depth) {
+      const results = [];
+      let entries;
+      try { entries = fs.readdirSync(root, { withFileTypes: true }); } catch (_) { return results; }
+      for (const e of entries) {
+        const relPath = rel ? `${rel}/${e.name}` : e.name;
+        if (e.isFile() && e.name.toLowerCase().endsWith('.pdf')) {
+          const full = path.join(root, e.name);
+          let mtime = 0, size = 0;
+          try { const st = fs.statSync(full); mtime = st.mtimeMs; size = st.size; } catch (_) {}
+          results.push({ file: relPath, mtime, size });
+        } else if (e.isDirectory() && depth > 0) {
+          results.push(...collectPDFs(path.join(root, e.name), relPath, depth - 1));
+        }
+      }
+      return results;
+    }
+
+    const files = collectPDFs(dir, '', 3);
     return { success: true, files };
   } catch (e) {
     return { success: false, error: e.message, files: [] };
@@ -1705,22 +1855,3 @@ ipcMain.handle('dispo-delete', async (event, storedName) => {
   }
 });
 
-ipcMain.handle('export-xlsx', async (event, data, defaultName) => {
-  const result = await dialog.showSaveDialog(mainWindow, {
-    defaultPath: defaultName || 'ZeitBlick-Export.xlsx',
-    filters: [{ name: 'Excel Dateien', extensions: ['xlsx'] }],
-  });
-  if (result.canceled) return { success: false, canceled: true };
-  try {
-    const XLSX = require('xlsx');
-    const wb = XLSX.utils.book_new();
-    for (const sheet of data.sheets) {
-      const ws = XLSX.utils.aoa_to_sheet(sheet.data);
-      XLSX.utils.book_append_sheet(wb, ws, sheet.name.substring(0, 31));
-    }
-    XLSX.writeFile(wb, result.filePath);
-    return { success: true, filePath: result.filePath };
-  } catch (error) {
-    return { success: false, error: error.message };
-  }
-});

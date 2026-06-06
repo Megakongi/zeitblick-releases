@@ -19,8 +19,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
   importDataFile: () => ipcRenderer.invoke('import-data'),
   // Batch PDF export
   exportPDFsToFolder: (htmlContentArray) => ipcRenderer.invoke('export-pdfs-to-folder', htmlContentArray),
-  // Excel export
-  exportXLSX: (data, defaultName) => ipcRenderer.invoke('export-xlsx', data, defaultName),
   // n8n integration
   getDefaultN8NFolder: () => ipcRenderer.invoke('get-default-n8n-folder'),
   scanN8N: (folder) => ipcRenderer.invoke('n8n-scan', folder),
@@ -52,6 +50,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
     const handler = (_event, data) => callback(data);
     ipcRenderer.on('n8n-files-changed', handler);
     return () => ipcRenderer.removeListener('n8n-files-changed', handler);
+  },
+  watchDispos: (folder) => ipcRenderer.invoke('dispo-watch', folder),
+  onDispoFilesChanged: (callback) => {
+    const handler = (_event, data) => callback(data);
+    ipcRenderer.on('dispo-files-changed', handler);
+    return () => ipcRenderer.removeListener('dispo-files-changed', handler);
   },
   // Billing PDF import + password management
   openBillingDialog: () => ipcRenderer.invoke('open-billing-dialog'),

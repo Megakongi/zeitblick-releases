@@ -12,6 +12,54 @@ function buildN8NWorkflowJson(folderPath) {
 }
 
 /**
+ * Entfernt Duplikate aus der Dispo-Liste.
+ * Kriterien (in Priorität):
+ *   1. Gleicher Dateiname (Basename) → selbe Datei, verschiedene Pfade
+ *   2. Gleiches Datum + Projekt (beide nicht leer) → selbe Dispo, zweimal importiert
+ * Bei Kollision wird der Eintrag mit mehr Nutzerdaten behalten
+ * (motivAdresse gesetzt → höherwertig, sonst früherer Import).
+ * Gibt { deduped: Array, removed: number } zurück.
+ */
+function dedupDispos(list) {
+  const score = (d) => (d.motivAdresse ? 2 : 0) + (d.motivAdressen?.length ? 1 : 0);
+  const better = (a, b) => score(a) > score(b) || (score(a) === score(b) && (a.importedAt || 0) <= (b.importedAt || 0));
+
+  // Index: id → eintrag (zum Auffinden des Gewinners)
+  const byBase  = new Map(); // basename.toLowerCase() → eintrag
+  const byDateP = new Map(); // "datumISO|projekt"     → eintrag
+  const keep    = new Set();
+
+  for (const d of list) {
+    const base  = (d.originalName || '').split('/').pop().replace(/\.pdf$/i, '').trim().toLowerCase();
+    const dKey  = d.datumISO && d.datumISO !== 'null' ? d.datumISO : null;
+    const pKey  = (d.projekt || '').trim().toLowerCase();
+    const dpKey = dKey && pKey ? `${dKey}|${pKey}` : null;
+
+    let dupOf = null;
+    if (base  && byBase.has(base))   dupOf = byBase.get(base);
+    if (!dupOf && dpKey && byDateP.has(dpKey)) dupOf = byDateP.get(dpKey);
+
+    if (dupOf) {
+      if (better(d, dupOf)) {
+        // neuer Eintrag ist besser → ersetze den alten Gewinner
+        keep.delete(dupOf.id);
+        keep.add(d.id);
+        if (base)  byBase.set(base, d);
+        if (dpKey) byDateP.set(dpKey, d);
+      }
+      // andernfalls bleibt der alte Gewinner und d wird verworfen
+    } else {
+      keep.add(d.id);
+      if (base)  byBase.set(base, d);
+      if (dpKey) byDateP.set(dpKey, d);
+    }
+  }
+
+  const deduped = list.filter(d => keep.has(d.id));
+  return { deduped, removed: list.length - deduped.length };
+}
+
+/**
  * Einrichtungshilfe für die n8n-Anbindung, direkt im Dispos-Tab.
  * Wird angezeigt, wenn noch keine Dispos vorhanden sind und kein Ordner
  * konfiguriert ist. Zeigt 5 Schritte mit Kopier-Buttons.
@@ -137,7 +185,7 @@ function N8NDispoGuide({ n8nFolder, onGoToSettings }) {
  *  projects        – settings.projects (für Projekt-Zuordnung + Erraten)
  *  n8nFolder       – aktueller n8n-Ordnerpfad
  */
-export default function Dispos({ dispos = [], onChange, projects = {}, n8nFolder = '', homeAddress = '', kmRate = 0.30, kmRoundTrip = false, onKmSettingsChange, onGoToSettings }) {
+export default function Dispos({ dispos = [], onChange, projects = {}, completedProjects = {}, n8nFolder = '', homeAddress = '', kmRate = 0.30, kmRoundTrip = false, onKmSettingsChange, onGoToSettings, timesheets = [] }) {
   const [search, setSearch] = useState('');
   const [projectFilter, setProjectFilter] = useState('');
   const [quickFilter, setQuickFilter] = useState('all'); // all | upcoming | week | unassigned
@@ -148,7 +196,21 @@ export default function Dispos({ dispos = [], onChange, projects = {}, n8nFolder
   const [showKmReport, setShowKmReport] = useState(false);
   const [batchProgress, setBatchProgress] = useState(null); // { done, total } während Sammelberechnung
   const [viewMode, setViewMode] = useState('project'); // 'month' | 'project'
-  const [collapsedGroups, setCollapsedGroups] = useState(new Set()); // group keys that are collapsed
+  // Abgeschlossene Projekte standardmäßig zugeklappt
+  const [collapsedGroups, setCollapsedGroups] = useState(() =>
+    new Set(Object.keys(completedProjects || {}))
+  );
+
+  // Neu abgeschlossene Projekte einklappen sobald completedProjects sich ändert
+  const prevCompletedRef = React.useRef(completedProjects);
+  React.useEffect(() => {
+    const prev = prevCompletedRef.current;
+    const newlyCompleted = Object.keys(completedProjects || {}).filter(k => !(prev || {})[k]);
+    if (newlyCompleted.length) {
+      setCollapsedGroups(s => new Set([...s, ...newlyCompleted]));
+    }
+    prevCompletedRef.current = completedProjects;
+  }, [completedProjects]);
 
   const toggleGroup = useCallback((key) => {
     setCollapsedGroups(prev => {
@@ -178,7 +240,10 @@ export default function Dispos({ dispos = [], onChange, projects = {}, n8nFolder
         if (knownOriginals.has(file)) continue;
         const imp = await window.electronAPI.importDispo(folder, file);
         if (!imp || !imp.success) continue;
-        const parsed = parseDispoFilename(file, projects, fallbackYear);
+        // file kann ein relativer Pfad sein (z.B. "Call sheet/dispo.pdf") –
+        // für die Namens-Erkennung nur den Dateinamen ohne Unterordner nutzen.
+        const basename = file.includes('/') ? file.split('/').pop() : file;
+        const parsed = parseDispoFilename(basename, projects, fallbackYear);
         const motive = (imp.addresses && imp.addresses.motive) || [];
         added.push({
           id: Date.now().toString(36) + Math.random().toString(36).slice(2, 8),
@@ -193,10 +258,14 @@ export default function Dispos({ dispos = [], onChange, projects = {}, n8nFolder
           motivAdresse: (imp.addresses && imp.addresses.suggested) || '', // gewählte/editierte Adresse
         });
       }
-      const allDispos = [...(dispos || []), ...added];
-      if (added.length) {
+      const merged = [...(dispos || []), ...added];
+      const { deduped: allDispos, removed: dupCount } = dedupDispos(merged);
+      const dupNote = dupCount > 0 ? ` · ${dupCount} Duplikat${dupCount > 1 ? 'e' : ''} entfernt` : '';
+      if (added.length || dupCount) {
         onChange(allDispos);
-        setSyncMsg(`${added.length} neue Disposition${added.length > 1 ? 'en' : ''} importiert`);
+        setSyncMsg(added.length
+          ? `${added.length} neue Disposition${added.length > 1 ? 'en' : ''} importiert${dupNote}`
+          : `Keine neuen Dispos${dupNote}`);
       } else {
         setSyncMsg('Keine neuen Dispos gefunden');
       }
@@ -258,9 +327,10 @@ export default function Dispos({ dispos = [], onChange, projects = {}, n8nFolder
         });
       }
       if (added.length) {
-        const allDispos = [...(dispos || []), ...added];
+        const { deduped: allDispos, removed: dupCount } = dedupDispos([...(dispos || []), ...added]);
         onChange(allDispos);
-        setSyncMsg(`${added.length} Dispo${added.length > 1 ? 's' : ''} hinzugefügt${skipped ? ` · ${skipped} übersprungen` : ''}`);
+        const dupNote = dupCount > 0 ? ` · ${dupCount} Duplikat${dupCount > 1 ? 'e' : ''} entfernt` : '';
+        setSyncMsg(`${added.length} Dispo${added.length > 1 ? 's' : ''} hinzugefügt${skipped ? ` · ${skipped} übersprungen` : ''}${dupNote}`);
         // Neue Dateien in die Jahr/Projekt-Struktur einsortieren.
         if (api.organizeDispo) {
           for (const d of added) {
@@ -312,12 +382,25 @@ export default function Dispos({ dispos = [], onChange, projects = {}, n8nFolder
     if (files && files.length) handleDroppedFiles(files);
   }, [handleDroppedFiles]);
 
-  // Auto-Sync beim ersten Öffnen
+  // Auto-Sync beim ersten Öffnen + Dispo-Ordner-Watcher starten
   const didInit = useRef(false);
   useEffect(() => {
     if (didInit.current) return;
     didInit.current = true;
     handleSync();
+    // Watcher starten damit neue PDFs automatisch erkannt werden
+    if (window.electronAPI && window.electronAPI.watchDispos) {
+      window.electronAPI.watchDispos(n8nFolder).catch(() => {});
+    }
+  }, [handleSync, n8nFolder]);
+
+  // Auf Dispo-Ordner-Änderungen reagieren (z.B. neues PDF von n8n)
+  useEffect(() => {
+    if (!window.electronAPI || !window.electronAPI.onDispoFilesChanged) return;
+    const unsub = window.electronAPI.onDispoFilesChanged(() => {
+      handleSync();
+    });
+    return () => { if (typeof unsub === 'function') unsub(); };
   }, [handleSync]);
 
   // ----- Projekt manuell zuordnen (+ Datei in Ordnerstruktur umsortieren) -----
@@ -556,7 +639,10 @@ export default function Dispos({ dispos = [], onChange, projects = {}, n8nFolder
     }
     return [...map.entries()]
       .sort(([a], [b]) => {
-        if (!a && b) return 1; // "Ohne Projekt" ans Ende
+        const aCompleted = !!(completedProjects || {})[a];
+        const bCompleted = !!(completedProjects || {})[b];
+        if (aCompleted !== bCompleted) return aCompleted ? 1 : -1; // abgeschlossen ans Ende
+        if (!a && b) return 1;   // "Ohne Projekt" ans Ende (nach abgeschlossenen)
         if (a && !b) return -1;
         return a.localeCompare(b, 'de');
       })
@@ -565,6 +651,7 @@ export default function Dispos({ dispos = [], onChange, projects = {}, n8nFolder
         label: proj || 'Ohne Projekt',
         items: [...items].sort(sortByDate),
         isNone: !proj,
+        isCompleted: !!(completedProjects || {})[proj],
       }));
   }, [filteredDispos]);
 
@@ -683,12 +770,13 @@ export default function Dispos({ dispos = [], onChange, projects = {}, n8nFolder
           return (
             <div key={group.key} className="dispos-group">
               <button
-                className={`dispos-proj-header${group.isNone ? ' dispos-proj-header--none' : ''}`}
+                className={`dispos-proj-header${group.isNone ? ' dispos-proj-header--none' : ''}${group.isCompleted ? ' dispos-proj-header--completed' : ''}`}
                 onClick={() => toggleGroup(group.key)}
                 aria-expanded={!isCollapsed}
               >
                 <span className="dispos-proj-arrow">{isCollapsed ? '▶' : '▼'}</span>
                 <span className="dispos-proj-name">{group.label}</span>
+                {group.isCompleted && <span className="dispos-proj-done">✓</span>}
                 <span className="dispos-proj-count">{group.items.length}</span>
               </button>
               {!isCollapsed && group.items.map(d => (
@@ -757,6 +845,7 @@ export default function Dispos({ dispos = [], onChange, projects = {}, n8nFolder
           onComputeAll={computeAllMissing}
           batchProgress={batchProgress}
           onClose={() => setShowKmReport(false)}
+          timesheets={timesheets}
         />
       )}
     </div>
@@ -933,12 +1022,43 @@ const fmtDateShort = (iso) => {
 };
 
 /**
+ * Baut ein Set aus "YYYY-MM-DD|projekt"-Schlüsseln für alle Tage,
+ * an denen in einem Stundenzettel tatsächlich Stunden eingetragen sind.
+ * Der Projektname wird normalisiert (lowercase, getrimmt).
+ */
+function buildWorkedDatesSet(timesheets) {
+  const worked = new Set();
+  for (const sheet of timesheets || []) {
+    const projekt = (sheet.projekt || '').trim().toLowerCase();
+    for (const day of sheet.days || []) {
+      const hasHours = (day.stundenTotal > 0) || (day.start && day.start !== '');
+      if (!hasHours) continue;
+      const parts = (day.datum || '').split('.');
+      if (parts.length === 3) {
+        const iso = `${parts[2]}-${parts[1].padStart(2, '0')}-${parts[0].padStart(2, '0')}`;
+        worked.add(`${iso}|${projekt}`);
+      }
+    }
+  }
+  return worked;
+}
+
+/**
  * Aggregiert Dispos mit berechneter Entfernung zu einer Jahres-/Projekt-Struktur.
+ * Nur Dispos, für die am selben Tag Stunden im Stundenzettel eingetragen sind.
  * @returns {{ years: Array, grandKm:number, grandBetrag:number }}
  */
-function buildKmReport(dispos, rate, roundTrip) {
+function buildKmReport(dispos, rate, roundTrip, workedDates) {
   const factor = roundTrip ? 2 : 1;
-  const withDist = (dispos || []).filter(d => typeof d.distanzKm === 'number');
+  const withDist = (dispos || []).filter(d => {
+    if (typeof d.distanzKm !== 'number') return false;
+    if (workedDates && workedDates.size > 0 && d.datumISO && d.projekt) {
+      const key = `${d.datumISO}|${(d.projekt || '').trim().toLowerCase()}`;
+      return workedDates.has(key);
+    }
+    // Dispo ohne Datum oder Projekt: nicht ausschließen
+    return true;
+  });
 
   const yearMap = new Map(); // year -> { projects: Map, km, betrag }
   for (const d of withDist) {
@@ -978,7 +1098,7 @@ function buildKmReport(dispos, rate, roundTrip) {
   return { years, grandKm, grandBetrag };
 }
 
-function KmReportOverlay({ dispos, homeAddress, kmRate, kmRoundTrip, onKmSettingsChange, onComputeAll, batchProgress, onClose }) {
+function KmReportOverlay({ dispos, homeAddress, kmRate, kmRoundTrip, onKmSettingsChange, onComputeAll, batchProgress, onClose, timesheets }) {
   const [yearFilter, setYearFilter] = useState('all');
   const [exporting, setExporting] = useState(false);
 
@@ -988,7 +1108,8 @@ function KmReportOverlay({ dispos, homeAddress, kmRate, kmRoundTrip, onKmSetting
     return () => window.removeEventListener('keydown', onKey);
   }, [onClose]);
 
-  const report = useMemo(() => buildKmReport(dispos, kmRate, kmRoundTrip), [dispos, kmRate, kmRoundTrip]);
+  const workedDates = useMemo(() => buildWorkedDatesSet(timesheets), [timesheets]);
+  const report = useMemo(() => buildKmReport(dispos, kmRate, kmRoundTrip, workedDates), [dispos, kmRate, kmRoundTrip, workedDates]);
   const allYears = useMemo(() => report.years.map(y => y.year), [report]);
   const shownYears = yearFilter === 'all' ? report.years : report.years.filter(y => y.year === yearFilter);
   const shownKm = shownYears.reduce((s, y) => s + y.km, 0);

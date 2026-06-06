@@ -458,55 +458,6 @@ export default function Dashboard({ timesheets, calculations, settings: propSett
     }
   };
 
-  const handleExportExcel = async () => {
-    setShowExport(false);
-    setExporting(true);
-    try {
-    const hasGage = settings.tagesgage > 0;
-    const fmt = (n) => typeof n === 'number' ? Math.round(n * 100) / 100 : 0;
-
-    // Summary sheet
-    const summaryData = [
-      ['ZeitBlick Übersicht', personFilter !== 'all' ? personFilter : ''],
-      ['Exportiert am', new Date().toLocaleDateString('de-DE')],
-      [],
-      ['Kennzahl', 'Wert'],
-      ['Arbeitstage', c.totalArbeitstage],
-      ['Bezahlte Tage', c.totalBezahlteTage],
-      ['Gesamtstunden', fmt(c.totalStunden)],
-      ['Überstunden', fmt(c.totalUeberstunden)],
-      ['Nachtstunden', fmt(c.totalNacht)],
-      ['Samstage (Std.)', fmt(c.totalSamstagsstunden || 0)],
-      ['Sonntage (Std.)', fmt(c.totalSonntagsstunden || 0)],
-      ['Urlaubstage', c.urlaubstage],
-    ];
-    if (hasGage) summaryData.push([], ['Gesamtverdienst', fmt(c.gesamtVerdienst)]);
-
-    // Week overview sheet
-    const weekHeader = ['Zeitraum', 'Projekt', 'Name', 'Tage', 'Stunden', 'Überstunden', 'Nacht'];
-    if (hasGage) weekHeader.push('Brutto');
-    const sorted = [...timesheets].sort((a, b) => parseDateDE(a.days.find(d => d.datum)?.datum) - parseDateDE(b.days.find(d => d.datum)?.datum));
-    const weekRows = sorted.map(sheet => {
-      const sc = calculateSheetTVFFS(sheet, settings);
-      const firstDate = sheet.days.find(d => d.datum)?.datum || '';
-      const lastDate = [...sheet.days].reverse().find(d => d.datum)?.datum || '';
-      const row = [`${firstDate} – ${lastDate}`, sheet.projekt || '', sheet.name || '', sc.totalBezahlteTage, fmt(sc.totalStunden), fmt(sc.totalUeberstunden), fmt(sc.totalNacht)];
-      if (hasGage) row.push(fmt(sc.gesamtVerdienst));
-      return row;
-    });
-
-    const xlsxData = {
-      sheets: [
-        { name: 'Zusammenfassung', data: summaryData },
-        { name: 'Wochenübersicht', data: [weekHeader, ...weekRows] },
-      ]
-    };
-    const personSuffix = personFilter !== 'all' ? `-${personFilter}` : '';
-    await window.electronAPI.exportXLSX(xlsxData, `ZeitBlick-Export${personSuffix}-${new Date().toISOString().slice(0,10)}.xlsx`);
-    } finally {
-      setExporting(false);
-    }
-  };
 
   // Determine what gage value the input bar should show:
   // When person+project selected → personProjectGagen
@@ -908,19 +859,6 @@ export default function Dashboard({ timesheets, calculations, settings: propSett
               {uniquePersons.length} Personen · {(allTimesheets || timesheets).length} Stundenzettel
               {projectFilter !== 'all' && ` · ${projectFilter}`}
             </div>
-          </div>
-          <div className="export-dropdown" style={{ position: 'relative' }}>
-            <button className="btn-secondary" onClick={() => setShowExport(!showExport)} disabled={exporting}>
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-              {exporting ? 'Exportiert…' : 'Exportieren'}
-            </button>
-            {showExport && !exporting && (
-              <div className="export-menu" role="menu">
-                <button onClick={() => handleExportCSV()} role="menuitem">CSV exportieren</button>
-                <button onClick={() => handleExportPDF()} role="menuitem">PDF exportieren</button>
-                <button onClick={() => handleExportExcel()} role="menuitem">Excel exportieren</button>
-              </div>
-            )}
           </div>
         </div>
 
@@ -1465,7 +1403,6 @@ export default function Dashboard({ timesheets, calculations, settings: propSett
               <div className="export-menu" role="menu">
                 <button onClick={() => handleExportCSV()} role="menuitem">CSV exportieren</button>
                 <button onClick={() => handleExportPDF()} role="menuitem">PDF exportieren</button>
-                <button onClick={() => handleExportExcel()} role="menuitem">Excel exportieren</button>
               </div>
             )}
           </div>

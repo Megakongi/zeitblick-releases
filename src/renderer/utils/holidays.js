@@ -51,8 +51,10 @@ export function getHolidays(year) {
 
   // Easter-based holidays
   holidays.set(fmt(addDays(easter, -2)), 'Karfreitag');
-  holidays.set(fmt(addDays(easter, 1)), 'Ostermontag');
+  holidays.set(fmt(easter),              'Ostersonntag');   // TZ 5.6.1: explizit genannt
+  holidays.set(fmt(addDays(easter, 1)),  'Ostermontag');
   holidays.set(fmt(addDays(easter, 39)), 'Christi Himmelfahrt');
+  holidays.set(fmt(addDays(easter, 49)), 'Pfingstsonntag'); // TZ 5.6.1: explizit genannt
   holidays.set(fmt(addDays(easter, 50)), 'Pfingstmontag');
 
   return holidays;
@@ -74,6 +76,21 @@ export function isHoliday(dateStr) {
   // Normalize to 4-digit year format
   const normalized = `${parts[0]}.${parts[1]}.${fullYear}`;
   return holidays.get(normalized) || null;
+}
+
+/**
+ * TZ 5.6.1: Heiligabend (24.12.) und Silvester (31.12.) gelten ab 12:00 Uhr als Feiertage.
+ * Gibt den Namen zurück oder null.
+ */
+export function isTVFFSHalfDayHoliday(dateStr) {
+  if (!dateStr) return null;
+  const parts = dateStr.split('.');
+  if (parts.length < 2) return null;
+  const dd = parseInt(parts[0]);
+  const mm = parseInt(parts[1]);
+  if (dd === 24 && mm === 12) return 'Heiligabend';
+  if (dd === 31 && mm === 12) return 'Silvester';
+  return null;
 }
 
 /**

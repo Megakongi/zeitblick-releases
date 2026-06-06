@@ -44,6 +44,15 @@ export function parseDispoDate(filename, fallbackYear) {
     }
   }
 
+  // 2b) ddmmyyyy (z.B. 06062026) – 8 Ziffern als Block, Tag zuerst
+  m = name.match(/(?<!\d)(\d{2})(\d{2})(\d{4})(?!\d)/);
+  if (m) {
+    const day = +m[1], month = +m[2], year = +m[3];
+    if (year >= 2000 && year <= 2099 && validDM(day, month)) {
+      return { iso: `${year}-${p2(month)}-${p2(day)}`, day, month, year, hadYear: true };
+    }
+  }
+
   // 3) yymmdd (z.B. 260428 oder 260505) – 6 Ziffern als Block
   m = name.match(/(?<!\d)(\d{2})(\d{2})(\d{2})(?!\d)/);
   if (m) {

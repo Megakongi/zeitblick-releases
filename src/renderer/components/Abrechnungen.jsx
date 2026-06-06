@@ -28,7 +28,7 @@ function genId() {
   return Math.random().toString(36).slice(2) + Date.now().toString(36);
 }
 
-const FORM0 = { projekt: '', name: '', betrag: '', beschreibung: '', datum: '', zeitraumVon: '', zeitraumBis: '' };
+const FORM0 = { projekt: '', name: '', betrag: '', beschreibung: '', datum: '', zeitraumVon: '', zeitraumBis: '', typ: '' };
 
 /* ── Icons ──────────────────────────────────────────────── */
 function Ico({ children, size = 16 }) {
@@ -148,17 +148,6 @@ export default function Abrechnungen({
   /* Year totals */
   const yearCalc = useMemo(() => calculateTVFFS(yearSheets, effSettings), [yearSheets, effSettings]);
 
-  /* Monthly breakdown */
-  const monthly = useMemo(() => Array.from({ length: 12 }, (_, i) => {
-    const m = i + 1;
-    const sheets = yearSheets.filter(ts => getSheetMonth(ts) === m);
-    if (!sheets.length) return { month: m, sheets: 0, stunden: 0, tage: 0, verdienst: 0 };
-    const c = calculateTVFFS(sheets, effSettings);
-    return { month: m, sheets: sheets.length, stunden: c.totalStunden, tage: c.totalArbeitstage, verdienst: c.gesamtVerdienst || c.bruttoGage || 0 };
-  }), [yearSheets, effSettings]);
-
-  const maxV = Math.max(...monthly.map(m => m.verdienst), 1);
-
   /* Project breakdown */
   const byProject = useMemo(() => {
     const groups = {};
@@ -166,8 +155,21 @@ export default function Abrechnungen({
     return Object.entries(groups).map(([proj, sheets]) => {
       const ps = personF !== 'all' && getPersonSettings ? getPersonSettings(personF, proj) : settings;
       const c = calculateTVFFS(sheets, ps);
-      return { projekt: proj, sheets: sheets.length, tage: c.totalArbeitstage, stunden: c.totalStunden, verdienst: c.gesamtVerdienst || c.bruttoGage || 0 };
-    }).sort((a, b) => b.verdienst - a.verdienst);
+      // Neuestes Datum über alle Sheets für Sortierung ermitteln
+      let latestMs = 0;
+      for (const ts of sheets) {
+        for (const day of (ts.days || [])) {
+          if (day.datum) {
+            const [d, m, y] = day.datum.split('.');
+            if (d && m && y) {
+              const ms = new Date(parseInt(y), parseInt(m) - 1, parseInt(d)).getTime();
+              if (ms > latestMs) latestMs = ms;
+            }
+          }
+        }
+      }
+      return { projekt: proj, sheets: sheets.length, tage: c.totalArbeitstage, stunden: c.totalStunden, verdienst: c.gesamtVerdienst || c.bruttoGage || 0, latestMs };
+    }).sort((a, b) => b.latestMs - a.latestMs);
   }, [yearSheets, personF, getPersonSettings, settings, baseP]);
 
   /* Abrechnungen for current year */
@@ -290,6 +292,7 @@ export default function Abrechnungen({
   }
 
   function calcFor(abr) {
+    if (abr.typ === 'sonder') return null;
     const r = getSheetsFor(abr);
     if (!r) return null;
     const c = calculateTVFFS(r.sheets, r.ps);
@@ -480,7 +483,7 @@ export default function Abrechnungen({
   /* Form */
   const openAdd = () => { setForm(FORM0); setEditId(null); setShowForm(true); };
   const openEdit = (abr) => {
-    setForm({ projekt: abr.projekt || '', name: abr.name || '', betrag: String(abr.betrag || ''), beschreibung: abr.beschreibung || '', datum: abr.datum || '', zeitraumVon: abr.zeitraumVon || '', zeitraumBis: abr.zeitraumBis || '' });
+    setForm({ projekt: abr.projekt || '', name: abr.name || '', betrag: String(abr.betrag || ''), beschreibung: abr.beschreibung || '', datum: abr.datum || '', zeitraumVon: abr.zeitraumVon || '', zeitraumBis: abr.zeitraumBis || '', typ: abr.typ || '' });
     setEditId(abr.id);
     setShowForm(true);
   };
@@ -562,9 +565,10 @@ export default function Abrechnungen({
 
   /* ── Render: Jahresübersicht ─────────────────────────────── */
   const renderJahr = () => {
-    const totalBilled = abrYear.reduce((s, a) => s + (a.betrag || 0), 0);
-    const totalCalc   = yearCalc.gesamtVerdienst || yearCalc.bruttoGage || 0;
-    const totalDelta  = hasGage && abrYear.length > 0 ? totalBilled - totalCalc : null;
+    const totalBilled   = abrYear.reduce((s, a) => s + (a.betrag || 0), 0);
+    // Sum per-project verdienst so cards + table Gesamt row are consistent
+    const totalCalc     = byProject.reduce((s, p) => s + p.verdienst, 0);
+    const totalDelta    = hasGage && abrYear.length > 0 ? totalBilled - totalCalc : null;
     return (
       <>
         {/* Controls — year + import actions */}
@@ -647,7 +651,7 @@ export default function Abrechnungen({
           <div style={s.card}>
             <div style={s.cardLabel}>Berechnet</div>
             <div style={{ ...s.cardValue, color: 'var(--p-500)' }}>{fmtCur(totalCalc)}</div>
-            {yearCalc.bruttoGage !== yearCalc.gesamtVerdienst && <div style={s.cardSub}>Brutto: {fmtCur(yearCalc.bruttoGage)}</div>}
+            <div style={s.cardSub}>Brutto: {fmtCur(yearCalc.bruttoGage)}</div>
           </div>
           {abrYear.length > 0 && <>
             <div style={s.card}>
@@ -680,32 +684,6 @@ export default function Abrechnungen({
           </div>
         </div>
 
-        {/* Monthly chart */}
-        {yearSheets.length > 0 && (
-          <div style={s.section}>
-            <div style={s.sectionHead}>
-              <span style={s.sectionTitle}>Monatliche Verteilung {year}</span>
-            </div>
-            <div style={s.chartWrap}>
-              <div style={s.chart}>
-                {monthly.map((m) => {
-                  const barH = m.verdienst > 0 ? Math.max(4, Math.round((m.verdienst / maxV) * 116)) : (m.sheets > 0 ? 4 : 0);
-                  const isActive = m.sheets > 0;
-                  return (
-                    <div key={m.month} style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'flex-end', height: '100%', gap: 0 }}>
-                      {isActive && hasGage && <div style={{ fontSize: 9, color: 'var(--p-500)', fontWeight: 600, marginBottom: 2, fontVariantNumeric: 'tabular-nums' }}>{m.verdienst >= 1000 ? (m.verdienst / 1000).toFixed(1) + 'k' : Math.round(m.verdienst)}</div>}
-                      {isActive && !hasGage && <div style={{ fontSize: 9, color: 'var(--muted)', marginBottom: 2 }}>{m.tage}T</div>}
-                      <div title={`${MONTH_NAMES_FULL[m.month - 1]}: ${m.tage} Tage, ${fmtNum(m.stunden, 1)} h${hasGage ? ', ' + fmtCur(m.verdienst) : ''}`} style={s.bar(barH, isActive)} />
-                    </div>
-                  );
-                })}
-              </div>
-              <div style={{ display: 'flex', gap: 4, marginTop: 6 }}>
-                {monthly.map(m => <div key={m.month} style={{ flex: 1, textAlign: 'center' }}><div style={s.barLabel}>{MONTH_NAMES[m.month - 1]}</div></div>)}
-              </div>
-            </div>
-          </div>
-        )}
 
         {/* Project table with integrated billing */}
         {byProject.length > 0 && (
@@ -730,7 +708,11 @@ export default function Abrechnungen({
                 {byProject.map((p, i) => {
                   const billed   = billedForProject(p.projekt);
                   const delta    = hasGage ? billed - p.verdienst : null;
-                  const entries  = abrForProject(p.projekt);
+                  const entries  = [...abrForProject(p.projekt)].sort((a, b) => {
+                    const da = parseGermanDate(a.datum), db = parseGermanDate(b.datum);
+                    if (!da && !db) return 0; if (!da) return 1; if (!db) return -1;
+                    return db - da; // neueste zuerst
+                  });
                   const isExp    = expandedProject === p.projekt;
                   return (
                     <React.Fragment key={p.projekt}>
@@ -780,7 +762,10 @@ export default function Abrechnungen({
                                         <tr style={{ background: j % 2 === 0 ? 'transparent' : 'var(--surface)' }}>
                                           <td style={{ ...s.td, paddingLeft: 32 }}>{abr.datum}</td>
                                           <td style={s.td}>{abr.name || <span style={{ color: 'var(--hint)' }}>–</span>}</td>
-                                          <td style={{ ...s.td, color: 'var(--muted)', fontSize: 12 }}>{abr.beschreibung || '–'}</td>
+                                          <td style={{ ...s.td, color: 'var(--muted)', fontSize: 12 }}>
+                                            {abr.typ === 'sonder' && <span style={{ display: 'inline-block', marginRight: 6, padding: '1px 6px', borderRadius: 99, fontSize: 11, fontWeight: 600, background: 'var(--a-50)', color: 'var(--a-600)', border: '1px solid var(--a-200)', verticalAlign: 'middle' }}>Sonderzahl.</span>}
+                                            {abr.beschreibung || '–'}
+                                          </td>
                                           <td style={{ ...s.tdR, fontWeight: 600 }}>{fmtCur(abr.betrag)}</td>
                                           {hasGage && <td style={s.tdR}>{cv !== null ? fmtCur(cv) : <span style={{ color: 'var(--hint)' }}>–</span>}</td>}
                                           {hasGage && <td style={s.tdR}>{d !== null ? <span style={s.chip(d)}>{d >= 0 ? '+' : ''}{fmtCur(d)}</span> : <span style={{ color: 'var(--hint)' }}>–</span>}</td>}
@@ -821,7 +806,12 @@ export default function Abrechnungen({
                                                     </div>
                                                   );
                                                 })()}
-                                                {det && diff !== null && (
+                                                {abr.typ === 'sonder' && (
+                                                  <div style={{ fontSize: 12, color: 'var(--a-600)', fontWeight: 500 }}>
+                                                    Sonderzahlung – kein Abgleich mit Stundenzettel
+                                                  </div>
+                                                )}
+                                                {!abr.typ && det && diff !== null && (
                                                   <div style={{ fontSize: 12, color: diff >= 0 ? 'var(--m-600)' : 'var(--r-600)', fontWeight: 500 }}>
                                                     Differenz {diff >= 0 ? '+' : ''}{fmtCur(diff)} · {mfd.length} Stundenzettel zugeordnet
                                                   </div>
@@ -855,17 +845,22 @@ export default function Abrechnungen({
                     </React.Fragment>
                   );
                 })}
-                {byProject.length > 1 && (
-                  <tr style={{ background: 'var(--p-50)', borderTop: '2px solid var(--border-strong)' }}>
-                    <td style={{ ...s.td, fontWeight: 700 }}>Gesamt</td>
-                    <td style={{ ...s.tdR, fontWeight: 700 }}>{byProject.reduce((s, p) => s + p.sheets, 0)}</td>
-                    <td style={{ ...s.tdR, fontWeight: 700 }}>{byProject.reduce((s, p) => s + p.tage, 0)}</td>
-                    <td style={{ ...s.tdR, fontWeight: 700 }}>{fmtNum(byProject.reduce((s, p) => s + p.stunden, 0), 1)} h</td>
-                    {hasGage && <td style={{ ...s.tdR, fontWeight: 700, color: 'var(--p-500)' }}>{fmtCur(byProject.reduce((s, p) => s + p.verdienst, 0))}</td>}
-                    {hasGage && <td style={{ ...s.tdR, fontWeight: 700 }}>{fmtCur(totalBilled)}</td>}
-                    {hasGage && totalDelta !== null && <td style={{ ...s.tdR, fontWeight: 700, color: totalDelta >= 0 ? 'var(--m-600)' : 'var(--r-600)' }}>{totalDelta >= 0 ? '+' : ''}{fmtCur(totalDelta)}</td>}
-                  </tr>
-                )}
+                {byProject.length > 1 && (() => {
+                  const sumVerdienst = byProject.reduce((s, p) => s + p.verdienst, 0);
+                  const sumBilled    = byProject.reduce((s, p) => s + billedForProject(p.projekt), 0);
+                  const sumDelta     = hasGage && abrYear.length > 0 ? sumBilled - sumVerdienst : null;
+                  return (
+                    <tr style={{ background: 'var(--p-50)', borderTop: '2px solid var(--border-strong)' }}>
+                      <td style={{ ...s.td, fontWeight: 700 }}>Gesamt</td>
+                      <td style={{ ...s.tdR, fontWeight: 700 }}>{byProject.reduce((s, p) => s + p.sheets, 0)}</td>
+                      <td style={{ ...s.tdR, fontWeight: 700 }}>{byProject.reduce((s, p) => s + p.tage, 0)}</td>
+                      <td style={{ ...s.tdR, fontWeight: 700 }}>{fmtNum(byProject.reduce((s, p) => s + p.stunden, 0), 1)} h</td>
+                      {hasGage && <td style={{ ...s.tdR, fontWeight: 700, color: 'var(--p-500)' }}>{fmtCur(sumVerdienst)}</td>}
+                      {hasGage && <td style={{ ...s.tdR, fontWeight: 700 }}>{fmtCur(sumBilled)}</td>}
+                      {hasGage && sumDelta !== null && <td style={{ ...s.tdR, fontWeight: 700, color: sumDelta >= 0 ? 'var(--m-600)' : 'var(--r-600)' }}>{sumDelta >= 0 ? '+' : ''}{fmtCur(sumDelta)}</td>}
+                    </tr>
+                  );
+                })()}
               </tbody>
             </table>
           </div>
@@ -879,6 +874,10 @@ export default function Abrechnungen({
               p.projekt.toLowerCase().includes(a.projekt.toLowerCase()) ||
               a.projekt.toLowerCase().includes(p.projekt.toLowerCase())
             );
+          }).sort((a, b) => {
+            const da = parseGermanDate(a.datum), db = parseGermanDate(b.datum);
+            if (!da && !db) return 0; if (!da) return 1; if (!db) return -1;
+            return db - da; // neueste zuerst
           });
           if (!unmatchedAbr.length) return null;
           const total = unmatchedAbr.reduce((s, a) => s + (a.betrag || 0), 0);
@@ -1582,6 +1581,12 @@ export default function Abrechnungen({
         <label style={s.label}>Beschreibung</label>
         <input style={s.input} type="text" placeholder="z.B. KW 10–12, Lohnabrechnung März" value={form.beschreibung}
           onChange={e => setForm(f => ({ ...f, beschreibung: e.target.value }))} />
+
+        <label style={{ ...s.label, marginTop: 18, display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
+          <input type="checkbox" checked={form.typ === 'sonder'} onChange={e => setForm(f => ({ ...f, typ: e.target.checked ? 'sonder' : '' }))} />
+          <span style={{ fontWeight: 600 }}>Sonderzahlung</span>
+          <span style={{ fontWeight: 400, color: 'var(--hint)' }}>(z.B. Zeitkonto-Auszahlung, Abfindung – kein Stunden-Abgleich)</span>
+        </label>
 
         <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 22 }}>
           <button style={{ ...s.btn, ...s.btnGhost }} onClick={closeForm}>Abbrechen</button>

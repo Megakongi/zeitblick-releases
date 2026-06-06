@@ -356,6 +356,24 @@ function extractBillingData(text) {
 }
 
 // ---------------------------------------------------------------------------
+// extractAllBillingEntries — splits text by page (pdftotext uses \f) and
+// extracts one billing entry per page that looks like a payslip.
+// Returns an array with at least one entry.
+// ---------------------------------------------------------------------------
+function extractAllBillingEntries(text) {
+  const pages = text.split('\f').map(p => p.trim()).filter(p => p.length > 0);
+
+  if (pages.length <= 1) return [extractBillingData(text)];
+
+  const billingPageRe = /BRUTTO\s+GAGE|Bruttolohn|Gesamt-Brutto|Form\.-Nr\.\s*LNGN/i;
+  const entries = pages
+    .filter(p => billingPageRe.test(p))
+    .map(p => extractBillingData(p));
+
+  return entries.length > 0 ? entries : [extractBillingData(text)];
+}
+
+// ---------------------------------------------------------------------------
 // Public: parseBillingPDF
 // ---------------------------------------------------------------------------
 async function parseBillingPDF(filePath, password = null) {
@@ -370,8 +388,8 @@ async function parseBillingPDF(filePath, password = null) {
     text = await parsePDFWithPdf2json(filePath, password);
   }
 
-  const extracted = extractBillingData(text);
-  return { text, ...extracted };
+  const entries = extractAllBillingEntries(text);
+  return { text, entries };
 }
 
 // ---------------------------------------------------------------------------

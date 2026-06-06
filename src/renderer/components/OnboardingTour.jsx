@@ -32,7 +32,7 @@ const TOUR_STEPS = [
   {
     target: null,
     title: 'Stundenzettel auswerten',
-    description: 'In der Übersicht siehst du Stunden, Überstunden und Verdienst. In der Stundenzettel-Liste sind die Personen pro Projekt zusammengeklappt — ein Klick auf den Pfeil öffnet sie. Export als PDF oder Excel.',
+    description: 'In der Übersicht siehst du Stunden, Überstunden und Verdienst. In der Stundenzettel-Liste sind die Personen pro Projekt zusammengeklappt — ein Klick auf den Pfeil öffnet sie. Export als PDF oder CSV.',
     icon: '',
     position: 'center',
   },
