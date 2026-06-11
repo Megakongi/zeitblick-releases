@@ -1100,6 +1100,8 @@ function buildKmReport(dispos, rate, roundTrip, workedDates) {
 
 function KmReportOverlay({ dispos, homeAddress, kmRate, kmRoundTrip, onKmSettingsChange, onComputeAll, batchProgress, onClose, timesheets }) {
   const [yearFilter, setYearFilter] = useState('all');
+  const [monthFilter, setMonthFilter] = useState('all');
+  const [projFilter, setProjFilter] = useState('all');
   const [exporting, setExporting] = useState(false);
 
   useEffect(() => {
@@ -1111,7 +1113,33 @@ function KmReportOverlay({ dispos, homeAddress, kmRate, kmRoundTrip, onKmSetting
   const workedDates = useMemo(() => buildWorkedDatesSet(timesheets), [timesheets]);
   const report = useMemo(() => buildKmReport(dispos, kmRate, kmRoundTrip, workedDates), [dispos, kmRate, kmRoundTrip, workedDates]);
   const allYears = useMemo(() => report.years.map(y => y.year), [report]);
-  const shownYears = yearFilter === 'all' ? report.years : report.years.filter(y => y.year === yearFilter);
+  const allProjects = useMemo(() => {
+    const seen = new Set();
+    report.years.forEach(y => y.projects.forEach(p => seen.add(p.project)));
+    return [...seen].sort((a, b) => a.localeCompare(b, 'de'));
+  }, [report]);
+
+  // Jahr-, Monats- und Projektfilter anwenden (Summen je Ebene neu berechnen)
+  const shownYears = useMemo(() => {
+    const base = yearFilter === 'all' ? report.years : report.years.filter(y => y.year === yearFilter);
+    if (monthFilter === 'all' && projFilter === 'all') return base;
+    return base.map(y => {
+      const projects = y.projects
+        .filter(p => projFilter === 'all' || p.project === projFilter)
+        .map(p => {
+          const rows = monthFilter === 'all'
+            ? p.rows
+            : p.rows.filter(r => (r.datumISO || '').slice(5, 7) === monthFilter);
+          const km = rows.reduce((sum, r) => sum + r.kmGefahren, 0);
+          const betrag = rows.reduce((sum, r) => sum + r.betrag, 0);
+          return { ...p, rows, km, betrag };
+        })
+        .filter(p => p.rows.length > 0);
+      const km = projects.reduce((sum, p) => sum + p.km, 0);
+      const betrag = projects.reduce((sum, p) => sum + p.betrag, 0);
+      return { ...y, projects, km, betrag, count: projects.reduce((sum, p) => sum + p.rows.length, 0) };
+    }).filter(y => y.projects.length > 0);
+  }, [report, yearFilter, monthFilter, projFilter]);
   const shownKm = shownYears.reduce((s, y) => s + y.km, 0);
   const shownBetrag = shownYears.reduce((s, y) => s + y.betrag, 0);
 
@@ -1122,13 +1150,19 @@ function KmReportOverlay({ dispos, homeAddress, kmRate, kmRoundTrip, onKmSetting
     if (!window.electronAPI || !window.electronAPI.exportPDF) return;
     setExporting(true);
     try {
-      const html = generateKmReportHTML(shownYears, { rate: kmRate, roundTrip: kmRoundTrip, totalKm: shownKm, totalBetrag: shownBetrag, yearLabel: yearFilter === 'all' ? 'Alle Jahre' : yearFilter });
-      const name = `Fahrtkosten_${yearFilter === 'all' ? 'gesamt' : yearFilter}`;
-      await window.electronAPI.exportPDF(html, name);
+      const MONTH_NAMES = ['Januar','Februar','März','April','Mai','Juni','Juli','August','September','Oktober','November','Dezember'];
+      const labelParts = [yearFilter === 'all' ? 'Alle Jahre' : yearFilter];
+      if (monthFilter !== 'all') labelParts.push(MONTH_NAMES[parseInt(monthFilter, 10) - 1]);
+      if (projFilter !== 'all') labelParts.push(projFilter);
+      const html = generateKmReportHTML(shownYears, { rate: kmRate, roundTrip: kmRoundTrip, totalKm: shownKm, totalBetrag: shownBetrag, yearLabel: labelParts.join(' · ') });
+      const nameParts = ['Fahrtkosten', yearFilter === 'all' ? 'gesamt' : yearFilter];
+      if (monthFilter !== 'all') nameParts.push(monthFilter);
+      if (projFilter !== 'all') nameParts.push(projFilter.replace(/[^\wäöüÄÖÜß-]+/g, '-'));
+      await window.electronAPI.exportPDF(html, nameParts.join('_'));
     } finally {
       setExporting(false);
     }
-  }, [shownYears, kmRate, kmRoundTrip, shownKm, shownBetrag, yearFilter]);
+  }, [shownYears, kmRate, kmRoundTrip, shownKm, shownBetrag, yearFilter, monthFilter, projFilter]);
 
   return (
     <div className="dispo-viewer-overlay" onClick={onClose}>
@@ -1173,6 +1207,22 @@ function KmReportOverlay({ dispos, homeAddress, kmRate, kmRoundTrip, onKmSetting
             <select value={yearFilter} onChange={e => setYearFilter(e.target.value)}>
               <option value="all">Alle Jahre</option>
               {allYears.map(y => <option key={y} value={y}>{y}</option>)}
+            </select>
+          </label>
+          <label className="km-ctrl">
+            <span>Monat</span>
+            <select value={monthFilter} onChange={e => setMonthFilter(e.target.value)}>
+              <option value="all">Alle Monate</option>
+              {['01','02','03','04','05','06','07','08','09','10','11','12'].map((m, i) => (
+                <option key={m} value={m}>{['Januar','Februar','März','April','Mai','Juni','Juli','August','September','Oktober','November','Dezember'][i]}</option>
+              ))}
+            </select>
+          </label>
+          <label className="km-ctrl">
+            <span>Projekt</span>
+            <select value={projFilter} onChange={e => setProjFilter(e.target.value)}>
+              <option value="all">Alle Projekte</option>
+              {allProjects.map(pr => <option key={pr} value={pr}>{pr}</option>)}
             </select>
           </label>
           <div className="km-report-head-spacer" />

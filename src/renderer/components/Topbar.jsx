@@ -43,6 +43,7 @@ const IconChevronDown = () => (
 const VIEW_LABELS = {
   dashboard:  'Übersicht',
   timesheets: 'Stundenzettel',
+  calendar:   'Kalender',
   detail:     'Detail',
   create:     'Neuer Stundenzettel',
   team:       'Team & Projekte',

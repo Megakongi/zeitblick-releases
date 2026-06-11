@@ -61,6 +61,17 @@ const IconSesam = () => (
     <line x1="12" y1="9" x2="12" y2="15"/>
   </Icon>
 );
+const IconCalendar = () => (
+  <Icon>
+    <rect x="3" y="4" width="18" height="17" rx="2" />
+    <line x1="3" y1="9" x2="21" y2="9" />
+    <line x1="8" y1="2" x2="8" y2="6" />
+    <line x1="16" y1="2" x2="16" y2="6" />
+    <circle cx="8.5" cy="13.5" r="1" fill="currentColor" stroke="none" />
+    <circle cx="12" cy="13.5" r="1" fill="currentColor" stroke="none" />
+    <circle cx="15.5" cy="13.5" r="1" fill="currentColor" stroke="none" />
+  </Icon>
+);
 const IconTeam = () => (
   <Icon>
     <path d="M17 20v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" />
@@ -130,6 +141,7 @@ export default function Sidebar({
   const navItems = [
     { id: 'dashboard',     label: 'Übersicht',       icon: <IconHome />,        badge: 0 },
     { id: 'timesheets',    label: 'Stundenzettel',    icon: <IconSheets />,      badge: 0 },
+    { id: 'calendar',      label: 'Kalender',         icon: <IconCalendar />,    badge: 0 },
     { id: 'team',          label: 'Team & Projekte',  icon: <IconTeam />,        badge: 0 },
     { id: 'dispos',        label: 'Dispos',           icon: <IconDispo />,       badge: 0 },
     { id: 'abrechnungen',  label: 'Abrechnungen',     icon: <IconAbrechnung />,  badge: 0 },

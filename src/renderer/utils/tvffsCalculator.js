@@ -22,22 +22,8 @@
  */
 
 import { isHoliday, isTVFFSHalfDayHoliday, parseTime } from './holidays';
+import { getTariffParams } from './tariff';
 
-// ── TV-FFS Tarifvertrag Konstanten ──
-const HOURS_PER_DAY          = 10;   // TZ 5.3.1: 10h = 1 Tagesgage
-const HOURS_PER_WEEK         = 50;   // TZ 5.3.1: Wochengage = 50h
-const DAILY_OT_THRESHOLD_25  = 11;   // TZ 5.4.3.2: 11. Stunde = 25%
-const WEEKLY_OT_THRESHOLD_25 = 50;   // TZ 5.4.3.3: ab 51. Stunde = 25%
-const WEEKLY_OT_THRESHOLD_50 = 55;   // TZ 5.4.3.3: ab 56. Stunde = 50%
-const WEEKLY_OT_TIER_SIZE    = WEEKLY_OT_THRESHOLD_50 - WEEKLY_OT_THRESHOLD_25; // 5h
-const ZEITKONTO_HOURS_PER_DAY = 8;   // Anlage A.1.3: 8h Zeitguthaben = 1 Beschäftigungstag
-const MAX_PAID_SICK_DAYS     = 42;   // TZ 13.3: max 6 Wochen bezahlte Krankheit
-const VACATION_DAYS_PER_WEEK = 0.5;  // TZ 14.1: 0,5 Urlaubstag pro 7-Tage-Vertragszeit
-const MIN_REST_HOURS         = 11;   // ArbZG §5: mind. 11h Ruhezeit
-const NIGHT_SURCHARGE        = 0.25; // TZ 5.5.2: 25% Nachtzuschlag
-const SATURDAY_SURCHARGE     = 0.25; // TZ 5.6.4: 25% Sa-Zuschlag
-const SUNDAY_SURCHARGE       = 0.75; // TZ 5.6.3: 75% So-Zuschlag
-const HOLIDAY_SURCHARGE      = 1.0;  // TZ 5.6.3: 100% Feiertags-Zuschlag
 
 // ── Hilfsfunktionen ──
 
@@ -67,7 +53,7 @@ function hoursWorkedAfterNoon(day) {
  * - Alle 20 Drehtage: 1 bezahlter freier AZV-Tag (TZ 6.3/6.4)
  * - Zeitkonto: 10h = 1 Drehtag (TZ 6.2)
  */
-function calculateAZVEntitlement(timesheets) {
+function calculateAZVEntitlement(timesheets, T) {
   // Alle einzigartigen Arbeitstage sammeln (dd.mm.yyyy-Strings)
   const workDateStrings = new Set();
   for (const sheet of timesheets) {
@@ -108,18 +94,18 @@ function calculateAZVEntitlement(timesheets) {
   // AZV-Gutschrift: 2,5h ab 5 Tagen, +0,5h pro weiterem Tag (TZ 6.1)
   let totalAZVHours = 0;
   for (const s of sequences) {
-    if (s.length >= 5) {
-      totalAZVHours += 2.5 + (s.length - 5) * 0.5;
+    if (s.length >= T.AZV_MIN_SEQUENCE_DAYS) {
+      totalAZVHours += T.AZV_BASE_HOURS + (s.length - T.AZV_MIN_SEQUENCE_DAYS) * T.AZV_EXTRA_HOURS_PER_DAY;
     }
   }
 
   // Freie AZV-Tage: 1 pro 20 Drehtage (TZ 6.3/6.4)
   const totalDrehtage = sortedDates.length;
-  const azvFreieTageNach20DT = Math.floor(totalDrehtage / 20);
+  const azvFreieTageNach20DT = Math.floor(totalDrehtage / T.AZV_FREE_DAY_INTERVAL);
 
   return {
     azvAnspruchStunden: round2(totalAZVHours),
-    azvAnspruchTage: round2(totalAZVHours / 10),
+    azvAnspruchTage: round2(totalAZVHours / T.HOURS_PER_DAY),
     azvFreieTageNach20DT,
     azvDrehtage: totalDrehtage,
   };
@@ -130,6 +116,10 @@ export function calculateTVFFS(timesheets, settings) {
     return getEmptyCalculations();
   }
 
+  // Tarifperiode anhand des frühesten Datums in den Timesheets auflösen
+  const T = getTariffParams(timesheets);
+  const WEEKLY_OT_TIER_SIZE = T.WEEKLY_OT_THRESHOLD_50 - T.WEEKLY_OT_THRESHOLD_25;
+
   const gageType  = settings.gageType  || 'tag';
   const zeitkonto = settings.zeitkonto || false;
   const hasGage   = settings.tagesgage > 0;
@@ -137,7 +127,7 @@ export function calculateTVFFS(timesheets, settings) {
   const tagesgage   = hasGage
     ? (gageType === 'woche' ? settings.tagesgage / 5 : settings.tagesgage)
     : 0;
-  const stundensatz = tagesgage / HOURS_PER_DAY;
+  const stundensatz = tagesgage / T.HOURS_PER_DAY;
 
   let totalArbeitstage      = 0;
   let totalKranktage        = 0;
@@ -159,6 +149,8 @@ export function calculateTVFFS(timesheets, settings) {
   const feiertageList         = [];
   const heiligabendSilvester  = [];
   const ruhezeitVerletzungen  = [];
+  const arbzgLangeTage        = []; // Tage mit > 13h Arbeitszeit (ArbZG)
+  const arbzgOhneRuhetag      = []; // 7+ Arbeitstage am Stück ohne Ruhetag (ArbZG §9/§11)
   let weeklyOT25 = 0;
   let weeklyOT50 = 0;
   // Nur Werktagsstunden >50h brauchen Grundvergütung (Sa/So-Basisstunden stecken schon in Grundgage)
@@ -175,6 +167,8 @@ export function calculateTVFFS(timesheets, settings) {
 
   // Für Ruhezeit-Prüfung
   const allDays = [];
+  // Für Ruhetag-Prüfung: Arbeitstage (Datum) pro Person
+  const workDatesByPerson = new Map();
 
   for (const sheet of timesheets) {
     // Bug 2 + Bug 4: Wochenstunden getrennt nach Werktag / Wochenende tracken.
@@ -191,7 +185,7 @@ export function calculateTVFFS(timesheets, settings) {
       const isFrei  = anm === 'frei' || anm === 'f' || anm.includes('ruhetag');
 
       if (isUrlaub) { urlaubstageGenommen++; continue; }
-      if (isKrank)  { totalKranktage++; if (totalKranktage > MAX_PAID_SICK_DAYS) totalKranktageUnbezahlt++; continue; }
+      if (isKrank)  { totalKranktage++; if (totalKranktage > T.MAX_PAID_SICK_DAYS) totalKranktageUnbezahlt++; continue; }
       if (isAZV)    { totalAZVTage++; continue; }
       if (isFrei)   { continue; }
 
@@ -200,7 +194,7 @@ export function calculateTVFFS(timesheets, settings) {
       totalFahrzeit += dayFahrzeit;
       if (hasGage && dayFahrzeit > 0) {
         const fzRate = (day.tagesgage > 0) ? day.tagesgage : tagesgage;
-        fahrzeitVerguetung += dayFahrzeit * (fzRate / HOURS_PER_DAY);
+        fahrzeitVerguetung += dayFahrzeit * (fzRate / T.HOURS_PER_DAY);
       }
 
       const hasWork = Number(day.stundenTotal) > 0 || (day.start && String(day.start).trim().includes(':'));
@@ -209,6 +203,19 @@ export function calculateTVFFS(timesheets, settings) {
       totalArbeitstage++;
       const hours = day.stundenTotal || 0;
       totalStunden          += hours;
+
+      // ArbZG: mehr als 13h Arbeitszeit an einem Tag
+      if (hours > T.MAX_DAILY_HOURS) {
+        arbzgLangeTage.push({ datum: day.datum, stunden: round2(hours), sheetId: sheet.id, person: sheet.name || sheet.id });
+      }
+
+      // Arbeitstage pro Person sammeln (für Ruhetag-Prüfung)
+      if (day.datum) {
+        const personKey = sheet.name || sheet.id;
+        if (!workDatesByPerson.has(personKey)) workDatesByPerson.set(personKey, new Set());
+        workDatesByPerson.get(personKey).add(day.datum);
+      }
+
       totalUeberstunden25   += day.ueberstunden25  || 0;
       totalUeberstunden50   += day.ueberstunden50  || 0;
       totalUeberstunden100  += day.ueberstunden100 || 0;
@@ -229,13 +236,13 @@ export function calculateTVFFS(timesheets, settings) {
       // Per-day Gage berechnen
       if (hasGage) {
         const dayRate       = (day.tagesgage > 0) ? day.tagesgage : tagesgage;
-        const dayStundensatz = dayRate / HOURS_PER_DAY;
+        const dayStundensatz = dayRate / T.HOURS_PER_DAY;
         grundgage                   += dayRate;
         ueberstundenGrundverguetung += dailyOTHours * dayStundensatz;
         zuschlag25  += (day.ueberstunden25  || 0) * dayStundensatz * 0.25;
         zuschlag50  += (day.ueberstunden50  || 0) * dayStundensatz * 0.50;
         zuschlag100 += (day.ueberstunden100 || 0) * dayStundensatz * 1.00;
-        nachtZuschlag += (day.nacht25 || 0) * dayStundensatz * NIGHT_SURCHARGE;
+        nachtZuschlag += (day.nacht25 || 0) * dayStundensatz * T.NIGHT_SURCHARGE;
       }
 
       // Feiertage (inkl. Ostersonntag + Pfingstsonntag)
@@ -320,7 +327,7 @@ export function calculateTVFFS(timesheets, settings) {
     // WICHTIG: Sa/So-Basisstunden stecken bereits in grundgage (Tagesgage pro Arbeitstag).
     // Deshalb erzeugen Sa/So-Stunden NUR Zuschläge (25%/50%), keine weitere Grundvergütung.
     // Werktagsstunden >50h hingegen benötigen ggf. Grundvergütung (falls nicht durch daily-OT gedeckt).
-    const weekdayOT = Math.max(0, sheetWeekdayStunden - WEEKLY_OT_THRESHOLD_25);
+    const weekdayOT = Math.max(0, sheetWeekdayStunden - T.WEEKLY_OT_THRESHOLD_25);
     // TZ 5.4.3.4: Sa/So zählen als wöchentliche Mehrarbeit NUR wenn in dieser Woche
     // auch Werktage gearbeitet wurden (= Sa ist der „6. Tag" einer 5-Tage-Woche).
     // Ein alleinstehender Samstagsdreh ist kein „6. Arbeitstag", sondern ein einzelner DT.
@@ -357,21 +364,43 @@ export function calculateTVFFS(timesheets, settings) {
       const dayDiff = (currDate - prevDate) / (1000 * 60 * 60 * 24);
       if (dayDiff !== 1) continue;
       const restHours = (24 - prevEnd) + currStart;
-      if (restHours < MIN_REST_HOURS) {
+      if (restHours < T.MIN_REST_HOURS) {
         ruhezeitVerletzungen.push({
           datum1: prev.datum, ende1: prev.ende,
           datum2: curr.datum, start2: curr.start,
-          ruhezeit: round2(restHours), fehlend: round2(MIN_REST_HOURS - restHours),
+          ruhezeit: round2(restHours), fehlend: round2(T.MIN_REST_HOURS - restHours),
         });
       }
     }
   }
 
+  // ArbZG §9/§11: 7+ Arbeitstage am Stück ohne Ruhetag erkennen (pro Person)
+  for (const [person, dateSet] of workDatesByPerson) {
+    const dates = [...dateSet].map(d => {
+      const [dd, mm, yy] = d.split('.').map(Number);
+      if (!dd || !mm || !yy) return null;
+      return { str: d, date: new Date(yy < 100 ? 2000 + yy : yy, mm - 1, dd) };
+    }).filter(Boolean).sort((a, b) => a.date - b.date);
+
+    let runStart = 0;
+    for (let i = 1; i <= dates.length; i++) {
+      const gap = i < dates.length
+        ? Math.round((dates[i].date - dates[i - 1].date) / 86400000)
+        : Infinity; // letzten Lauf abschließen
+      if (gap === 1) continue;
+      const runLen = i - runStart;
+      if (runLen > T.MAX_CONSECUTIVE_WORKDAYS) {
+        arbzgOhneRuhetag.push({ person, von: dates[runStart].str, bis: dates[i - 1].str, tage: runLen });
+      }
+      runStart = i;
+    }
+  }
+
   // Bug 5: AZV-Anspruch aus zusammenhängenden Drehtagen (TZ 6.1-6.4, ab 01.05.2025)
-  const azv = calculateAZVEntitlement(timesheets);
+  const azv = calculateAZVEntitlement(timesheets, T);
 
   // Bezahlte Tage
-  const bezahlteKranktage   = Math.min(totalKranktage, MAX_PAID_SICK_DAYS);
+  const bezahlteKranktage   = Math.min(totalKranktage, T.MAX_PAID_SICK_DAYS);
   const totalBezahlteTage   = totalArbeitstage + bezahlteKranktage + totalAZVTage;
   const totalUeberstunden   = totalUeberstunden25 + totalUeberstunden50 + totalUeberstunden100;
   const durchschnittStundenProTag = totalArbeitstage > 0 ? totalStunden / totalArbeitstage : 0;
@@ -419,7 +448,7 @@ export function calculateTVFFS(timesheets, settings) {
       if (block.length >= 7) {
         const wochen = Math.floor(spanDays / 7);
         totalWochen  += wochen;
-        urlaubstage  += Math.ceil(wochen * VACATION_DAYS_PER_WEEK);
+        urlaubstage  += Math.ceil(wochen * T.VACATION_DAYS_PER_WEEK);
       }
     }
     personAnstellungstage[person] = personTotalTage;
@@ -449,6 +478,7 @@ export function calculateTVFFS(timesheets, settings) {
       totalSamstagsstunden: round2(totalSamstagsstunden),
       totalFeiertagstage, totalFeiertagsstunden: round2(totalFeiertagsstunden),
       feiertageList, heiligabendSilvester, ruhezeitVerletzungen,
+      arbzgLangeTage, arbzgOhneRuhetag,
       weeklyOT25: round2(weeklyOT25), weeklyOT50: round2(weeklyOT50),
       urlaubstage, urlaubstageGenommen, totalWochen, anstellungstage,
       totalKranktageUnbezahlt, bezahlteKranktage,
@@ -464,13 +494,13 @@ export function calculateTVFFS(timesheets, settings) {
 
   // Durchschnittlicher Stundensatz (für Wochenend-/Feiertagszuschläge)
   const avgTagesgage   = totalArbeitstage > 0 ? grundgage / totalArbeitstage : tagesgage;
-  const avgStundensatz = avgTagesgage / HOURS_PER_DAY;
+  const avgStundensatz = avgTagesgage / T.HOURS_PER_DAY;
 
   const totalUeberstundenZuschlag = zuschlag25 + zuschlag50 + zuschlag100;
 
-  const samstagZuschlag  = totalSamstagsstunden  * avgStundensatz * SATURDAY_SURCHARGE;
-  const sonntagZuschlag  = totalSonntagsstunden  * avgStundensatz * SUNDAY_SURCHARGE;
-  const feiertagZuschlag = totalFeiertagsstunden * avgStundensatz * HOLIDAY_SURCHARGE;
+  const samstagZuschlag  = totalSamstagsstunden  * avgStundensatz * T.SATURDAY_SURCHARGE;
+  const sonntagZuschlag  = totalSonntagsstunden  * avgStundensatz * T.SUNDAY_SURCHARGE;
+  const feiertagZuschlag = totalFeiertagsstunden * avgStundensatz * T.HOLIDAY_SURCHARGE;
 
   // Wöchentliche ÜS-Zuschläge (TZ 5.4.3.3 + 5.4.3.4)
   // Zuschläge gelten für alle weekly-OT-Stunden (Werktag + Sa/So)
@@ -485,7 +515,7 @@ export function calculateTVFFS(timesheets, settings) {
   // Auszahlung: 1/50 der Wochengage pro Stunde = avgStundensatz
   const zeitkontoStunden         = zeitkonto ? round2(totalUeberstunden) : 0;
   const zeitkontoWert            = zeitkonto ? round2(zeitkontoStunden * avgStundensatz) : 0;
-  const zeitkontoTage            = zeitkonto ? round2(zeitkontoStunden / ZEITKONTO_HOURS_PER_DAY) : 0;
+  const zeitkontoTage            = zeitkonto ? round2(zeitkontoStunden / T.ZEITKONTO_HOURS_PER_DAY) : 0;
   const zeitkontoTageAuszahlung  = zeitkonto ? round2(zeitkontoStunden * avgStundensatz) : 0;
 
   const urlaubstageOffen       = Math.max(0, urlaubstage - urlaubstageGenommen);
@@ -523,6 +553,7 @@ export function calculateTVFFS(timesheets, settings) {
     totalSamstagsstunden: round2(totalSamstagsstunden),
     totalFeiertagstage, totalFeiertagsstunden: round2(totalFeiertagsstunden),
     feiertageList, heiligabendSilvester, ruhezeitVerletzungen,
+    arbzgLangeTage, arbzgOhneRuhetag,
     weeklyOT25: round2(weeklyOT25),
     weeklyOT50: round2(weeklyOT50),
     weeklyOTZuschlag25: round2(weeklyOTZuschlag25),
@@ -571,6 +602,7 @@ function getEmptyCalculations() {
     totalSonntagsstunden: 0, totalSamstagsstunden: 0,
     totalFeiertagstage: 0, totalFeiertagsstunden: 0,
     feiertageList: [], heiligabendSilvester: [], ruhezeitVerletzungen: [],
+    arbzgLangeTage: [], arbzgOhneRuhetag: [],
     weeklyOT25: 0, weeklyOT50: 0, weeklyOTZuschlag25: 0, weeklyOTZuschlag50: 0,
     weeklyOTGrundverguetung: 0, totalKranktageUnbezahlt: 0, bezahlteKranktage: 0,
     tagesgageEffective: 0, stundensatz: 0, grundgage: 0,

@@ -393,6 +393,66 @@ describe('calculateTVFFS — Ruhezeit (ArbZG §5)', () => {
   });
 });
 
+describe('calculateTVFFS — ArbZG-Warnungen', () => {
+  test('Tag mit mehr als 13h Arbeitszeit wird erkannt', () => {
+    const days = [
+      makeDay({ stundenTotal: 14, ueberstunden25: 1, ueberstunden50: 3, ende: '23:00' }),
+      makeDay({ datum: '06.01.2026', tag: 'Dienstag' }), // normaler 10h-Tag
+    ];
+    const result = calculateTVFFS([makeSheet(days)], BASE_SETTINGS);
+    expect(result.arbzgLangeTage).toHaveLength(1);
+    expect(result.arbzgLangeTage[0].datum).toBe('05.01.2026');
+    expect(result.arbzgLangeTage[0].stunden).toBe(14);
+  });
+
+  test('genau 13h ist keine Verletzung', () => {
+    const day = makeDay({ stundenTotal: 13, ende: '22:00' });
+    const result = calculateTVFFS([makeSheet([day])], BASE_SETTINGS);
+    expect(result.arbzgLangeTage).toHaveLength(0);
+  });
+
+  test('7+ Arbeitstage am Stück ohne Ruhetag werden erkannt', () => {
+    // 05.01.–12.01.2026 = 8 Tage durchgearbeitet
+    const days = Array.from({ length: 8 }, (_, i) =>
+      makeDay({ datum: `${String(5 + i).padStart(2, '0')}.01.2026` })
+    );
+    const result = calculateTVFFS([makeSheet(days)], BASE_SETTINGS);
+    expect(result.arbzgOhneRuhetag).toHaveLength(1);
+    expect(result.arbzgOhneRuhetag[0].tage).toBe(8);
+    expect(result.arbzgOhneRuhetag[0].von).toBe('05.01.2026');
+    expect(result.arbzgOhneRuhetag[0].bis).toBe('12.01.2026');
+  });
+
+  test('6 Arbeitstage mit anschließendem Ruhetag: keine Warnung', () => {
+    // Mo–Sa, dann frei
+    const days = Array.from({ length: 6 }, (_, i) =>
+      makeDay({ datum: `${String(5 + i).padStart(2, '0')}.01.2026` })
+    );
+    const result = calculateTVFFS([makeSheet(days)], BASE_SETTINGS);
+    expect(result.arbzgOhneRuhetag).toHaveLength(0);
+  });
+
+  test('freier Tag unterbricht den Lauf', () => {
+    // 5 Tage + Lücke + 5 Tage → beide Läufe unter 7
+    const days = [
+      ...Array.from({ length: 5 }, (_, i) => makeDay({ datum: `0${5 + i}.01.2026` })),
+      ...Array.from({ length: 5 }, (_, i) => makeDay({ datum: `${11 + i}.01.2026` })),
+    ];
+    const result = calculateTVFFS([makeSheet(days)], BASE_SETTINGS);
+    expect(result.arbzgOhneRuhetag).toHaveLength(0);
+  });
+
+  test('Läufe werden pro Person getrennt geprüft', () => {
+    const week = (name, startDay) => makeSheet(
+      Array.from({ length: 4 }, (_, i) => makeDay({ datum: `${String(startDay + i).padStart(2, '0')}.01.2026` })),
+      { id: name, name }
+    );
+    // Person A: 05.–08., Person B: 09.–12. — zusammen 8 Tage, aber je 4
+    const result = calculateTVFFS([week('A', 5), week('B', 9)], BASE_SETTINGS);
+    expect(result.arbzgOhneRuhetag).toHaveLength(0);
+  });
+});
+
 describe('calculateTVFFS — Namens-Aliase', () => {
   test('Aliase fassen Vertragszeiten derselben Person zusammen', () => {
     const sheets = [

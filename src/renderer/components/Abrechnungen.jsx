@@ -811,11 +811,59 @@ export default function Abrechnungen({
                                                     Sonderzahlung – kein Abgleich mit Stundenzettel
                                                   </div>
                                                 )}
-                                                {!abr.typ && det && diff !== null && (
-                                                  <div style={{ fontSize: 12, color: diff >= 0 ? 'var(--m-600)' : 'var(--r-600)', fontWeight: 500 }}>
-                                                    Differenz {diff >= 0 ? '+' : ''}{fmtCur(diff)} · {mfd.length} Stundenzettel zugeordnet
-                                                  </div>
-                                                )}
+                                                {!abr.typ && det && diff !== null && (() => {
+                                                  // Aufschlüsselung der eigenen TV-FFS-Berechnung
+                                                  const comps = [
+                                                    { label: `Grundgage (${det.totalBezahlteTage} Tage)`, value: det.grundgage },
+                                                    { label: 'Ü-Grundvergütung', value: det.ueberstundenGrundverguetung },
+                                                    { label: 'Ü-Zuschläge (25/50/100%)', value: det.totalUeberstundenZuschlag },
+                                                    { label: 'Wöch. Mehrarbeit', value: (det.weeklyOTGrundverguetung || 0) + (det.weeklyOTZuschlag25 || 0) + (det.weeklyOTZuschlag50 || 0) },
+                                                    { label: 'Nachtzuschlag', value: det.nachtZuschlag },
+                                                    { label: 'Samstagszuschlag', value: det.samstagZuschlag },
+                                                    { label: 'Sonntagszuschlag', value: det.sonntagZuschlag },
+                                                    { label: 'Feiertagszuschlag', value: det.feiertagZuschlag },
+                                                    { label: 'Fahrzeitvergütung', value: det.fahrzeitVerguetung },
+                                                  ].filter(x => (x.value || 0) > 0.005);
+                                                  // Heuristik: entspricht die Fehl-Differenz einer Komponente oder Zweier-Summe?
+                                                  const TOL = 2; // € Toleranz (Rundung/SV-Abzüge)
+                                                  let hint = null;
+                                                  if (diff < -TOL) {
+                                                    const missing = -diff;
+                                                    const cand = comps.find(x => Math.abs(x.value - missing) <= TOL);
+                                                    if (cand) {
+                                                      hint = `Fehlbetrag entspricht ≈ ${cand.label}`;
+                                                    } else {
+                                                      outer:
+                                                      for (let i = 0; i < comps.length; i++) {
+                                                        for (let j = i + 1; j < comps.length; j++) {
+                                                          if (Math.abs(comps[i].value + comps[j].value - missing) <= TOL) {
+                                                            hint = `Fehlbetrag entspricht ≈ ${comps[i].label} + ${comps[j].label}`;
+                                                            break outer;
+                                                          }
+                                                        }
+                                                      }
+                                                    }
+                                                  }
+                                                  const ok = Math.abs(diff) <= TOL;
+                                                  return (
+                                                    <div style={{ marginTop: 4 }}>
+                                                      <div style={{ fontSize: 12, fontWeight: 600, color: ok ? 'var(--m-600)' : (diff > 0 ? 'var(--m-600)' : 'var(--r-600)') }}>
+                                                        {ok ? '✓ Abrechnung plausibel' : `Differenz ${diff >= 0 ? '+' : ''}${fmtCur(diff)}`}
+                                                        {' '}· {mfd.length} Stundenzettel zugeordnet
+                                                      </div>
+                                                      {hint && (
+                                                        <div style={{ fontSize: 12, color: 'var(--r-600)', marginTop: 2 }}>⚠ {hint}</div>
+                                                      )}
+                                                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px 16px', marginTop: 8, fontSize: 12, color: 'var(--muted)' }}>
+                                                        {comps.map((x, i) => (
+                                                          <span key={i}>{x.label}: <strong style={{ color: 'var(--text)' }}>{fmtCur(x.value)}</strong></span>
+                                                        ))}
+                                                        <span>Summe (TV-FFS): <strong style={{ color: 'var(--p-500)' }}>{fmtCur(cv)}</strong></span>
+                                                        <span>Abgerechnet: <strong style={{ color: 'var(--text)' }}>{fmtCur(abr.betrag)}</strong></span>
+                                                      </div>
+                                                    </div>
+                                                  );
+                                                })()}
                                               </td>
                                             </tr>
                                           );

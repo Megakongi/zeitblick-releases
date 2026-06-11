@@ -12,6 +12,7 @@ import TeamManager from './components/TeamManager';
 import Dispos from './components/Dispos';
 import Abrechnungen from './components/Abrechnungen';
 import SesamAbgleich from './components/SesamAbgleich';
+import CalendarView from './components/CalendarView';
 import ImportOverlay from './components/ImportOverlay';
 import OnboardingTour from './components/OnboardingTour';
 import UpdateOverlay from './components/UpdateOverlay';
@@ -935,7 +936,7 @@ export default function App() {
   const renderView = () => {
     switch (view) {
       case 'dashboard':
-        return <SectionErrorBoundary label="Übersicht"><Dashboard timesheets={filteredTimesheets} calculations={calculations} settings={settings} effectiveSettings={effectiveSettings} onSettings={setSettings} onViewDetail={handleViewDetail} onUpdateTimesheets={setTimesheets} projects={filteredProjects} projectFilter={projectFilter} onProjectFilter={handleProjectFilter} personFilter={personFilter} onPersonFilter={handlePersonFilter} allTimesheets={timesheets} personFilteredTimesheets={personFiltered} getPersonSettings={getPersonSettings} resolveName={resolveName} getBaseProject={getBaseProject} completedProjects={settings.completedProjects || {}} /></SectionErrorBoundary>;
+        return <SectionErrorBoundary label="Übersicht"><Dashboard timesheets={filteredTimesheets} calculations={calculations} settings={settings} effectiveSettings={effectiveSettings} onSettings={setSettings} onViewDetail={handleViewDetail} onUpdateTimesheets={setTimesheets} projects={filteredProjects} projectFilter={projectFilter} onProjectFilter={handleProjectFilter} personFilter={personFilter} onPersonFilter={handlePersonFilter} allTimesheets={timesheets} personFilteredTimesheets={personFiltered} getPersonSettings={getPersonSettings} resolveName={resolveName} getBaseProject={getBaseProject} completedProjects={settings.completedProjects || {}} sesamSheets={sesamSheets} /></SectionErrorBoundary>;
       case 'timesheets':
         return <SectionErrorBoundary label="Stundenzettel-Liste"><TimesheetList timesheets={timesheets} onViewDetail={handleViewDetail} onDelete={handleDelete} onBulkDelete={handleBulkDelete} personFilter={personFilter} resolveName={resolveName} getBaseProject={getBaseProject} onRenameProject={handleRenameProject} completedProjects={settings.completedProjects || {}} onToggleProjectComplete={handleToggleProjectComplete} projectCrews={settings.projectCrews || {}} team={settings.team || []} stdwebProductions={settings.stdwebProduktionen || {}} onSetStdwebProduction={(proj, prod) => setSettings(s => ({ ...s, stdwebProduktionen: { ...(s.stdwebProduktionen || {}), [proj]: prod } }))} /></SectionErrorBoundary>;
       case 'abrechnungen':
@@ -950,6 +951,14 @@ export default function App() {
           team={settings.team || []}
           completedProjects={settings.completedProjects || {}}
           onToggleProjectComplete={handleToggleProjectComplete}
+        /></SectionErrorBoundary>;
+      case 'calendar':
+        return <SectionErrorBoundary label="Kalender"><CalendarView
+          timesheets={filteredTimesheets}
+          dispos={settings.dispos || []}
+          calculations={calculations}
+          onViewDetail={handleViewDetail}
+          resolveName={resolveName}
         /></SectionErrorBoundary>;
       case 'sesam':
         return <SectionErrorBoundary label="Sesam Abgleich"><SesamAbgleich
@@ -1012,7 +1021,7 @@ export default function App() {
       case 'settings':
         return <SectionErrorBoundary label="Einstellungen"><Settings settings={settings} onSave={setSettings} timesheets={timesheets} setTimesheets={setTimesheets} onSyncN8N={runN8NImport} onRestartTour={() => { try { localStorage.removeItem('zeitblick-tour-completed'); } catch (e) {} setShowTour(true); }} /></SectionErrorBoundary>;
       default:
-        return <SectionErrorBoundary label="Übersicht"><Dashboard timesheets={filteredTimesheets} calculations={calculations} settings={settings} effectiveSettings={effectiveSettings} onSettings={setSettings} onViewDetail={handleViewDetail} onUpdateTimesheets={setTimesheets} projects={filteredProjects} projectFilter={projectFilter} onProjectFilter={handleProjectFilter} personFilter={personFilter} onPersonFilter={handlePersonFilter} allTimesheets={timesheets} personFilteredTimesheets={personFiltered} getPersonSettings={getPersonSettings} resolveName={resolveName} getBaseProject={getBaseProject} completedProjects={settings.completedProjects || {}} /></SectionErrorBoundary>;
+        return <SectionErrorBoundary label="Übersicht"><Dashboard timesheets={filteredTimesheets} calculations={calculations} settings={settings} effectiveSettings={effectiveSettings} onSettings={setSettings} onViewDetail={handleViewDetail} onUpdateTimesheets={setTimesheets} projects={filteredProjects} projectFilter={projectFilter} onProjectFilter={handleProjectFilter} personFilter={personFilter} onPersonFilter={handlePersonFilter} allTimesheets={timesheets} personFilteredTimesheets={personFiltered} getPersonSettings={getPersonSettings} resolveName={resolveName} getBaseProject={getBaseProject} completedProjects={settings.completedProjects || {}} sesamSheets={sesamSheets} /></SectionErrorBoundary>;
     }
   };
 

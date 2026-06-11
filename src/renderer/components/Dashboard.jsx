@@ -2,6 +2,8 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { calculateTVFFS as calcTVFFS, calculateSheetTVFFS } from '../utils/tvffsCalculator';
 import { parseDateDE } from '../utils/helpers';
 import { findMissingWeeks } from '../utils/gapDetection';
+import { summarizeSesamDeviations } from '../utils/sesamCheck';
+import { buildYearReport, generateYearReportHTML, yearsInTimesheets } from '../utils/yearReport';
 import { useFilters, useSettings } from '../contexts';
 
 function generatePDFHTML(timesheets, c, settings, personFilter, { getPersonSettings, resolveName, projectFilter } = {}) {
@@ -378,7 +380,7 @@ function generateCSV(timesheets, c, settings, personFilter) {
   return lines.join('\n');
 }
 
-export default function Dashboard({ timesheets, calculations, settings: propSettings, effectiveSettings: propEffectiveSettings, onSettings: propOnSettings, onViewDetail, onUpdateTimesheets, projects, projectFilter: propProjectFilter, onProjectFilter: propOnProjectFilter, personFilter: propPersonFilter, onPersonFilter: propOnPersonFilter, allTimesheets, personFilteredTimesheets, getPersonSettings: propGetPersonSettings, resolveName: propResolveName, getBaseProject: propGetBaseProject, completedProjects }) {
+export default function Dashboard({ timesheets, calculations, settings: propSettings, effectiveSettings: propEffectiveSettings, onSettings: propOnSettings, onViewDetail, onUpdateTimesheets, projects, projectFilter: propProjectFilter, onProjectFilter: propOnProjectFilter, personFilter: propPersonFilter, onPersonFilter: propOnPersonFilter, allTimesheets, personFilteredTimesheets, getPersonSettings: propGetPersonSettings, resolveName: propResolveName, getBaseProject: propGetBaseProject, completedProjects, sesamSheets }) {
   // Use contexts with prop fallback for backward compatibility
   const filterCtx = useFilters();
   const settingsCtx = useSettings();
@@ -405,6 +407,12 @@ export default function Dashboard({ timesheets, calculations, settings: propSett
       completedProjects: completedProjects || {},
     }),
     [timesheets, baseProject, resolve, completedProjects]
+  );
+
+  // Sesam-AZE-Abweichungen (fehlende Tage / abweichende Stunden)
+  const sesamDeviations = useMemo(
+    () => summarizeSesamDeviations(sesamSheets || [], timesheets, resolve),
+    [sesamSheets, timesheets, resolve]
   );
 
   const [gageInput, setGageInput] = useState(es.tagesgage || '');
@@ -469,6 +477,23 @@ export default function Dashboard({ timesheets, calculations, settings: propSett
     }
   };
 
+
+  const handleExportYearReport = async (year) => {
+    setShowExport(false);
+    setExporting(true);
+    try {
+      const report = buildYearReport(timesheets, es, year, { getBaseProject: baseProject });
+      const personLabel = personFilter !== 'all' ? personFilter : '';
+      const html = generateYearReportHTML(report, { personLabel, hasGage });
+      const personSuffix = personFilter !== 'all' ? `-${personFilter}` : '';
+      const result = await window.electronAPI.exportPDF(html, `ZeitBlick-Jahresreport-${year}${personSuffix}.pdf`);
+      if (result && !result.success && result.error) {
+        alert('Export fehlgeschlagen: ' + result.error);
+      }
+    } finally {
+      setExporting(false);
+    }
+  };
 
   // Determine what gage value the input bar should show:
   // When person+project selected → personProjectGagen
@@ -1414,6 +1439,9 @@ export default function Dashboard({ timesheets, calculations, settings: propSett
               <div className="export-menu" role="menu">
                 <button onClick={() => handleExportCSV()} role="menuitem">CSV exportieren</button>
                 <button onClick={() => handleExportPDF()} role="menuitem">PDF exportieren</button>
+                {yearsInTimesheets(timesheets).slice(0, 3).map(y => (
+                  <button key={y} onClick={() => handleExportYearReport(y)} role="menuitem">Jahres-Report {y}</button>
+                ))}
               </div>
             )}
           </div>
@@ -1597,7 +1625,7 @@ export default function Dashboard({ timesheets, calculations, settings: propSett
       </div>
 
       {/* === WARNUNGEN === */}
-      {((c.ruhezeitVerletzungen && c.ruhezeitVerletzungen.length > 0) || (c.feiertageList && c.feiertageList.length > 0) || (c.heiligabendSilvester && c.heiligabendSilvester.length > 0) || c.totalKranktageUnbezahlt > 0 || missingWeeks.length > 0) && (
+      {((c.ruhezeitVerletzungen && c.ruhezeitVerletzungen.length > 0) || (c.feiertageList && c.feiertageList.length > 0) || (c.heiligabendSilvester && c.heiligabendSilvester.length > 0) || c.totalKranktageUnbezahlt > 0 || missingWeeks.length > 0 || (c.arbzgLangeTage && c.arbzgLangeTage.length > 0) || (c.arbzgOhneRuhetag && c.arbzgOhneRuhetag.length > 0) || sesamDeviations.length > 0) && (
         <div className="stats-section warnings-section">
           <h3 className="section-title">⚠ Hinweise</h3>
 
@@ -1651,6 +1679,61 @@ export default function Dashboard({ timesheets, calculations, settings: propSett
                     <span className="warning-date">{f.datum}</span>
                     <span className="warning-name">{f.name}</span>
                     <span className="warning-hours">{f.stunden} Std. — 100% Zuschlag</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {sesamDeviations.length > 0 && (
+            <div className="warning-card warning-danger">
+              <div className="warning-header">🔍 Sesam-Abweichungen ({sesamDeviations.length})</div>
+              <div className="warning-body">
+                <p className="warning-note">Sesam-AZE und App-Stundenzettel stimmen nicht überein — Details im Sesam Abgleich:</p>
+                {sesamDeviations.slice(0, 8).map((d, i) => (
+                  <div key={i} className="warning-row warning-row-bad">
+                    <span className="warning-name">{d.name}</span>
+                    <span className="warning-date">{d.projekt}{d.firstDate ? ` · ab ${d.firstDate}` : ''}</span>
+                    <span className="warning-hours">
+                      {d.missing > 0 ? `${d.missing} Tag${d.missing !== 1 ? 'e' : ''} fehlen in der App` : ''}
+                      {d.missing > 0 && d.wrong > 0 ? ' · ' : ''}
+                      {d.wrong > 0 ? `${d.wrong}× Stunden abweichend` : ''}
+                    </span>
+                  </div>
+                ))}
+                {sesamDeviations.length > 8 && (
+                  <p className="warning-note">… und {sesamDeviations.length - 8} weitere</p>
+                )}
+              </div>
+            </div>
+          )}
+
+          {c.arbzgLangeTage && c.arbzgLangeTage.length > 0 && (
+            <div className="warning-card warning-danger">
+              <div className="warning-header">⏱ Über 13h Arbeitszeit ({c.arbzgLangeTage.length})</div>
+              <div className="warning-body">
+                <p className="warning-note">ArbZG: maximal 13 Stunden Arbeitszeit pro Tag</p>
+                {c.arbzgLangeTage.map((t, i) => (
+                  <div key={i} className="warning-row warning-row-bad">
+                    <span className="warning-date">{t.datum}</span>
+                    <span className="warning-name">{t.person}</span>
+                    <span className="warning-hours">{t.stunden} Std.</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {c.arbzgOhneRuhetag && c.arbzgOhneRuhetag.length > 0 && (
+            <div className="warning-card warning-danger">
+              <div className="warning-header">📆 Kein Wochenruhetag ({c.arbzgOhneRuhetag.length})</div>
+              <div className="warning-body">
+                <p className="warning-note">ArbZG §9/§11: mindestens 1 Ruhetag pro Woche</p>
+                {c.arbzgOhneRuhetag.map((r, i) => (
+                  <div key={i} className="warning-row warning-row-bad">
+                    <span className="warning-name">{r.person}</span>
+                    <span className="warning-date">{r.von} – {r.bis}</span>
+                    <span className="warning-hours">{r.tage} Tage am Stück</span>
                   </div>
                 ))}
               </div>
@@ -1802,6 +1885,54 @@ export default function Dashboard({ timesheets, calculations, settings: propSett
             </div>
         </div>
       )}
+
+      {/* AZV-Konto (TZ 6.1-6.4): Anspruch aus Drehtagen vs. genommene AZV-Tage */}
+      {(c.azvAnspruchStunden > 0 || c.azvFreieTageNach20DT > 0 || c.totalAZVTage > 0) && (() => {
+        const anspruchStd = (c.azvAnspruchStunden || 0) + (c.azvFreieTageNach20DT || 0) * 10;
+        const genommenStd = (c.totalAZVTage || 0) * 10;
+        const saldoStd = Math.round((anspruchStd - genommenStd) * 100) / 100;
+        return (
+          <div className="zeitkonto-card" style={{marginBottom: 24}}>
+            <div className="card-head zeitkonto-card-head">
+              <h2 className="card-title" style={{color: 'var(--accent-blue)'}}>AZV-Konto (TZ 6.1–6.4)</h2>
+            </div>
+            <div className="zeitkonto-balance">
+              <div className="zeitkonto-big-number" style={saldoStd < 0 ? {color: 'var(--accent-red, #e5484d)'} : undefined}>
+                {saldoStd.toLocaleString('de-DE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                <span className="zeitkonto-big-unit">Std.</span>
+              </div>
+              <div className="zeitkonto-big-label">AZV-Saldo (offen)</div>
+            </div>
+            <div className="zeitkonto-details">
+              <div className="zeitkonto-detail-row">
+                <span>Gutschrift aus {c.azvDrehtage} Drehtagen (TZ 6.1)</span>
+                <span>{Number(c.azvAnspruchStunden || 0).toFixed(2)} Std.</span>
+              </div>
+              {c.azvFreieTageNach20DT > 0 && (
+                <div className="zeitkonto-detail-row">
+                  <span>Freie Tage nach je 20 Drehtagen (TZ 6.3)</span>
+                  <span>{c.azvFreieTageNach20DT} Tag{c.azvFreieTageNach20DT > 1 ? 'e' : ''} (= {(c.azvFreieTageNach20DT * 10).toFixed(2)} Std.)</span>
+                </div>
+              )}
+              <div className="zeitkonto-detail-row">
+                <span>Genommene AZV-Tage</span>
+                <span>−{c.totalAZVTage || 0} Tag{(c.totalAZVTage || 0) !== 1 ? 'e' : ''} (= {genommenStd.toFixed(2)} Std.)</span>
+              </div>
+              <div className="zeitkonto-detail-row total">
+                <span>Offener AZV-Anspruch</span>
+                <span>{saldoStd.toFixed(2)} Std.</span>
+              </div>
+            </div>
+            <div className="zeitkonto-note">
+              {saldoStd > 0
+                ? 'Offener AZV-Anspruch — als bezahlte freie Tage zu nehmen oder über das Zeitkonto auszugleichen (TZ 6.2).'
+                : saldoStd < 0
+                  ? 'Es wurden mehr AZV-Tage genommen als nach TZ 6 erworben.'
+                  : 'AZV-Anspruch vollständig ausgeglichen.'}
+            </div>
+          </div>
+        );
+      })()}
       {hasGage && (
         <div className="card" style={{marginBottom: 24}}>
           <div className="card-head">

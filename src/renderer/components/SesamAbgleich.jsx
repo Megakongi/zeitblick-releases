@@ -1,4 +1,5 @@
 import React, { useState, useCallback, useMemo } from 'react';
+import { normalizeDatum, hoursMatch, findAppDay as findAppDayUtil } from '../utils/sesamCheck';
 
 function fmtNum(v, digits = 2) {
   return typeof v === 'number' ? v.toFixed(digits).replace('.', ',') : '–';
@@ -52,26 +53,6 @@ function timeToH(t) {
   const [h, m] = t.split(':').map(Number);
   return h + m / 60;
 }
-function hoursMatch(sesamH, appH) {
-  if (appH == null) return null;
-  return Math.abs(sesamH - appH) <= 0.25;
-}
-
-/**
- * Normalize a German date string to "DD.MM.YYYY".
- * Handles: "8.5.2026", "08.5.26", "8.5.26", "08.05.2026", etc.
- * Returns null if the input can't be parsed.
- */
-function normalizeDatum(d) {
-  if (!d) return null;
-  const m = d.match(/^(\d{1,2})\.(\d{1,2})\.(\d{2,4})$/);
-  if (!m) return null;
-  const day  = m[1].padStart(2, '0');
-  const mon  = m[2].padStart(2, '0');
-  let   year = m[3];
-  if (year.length === 2) year = (parseInt(year, 10) >= 70 ? '19' : '20') + year;
-  return `${day}.${mon}.${year}`;
-}
 
 /* ── Main Component ─────────────────────────────────────────── */
 export default function SesamAbgleich({
@@ -117,23 +98,7 @@ export default function SesamAbgleich({
 
   /* Find matching app-timesheet day by date + name */
   function findAppDay(sheet, day) {
-    if (!day.datum) return null;
-    const normDay = normalizeDatum(day.datum);
-    // Split the Sesam name into words (length > 2) and check if ANY word
-    // appears in the app timesheet name — handles "Till Pallapies" vs "Pallapies"
-    const sheetWords = sheet.name
-      ? sheet.name.toLowerCase().split(/\s+/).filter(w => w.length > 2)
-      : [];
-    for (const ts of timesheets) {
-      const tsName = resolve(ts.name || 'Unbekannt').toLowerCase();
-      if (sheetWords.length > 0 && !sheetWords.some(w => tsName.includes(w))) continue;
-      const found = (ts.days || []).find(d => {
-        const normD = normalizeDatum(d.datum);
-        return normD && normDay && normD === normDay;
-      });
-      if (found) return found;
-    }
-    return null;
+    return findAppDayUtil(sheet, day, timesheets, resolve);
   }
 
   /* ── Filter / sort options ───────────────────────────────── */
