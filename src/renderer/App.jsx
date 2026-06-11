@@ -110,6 +110,7 @@ export default function App() {
   const dragCounter = useRef(0);
   const saveTimeout = useRef(null);
   const dataLoaded = useRef(false);
+  const pendingSave = useRef(null); // unsaved data awaiting debounced save
   const [n8nOverlay, setN8nOverlay] = useState(null); // { sheets, deviations, unknownNames, files, folder }
   const n8nRunning = useRef(false);
   const [appVersion, setAppVersion] = useState('');
@@ -249,6 +250,9 @@ export default function App() {
         }
         setSettings(s);
       }
+      if (data.trash && Array.isArray(data.trash)) {
+        setTrash(data.trash.slice(-50));
+      }
       if (data._loadError) {
         setImportMessage('⚠ Fehler beim Laden: ' + data._loadError);
         setTimeout(() => setImportMessage(null), 8000);
@@ -263,16 +267,32 @@ export default function App() {
   // Debounced save — waits 500ms after last change before saving
   useEffect(() => {
     if (!dataLoaded.current) return;
+    pendingSave.current = { timesheets, settings, abrechnungen, sesamSheets, trash };
     if (saveTimeout.current) clearTimeout(saveTimeout.current);
     saveTimeout.current = setTimeout(async () => {
-      const result = await window.electronAPI.saveData({ timesheets, settings, abrechnungen, sesamSheets });
+      pendingSave.current = null;
+      const result = await window.electronAPI.saveData({ timesheets, settings, abrechnungen, sesamSheets, trash });
       if (result && !result.success && result.error) {
         setSaveError(result.error);
         setTimeout(() => setSaveError(null), 6000);
       }
     }, 500);
     return () => { if (saveTimeout.current) clearTimeout(saveTimeout.current); };
-  }, [timesheets, settings, abrechnungen, sesamSheets]);
+  }, [timesheets, settings, abrechnungen, sesamSheets, trash]);
+
+  // Flush pending changes synchronously when the window closes (app quit),
+  // otherwise edits made within the 500ms debounce window would be lost
+  useEffect(() => {
+    const flushPendingSave = () => {
+      if (pendingSave.current && window.electronAPI.saveDataSync) {
+        if (saveTimeout.current) clearTimeout(saveTimeout.current);
+        window.electronAPI.saveDataSync(pendingSave.current);
+        pendingSave.current = null;
+      }
+    };
+    window.addEventListener('beforeunload', flushPendingSave);
+    return () => window.removeEventListener('beforeunload', flushPendingSave);
+  }, []);
 
   // Keyboard shortcuts
   useEffect(() => {

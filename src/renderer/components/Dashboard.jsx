@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { calculateTVFFS as calcTVFFS, calculateSheetTVFFS } from '../utils/tvffsCalculator';
 import { parseDateDE } from '../utils/helpers';
+import { findMissingWeeks } from '../utils/gapDetection';
 import { useFilters, useSettings } from '../contexts';
 
 function generatePDFHTML(timesheets, c, settings, personFilter, { getPersonSettings, resolveName, projectFilter } = {}) {
@@ -395,6 +396,16 @@ export default function Dashboard({ timesheets, calculations, settings: propSett
   const hasGage = es.tagesgage > 0;
   const resolve = propResolveName || settingsCtx.resolveName || ((n) => n);
   const baseProject = propGetBaseProject || settingsCtx.getBaseProject || ((p) => p || 'Sonstiges');
+
+  // Fehlende Kalenderwochen pro Person & Projekt (respektiert aktive Filter)
+  const missingWeeks = useMemo(
+    () => findMissingWeeks(timesheets, {
+      getBaseProject: baseProject,
+      resolveName: resolve,
+      completedProjects: completedProjects || {},
+    }),
+    [timesheets, baseProject, resolve, completedProjects]
+  );
 
   const [gageInput, setGageInput] = useState(es.tagesgage || '');
   const [gageType, setGageType] = useState(es.gageType || 'tag');
@@ -1586,9 +1597,25 @@ export default function Dashboard({ timesheets, calculations, settings: propSett
       </div>
 
       {/* === WARNUNGEN === */}
-      {((c.ruhezeitVerletzungen && c.ruhezeitVerletzungen.length > 0) || (c.feiertageList && c.feiertageList.length > 0) || (c.heiligabendSilvester && c.heiligabendSilvester.length > 0) || c.totalKranktageUnbezahlt > 0) && (
+      {((c.ruhezeitVerletzungen && c.ruhezeitVerletzungen.length > 0) || (c.feiertageList && c.feiertageList.length > 0) || (c.heiligabendSilvester && c.heiligabendSilvester.length > 0) || c.totalKranktageUnbezahlt > 0 || missingWeeks.length > 0) && (
         <div className="stats-section warnings-section">
           <h3 className="section-title">⚠ Hinweise</h3>
+
+          {missingWeeks.length > 0 && (
+            <div className="warning-card warning-info">
+              <div className="warning-header">📋 Fehlende Kalenderwochen ({missingWeeks.reduce((s, g) => s + g.missing.length, 0)})</div>
+              <div className="warning-body">
+                <p className="warning-note">Zwischen erster und letzter erfasster Woche fehlen Stundenzettel:</p>
+                {missingWeeks.map((g, i) => (
+                  <div key={i} className="warning-row">
+                    <span className="warning-name">{g.person}</span>
+                    <span className="warning-date">{g.projekt}</span>
+                    <span className="warning-hours">{g.missing.map(m => m.label).join(', ')}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
           
           {c.totalKranktageUnbezahlt > 0 && (
             <div className="warning-card warning-danger">

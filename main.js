@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, dialog, globalShortcut, shell, safeStorage } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, shell, safeStorage } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const { parsePDF } = require('./src/main/pdfParser');
@@ -23,6 +23,55 @@ try {
   }
 } catch (e) {
   console.error('Auto-updater init failed:', e.message);
+}
+
+/** Fetch a small text file over HTTP(S), following redirects. */
+function fetchText(url, depth = 0) {
+  return new Promise((resolve, reject) => {
+    if (depth > 5) return reject(new Error('Too many redirects'));
+    const proto = url.startsWith('https') ? require('https') : require('http');
+    proto.get(url, { headers: { 'User-Agent': 'ZeitBlick-Updater' } }, (res) => {
+      if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+        res.resume();
+        resolve(fetchText(res.headers.location, depth + 1));
+        return;
+      }
+      if (res.statusCode !== 200) {
+        res.resume();
+        reject(new Error(`HTTP ${res.statusCode}`));
+        return;
+      }
+      let data = '';
+      res.on('data', chunk => { data += chunk; });
+      res.on('end', () => resolve(data));
+    }).on('error', reject);
+  });
+}
+
+/** Compute the sha512 (base64) of a file — matches electron-builder's format. */
+function sha512Base64(filePath) {
+  return new Promise((resolve, reject) => {
+    const hash = require('crypto').createHash('sha512');
+    const stream = fs.createReadStream(filePath);
+    stream.on('data', d => hash.update(d));
+    stream.on('end', () => resolve(hash.digest('base64')));
+    stream.on('error', reject);
+  });
+}
+
+/** Extract the sha512 for a given file from electron-builder's latest-mac.yml */
+function extractSha512FromYml(ymlText, fileName) {
+  const lines = ymlText.split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    if (lines[i].includes('url:') && lines[i].includes(fileName)) {
+      for (let j = i + 1; j < Math.min(i + 4, lines.length); j++) {
+        const m = lines[j].match(/sha512:\s*(\S+)/);
+        if (m) return m[1];
+        if (lines[j].includes('url:')) break;
+      }
+    }
+  }
+  return null;
 }
 
 // Module-level helper to send status to renderer
@@ -820,6 +869,32 @@ ipcMain.handle('download-update', async () => {
         });
       });
 
+      // Verify integrity against electron-builder's published latest-mac.yml.
+      // Fails hard on checksum mismatch; skips gracefully if the yml is missing
+      // (older releases) so updates don't break entirely.
+      try {
+        const ymlUrl = `https://github.com/Megakongi/zeitblick-releases/releases/download/v${version}/latest-mac.yml`;
+        const yml = await fetchText(ymlUrl);
+        const expected = extractSha512FromYml(yml, dmgFileName);
+        if (expected) {
+          const actual = await sha512Base64(dest);
+          if (actual !== expected) {
+            try { fs.unlinkSync(dest); } catch (_) {}
+            throw new Error('CHECKSUM_MISMATCH');
+          }
+          console.log('[updater] DMG sha512 verified OK');
+        } else {
+          console.warn('[updater] No sha512 entry for', dmgFileName, 'in latest-mac.yml');
+        }
+      } catch (verifyErr) {
+        if (verifyErr.message === 'CHECKSUM_MISMATCH') {
+          const msg = 'Update abgebrochen: Die heruntergeladene Datei ist beschädigt oder wurde manipuliert (Checksumme stimmt nicht).';
+          sendUpdateStatus('update-status', { status: 'error', message: msg });
+          return { success: false, error: msg };
+        }
+        console.warn('[updater] Checksum verification skipped:', verifyErr.message);
+      }
+
       downloadedDmgPath = dest;
       sendUpdateStatus('update-status', {
         status: 'downloaded',
@@ -1091,7 +1166,7 @@ ipcMain.handle('open-folder-dialog', async () => {
         // Resolve symlinks and ensure path stays within selected folder
         let resolvedPath;
         try { resolvedPath = fs.realpathSync(fullPath); } catch (_) { continue; }
-        if (!resolvedPath.startsWith(resolvedRoot)) continue;
+        if (resolvedPath !== resolvedRoot && !resolvedPath.startsWith(resolvedRoot + path.sep)) continue;
         if (entry.isDirectory()) {
           scanDir(fullPath);
         } else if (entry.isFile() && entry.name.toLowerCase().endsWith('.pdf')) {
@@ -1114,8 +1189,13 @@ ipcMain.handle('load-data', async () => {
 
 // Save data
 ipcMain.handle('save-data', async (event, data) => {
-  saveData(data);
-  return { success: true };
+  return saveData(data);
+});
+
+// Synchronous save — used by the renderer in beforeunload to flush
+// pending (debounced) changes before the window closes / app quits
+ipcMain.on('save-data-sync', (event, data) => {
+  event.returnValue = saveData(data);
 });
 
 // Get PDF file content for re-reading

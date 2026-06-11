@@ -1,6 +1,6 @@
 {
   "name": "zeitblick",
-  "version": "1.5.2",
+  "version": "1.5.3",
   "description": "ZeitBlick - PDF Import & TV-FFS Auswertung",
   "author": "Till Pallapies",
   "main": "main.js",
@@ -11,7 +11,9 @@
     "build:mac": "npm run clean:release && vite build && electron-builder --mac",
     "build:win": "npm run clean:release && vite build && electron-builder --win",
     "vite": "vite",
-    "electron": "electron ."
+    "electron": "electron .",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "build": {
     "appId": "com.zeitblick.app",
@@ -93,7 +95,9 @@
     "concurrently": "^10.0.3",
     "electron": "^42.3.3",
     "electron-builder": "^26.15.0",
+    "playwright-core": "^1.60.0",
     "vite": "^6.4.3",
+    "vitest": "^4.1.8",
     "wait-on": "^9.0.4"
   },
   "overrides": {

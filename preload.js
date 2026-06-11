@@ -7,6 +7,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   openFolderDialog: () => ipcRenderer.invoke('open-folder-dialog'),
   loadData: () => ipcRenderer.invoke('load-data'),
   saveData: (data) => ipcRenderer.invoke('save-data', data),
+  saveDataSync: (data) => ipcRenderer.sendSync('save-data-sync', data),
   readPDFFile: (filePath) => ipcRenderer.invoke('read-pdf-file', filePath),
   exportCSV: (csvContent, defaultName) => ipcRenderer.invoke('export-csv', csvContent, defaultName),
   exportPDF: (htmlContent, defaultName) => ipcRenderer.invoke('export-pdf', htmlContent, defaultName),
