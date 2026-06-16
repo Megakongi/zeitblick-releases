@@ -37,9 +37,35 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Build & publish Windows installer
+      # electron-builders eigener GitHub-Publisher lädt die große .exe
+      # unzuverlässig hoch (Race beim Anlegen des Releases) und meldet den Step
+      # trotzdem als erfolgreich. Daher: nur bauen (kein Auto-Publish) …
+      - name: Build Windows installer
+        run: npm run build:win -- --publish never
+
+      # … und Artefakte deterministisch + verifiziert per gh CLI hochladen.
+      # Dateinamen on-disk sind dank nsis.artifactName bereits hypheniert und
+      # passen damit zu den URLs in latest.yml (Auto-Update).
+      - name: Publish to GitHub Release
         env:
-          # Quellcode und Releases liegen im selben Repo (zeitblick-releases),
-          # daher genügt das eingebaute Token zum Veröffentlichen.
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: npm run build:win -- --publish always
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${{ github.event.inputs.ref || github.ref_name }}"
+          VER="${TAG#v}"
+          EXE="release/ZeitBlick-Setup-${VER}.exe"
+          MAP="release/ZeitBlick-Setup-${VER}.exe.blockmap"
+          YML="release/latest.yml"
+          for f in "$EXE" "$MAP" "$YML"; do
+            [ -f "$f" ] || { echo "::error::Erwartetes Artefakt fehlt: $f"; ls -la release; exit 1; }
+          done
+          gh release view "$TAG" >/dev/null 2>&1 || \
+            gh release create "$TAG" --title "$TAG" --notes "Automatischer Windows-Build für $TAG"
+          gh release upload "$TAG" "$EXE" "$MAP" "$YML" --clobber
+          echo "Veröffentlichte Assets:"
+          gh release view "$TAG" --json assets --jq '.assets[] | "\(.name)  \(.size) bytes  \(.state)"'
+          # Sicherstellen, dass die .exe wirklich als 'uploaded' anliegt.
+          gh release view "$TAG" --json assets \
+            --jq '.assets[] | select(.name=="ZeitBlick-Setup-'"$VER"'.exe" and .state=="uploaded") | .name' \
+            | grep -q . || { echo "::error::.exe wurde nicht vollständig veröffentlicht"; exit 1; }
