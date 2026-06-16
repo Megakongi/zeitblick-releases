@@ -282,10 +282,13 @@ export function applyDeviation(sheets, deviation, chosenName) {
   if (!sheet) return;
   const day = sheet.days.find(d => d.datum === deviation.datum);
   if (!day) return;
-  const starts = [toMin(deviation.teamStart), toMin(deviation.start)].filter(v => v != null);
-  const ends = [toMin(deviation.teamEnde), toMin(deviation.ende)].filter(v => v != null);
-  if (starts.length) day.start = fromMin(Math.min(...starts));
-  if (ends.length) day.ende = fromMin(Math.max(...ends));
+  // Eine Abweichung beschreibt die *tatsächliche* Zeit der Person und ersetzt die
+  // Teamzeit. Die Teamzeit dient nur als Fallback, wenn eine Seite (Start/Ende)
+  // in der Abweichung fehlt.
+  const start = toMin(deviation.start) ?? toMin(deviation.teamStart);
+  const ende = toMin(deviation.ende) ?? toMin(deviation.teamEnde);
+  if (start != null) day.start = fromMin(start);
+  if (ende != null) day.ende = fromMin(ende);
   day.pause = deviation.pause;
   const note = `Abweichung: ${deviation.initiale} ${deviation.start}–${deviation.ende}`;
   day.anmerkungen = day.anmerkungen ? `${day.anmerkungen} · ${note}` : note;

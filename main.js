@@ -193,6 +193,9 @@ function createWindow() {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
+      // Aktiviert Chromiums internen PDF-Viewer, damit Dispo-PDFs im iframe
+      // (blob:-URL) angezeigt werden können.
+      plugins: true,
     },
   });
 
@@ -211,8 +214,11 @@ function createWindow() {
     `script-src ${scriptSrc}`,
     `style-src 'self' 'unsafe-inline' https://fonts.googleapis.com`,
     `font-src 'self' https://fonts.gstatic.com`,
-    `img-src 'self' data: file:`,
+    `img-src 'self' data: file: blob:`,
     `connect-src ${connectSrc}`,
+    // Dispo-PDFs werden als blob:-URL in einem iframe angezeigt; ohne frame-src
+    // fällt die Policy auf default-src 'self' zurück und blockiert das blob:-iframe.
+    `frame-src 'self' blob:`,
     `object-src 'none'`,
     `base-uri 'self'`,
   ].join('; ');
@@ -1438,7 +1444,7 @@ function startN8NWatch(folder) {
     n8nWatcher = fs.watch(folder, { persistent: false }, (eventType, filename) => {
       if (filename) {
         const lower = filename.toLowerCase();
-        if (!lower.endsWith('.txt') && !lower.endsWith('.pdf')) return;
+        if (!lower.endsWith('.txt') && !lower.endsWith('.json') && !lower.endsWith('.pdf')) return;
       }
       if (n8nWatchDebounce) clearTimeout(n8nWatchDebounce);
       n8nWatchDebounce = setTimeout(() => {
@@ -1490,7 +1496,10 @@ ipcMain.handle('n8n-scan', async (event, folder) => {
   try {
     const dir = folder || getDefaultN8NFolder();
     if (!fs.existsSync(dir)) return { success: false, error: 'Ordner nicht gefunden', entries: [], errors: [] };
-    const files = fs.readdirSync(dir).filter(f => f.toLowerCase().endsWith('.txt'));
+    const files = fs.readdirSync(dir).filter(f => {
+      const l = f.toLowerCase();
+      return l.endsWith('.txt') || l.endsWith('.json');
+    });
     const entries = [];
     const errors = [];
     for (const file of files) {

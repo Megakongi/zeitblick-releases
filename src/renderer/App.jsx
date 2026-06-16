@@ -625,8 +625,17 @@ export default function App() {
     try {
       const folder = settings.n8nFolder || (window.electronAPI.getDefaultN8NFolder ? await window.electronAPI.getDefaultN8NFolder() : '');
       const res = await window.electronAPI.scanN8N(folder);
-      if (!res || !res.success || !res.entries || res.entries.length === 0) { n8nRunning.current = false; return; }
-      const { sheets, deviations, substitutions, unknownNames, newProjects, calendarAdds } = processN8N(res.entries, {
+      if (!res || !res.success || !res.entries || res.entries.length === 0) {
+        // Nicht erkannte Dateien nicht lautlos verschlucken – Hinweis anzeigen.
+        if (res && res.success && res.errors && res.errors.length) {
+          const names = res.errors.map(e => e.file).join(', ');
+          setImportMessage(`⚠ n8n: ${res.errors.length} Datei(en) nicht erkannt: ${names}`);
+          setTimeout(() => setImportMessage(null), 8000);
+        }
+        n8nRunning.current = false;
+        return;
+      }
+      const { sheets, deviations, substitutions, unknownNames, newProjects, calendarAdds, errors: procErrors } = processN8N(res.entries, {
         resolveName,
         projectCrews: settings.projectCrews || {},
         team: settings.team || [],
@@ -635,6 +644,13 @@ export default function App() {
         projectStaffing: settings.projectStaffing || {},
       });
       const files = res.entries.map(e => e.file);
+      // Teil-Fehler (nicht erkannte Dateien / Verarbeitungsfehler) sichtbar machen.
+      const allErrors = [...(res.errors || []), ...(procErrors || [])];
+      if (allErrors.length) {
+        const names = allErrors.map(e => e.file).filter(Boolean).join(', ');
+        setImportMessage(`⚠ n8n: ${allErrors.length} Datei(en) mit Problemen${names ? ': ' + names : ''}`);
+        setTimeout(() => setImportMessage(null), 8000);
+      }
       const needsOverlay = sheets.length > 0 || deviations.length > 0 || substitutions.length > 0 || unknownNames.length > 0 || newProjects.length > 0;
       if (!needsOverlay) {
         // Nur Kalender-Einträge (Zusatz/Vertretung) → direkt einpflegen, ohne Dialog
