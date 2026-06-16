@@ -1404,9 +1404,11 @@ function parsePlainTextZeiten(raw, filename) {
 }
 
 function parsePlainTextZusatzVertretung(raw, filename) {
-  // Erkennt Dateien wie "<Projekt>_Zusatzpersonal.txt" oder "<Projekt>_Vertretung.txt"
+  // Erkennt Dateien wie "<Projekt>_Zusatzpersonal.txt", "<Projekt>_Zusatz.txt"
+  // oder "<Projekt>_Vertretung.txt". Der Basename wird getrimmt, da Dateinamen
+  // (z. B. aus n8n/Cloud-Sync) versehentlich Zeilenumbrüche enthalten können.
   const base = path.basename(filename, path.extname(filename)).trim();
-  const zusatzMatch = base.match(/^(.+?)_Zusatzpersonal\s*$/i);
+  const zusatzMatch = base.match(/^(.+?)_Zusatz(?:personal)?\s*$/i);
   const vertretungMatch = base.match(/^(.+?)_Vertretung\s*$/i);
   if (!zusatzMatch && !vertretungMatch) return null;
   const typ = zusatzMatch ? 'zusatzpersonal' : 'vertretung';
