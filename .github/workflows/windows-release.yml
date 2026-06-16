@@ -1,0 +1,45 @@
+name: Build & Publish Windows
+
+# Baut den Windows-NSIS-Installer nativ auf einem Windows-Runner und
+# veröffentlicht ihn (.exe, .blockmap, latest.yml) an das passende GitHub-Release.
+# Läuft automatisch bei Push eines v*-Tags oder manuell via "Run workflow"
+# (mit Angabe des Tags, z. B. v1.6.0, um ein bestehendes Release zu ergänzen).
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Tag oder Branch zum Bauen (z. B. v1.6.0)'
+        required: true
+        default: 'v1.6.0'
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.ref || github.ref }}
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build & publish Windows installer
+        env:
+          # Quellcode und Releases liegen im selben Repo (zeitblick-releases),
+          # daher genügt das eingebaute Token zum Veröffentlichen.
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: npm run build:win -- --publish always
