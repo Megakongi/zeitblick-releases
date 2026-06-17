@@ -1415,9 +1415,13 @@ function parsePlainTextZusatzVertretung(raw, filename) {
   // Erkennt Dateien wie "<Projekt>_Zusatzpersonal.txt", "<Projekt>_Zusatz.txt"
   // oder "<Projekt>_Vertretung.txt". Der Basename wird getrimmt, da Dateinamen
   // (z. B. aus n8n/Cloud-Sync) versehentlich Zeilenumbrüche enthalten können.
+  // Ein optionaler Kopie-Suffix nach dem Schlüsselwort wird toleriert, z. B.
+  // "PM_Zusatz -2", "PM_Zusatz (2)", "PM_Zusatz Kopie", "PM_Zusatz copy 2"
+  // (entsteht beim Duplizieren durch Finder/iCloud/n8n).
+  const COPY = String.raw`(?:[\s_-]*(?:\(\d+\)|kopie|copy|\d+))*`;
   const base = path.basename(filename, path.extname(filename)).trim();
-  const zusatzMatch = base.match(/^(.+?)_Zusatz(?:personal)?\s*$/i);
-  const vertretungMatch = base.match(/^(.+?)_Vertretung\s*$/i);
+  const zusatzMatch = base.match(new RegExp(`^(.+?)_Zusatz(?:personal)?${COPY}\\s*$`, 'i'));
+  const vertretungMatch = base.match(new RegExp(`^(.+?)_Vertretung${COPY}\\s*$`, 'i'));
   if (!zusatzMatch && !vertretungMatch) return null;
   const typ = zusatzMatch ? 'zusatzpersonal' : 'vertretung';
   const projekt = (zusatzMatch || vertretungMatch)[1].trim();
