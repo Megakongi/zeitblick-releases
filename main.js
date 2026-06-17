@@ -911,7 +911,15 @@ ipcMain.handle('download-update', async () => {
       return { success: true };
     } catch (err) {
       console.error('[updater] macOS DMG download failed:', err.message);
-      return { success: false, error: err.message };
+      // Surface the failure to the renderer so the UI doesn't stay stuck at
+      // "downloading 0%". A 404 here usually means no macOS build was published
+      // for this release (CI currently only builds Windows).
+      const isMissing = /HTTP 404/.test(err.message || '');
+      const msg = isMissing
+        ? `Für macOS wurde für Version ${pendingUpdateInfo.version} kein Update veröffentlicht. Bitte später erneut versuchen oder manuell von GitHub laden.`
+        : `Download fehlgeschlagen: ${err.message}`;
+      sendUpdateStatus('update-status', { status: 'error', message: msg });
+      return { success: false, error: msg };
     }
   }
 

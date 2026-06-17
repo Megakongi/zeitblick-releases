@@ -1,7 +1,9 @@
-name: Build & Publish Windows
+name: Build & Publish Release
 
-# Baut den Windows-NSIS-Installer nativ auf einem Windows-Runner und
-# veröffentlicht ihn (.exe, .blockmap, latest.yml) an das passende GitHub-Release.
+# Baut die Plattform-Installer nativ (Windows-NSIS auf windows-latest,
+# macOS-DMG auf macos-latest) und veröffentlicht sie am passenden GitHub-Release:
+#   Windows: .exe, .blockmap, latest.yml
+#   macOS:   .dmg (+ .blockmap), -mac.zip (+ .blockmap), latest-mac.yml
 # Läuft automatisch bei Push eines v*-Tags oder manuell via "Run workflow"
 # (mit Angabe des Tags, z. B. v1.6.0, um ein bestehendes Release zu ergänzen).
 
@@ -61,7 +63,7 @@ jobs:
             [ -f "$f" ] || { echo "::error::Erwartetes Artefakt fehlt: $f"; ls -la release; exit 1; }
           done
           gh release view "$TAG" >/dev/null 2>&1 || \
-            gh release create "$TAG" --title "$TAG" --notes "Automatischer Windows-Build für $TAG"
+            gh release create "$TAG" --title "$TAG" --notes "Automatischer Build für $TAG"
           gh release upload "$TAG" "$EXE" "$MAP" "$YML" --clobber
           echo "Veröffentlichte Assets:"
           gh release view "$TAG" --json assets --jq '.assets[] | "\(.name)  \(.size) bytes  \(.state)"'
@@ -69,3 +71,63 @@ jobs:
           gh release view "$TAG" --json assets \
             --jq '.assets[] | select(.name=="ZeitBlick-Setup-'"$VER"'.exe" and .state=="uploaded") | .name' \
             | grep -q . || { echo "::error::.exe wurde nicht vollständig veröffentlicht"; exit 1; }
+
+  macos:
+    # Läuft nach dem Windows-Job, damit das Release garantiert existiert und
+    # beide Jobs nicht gleichzeitig `gh release create` aufrufen (Race).
+    needs: windows
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.ref || github.ref }}
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      # Universal-DMG bauen, ohne Auto-Publish. Der Build ist unsigniert
+      # (build.mac.identity = null), daher kein Signing-Secret nötig.
+      - name: Build macOS DMG
+        run: npm run build:mac -- --publish never
+
+      # DMG + latest-mac.yml deterministisch hochladen. Die SHA512 in
+      # latest-mac.yml stammt aus genau diesem Build und wird vom In-App-Updater
+      # gegen den heruntergeladenen DMG verifiziert (main.js).
+      - name: Publish to GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${{ github.event.inputs.ref || github.ref_name }}"
+          VER="${TAG#v}"
+          DMG="release/ZeitBlick-${VER}-universal.dmg"
+          YML="release/latest-mac.yml"
+          # Pflicht-Artefakte: ohne diese funktioniert das Mac-Auto-Update nicht.
+          for f in "$DMG" "$YML"; do
+            [ -f "$f" ] || { echo "::error::Erwartetes Artefakt fehlt: $f"; ls -la release; exit 1; }
+          done
+          # Optionale Begleit-Artefakte (Blockmap, Zip) mitnehmen, falls vorhanden.
+          UPLOADS=("$DMG" "$YML")
+          for opt in \
+            "release/ZeitBlick-${VER}-universal.dmg.blockmap" \
+            "release/ZeitBlick-${VER}-universal-mac.zip" \
+            "release/ZeitBlick-${VER}-universal-mac.zip.blockmap"; do
+            [ -f "$opt" ] && UPLOADS+=("$opt")
+          done
+          gh release view "$TAG" >/dev/null 2>&1 || \
+            gh release create "$TAG" --title "$TAG" --notes "Automatischer Build für $TAG"
+          gh release upload "$TAG" "${UPLOADS[@]}" --clobber
+          echo "Veröffentlichte Assets:"
+          gh release view "$TAG" --json assets --jq '.assets[] | "\(.name)  \(.size) bytes  \(.state)"'
+          # Sicherstellen, dass der DMG wirklich als 'uploaded' anliegt.
+          gh release view "$TAG" --json assets \
+            --jq '.assets[] | select(.name=="ZeitBlick-'"$VER"'-universal.dmg" and .state=="uploaded") | .name' \
+            | grep -q . || { echo "::error::DMG wurde nicht vollständig veröffentlicht"; exit 1; }
