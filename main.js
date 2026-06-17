@@ -1537,6 +1537,28 @@ ipcMain.handle('n8n-scan', async (event, folder) => {
   }
 });
 
+// Verarbeitete Dateien werden nicht gelöscht, sondern als Sicherheitsnetz
+// (Re-Import nach Fix, Audit) ins Unterverzeichnis "_verarbeitet" verschoben.
+// Damit der Ordner nicht unbegrenzt wächst, werden Archiv-Einträge nach Ablauf
+// dieser Frist automatisch entfernt.
+const N8N_ARCHIVE_RETENTION_DAYS = 90;
+
+/** Entfernt Archiv-Einträge, die älter als die Aufbewahrungsfrist sind. */
+function pruneN8NArchive(processedDir) {
+  const cutoff = Date.now() - N8N_ARCHIVE_RETENTION_DAYS * 24 * 60 * 60 * 1000;
+  let entries;
+  try { entries = fs.readdirSync(processedDir); } catch (_) { return; }
+  for (const name of entries) {
+    const full = path.join(processedDir, name);
+    try {
+      // Zeitstempel bevorzugt aus dem Namespräfix "<ms>-…", sonst mtime.
+      const m = name.match(/^(\d{10,})-/);
+      const ts = m ? Number(m[1]) : fs.statSync(full).mtimeMs;
+      if (ts < cutoff) fs.unlinkSync(full);
+    } catch (_) { /* einzelne Fehler ignorieren */ }
+  }
+}
+
 ipcMain.handle('n8n-archive', async (event, folder, filenames) => {
   try {
     const dir = folder || getDefaultN8NFolder();
@@ -1545,8 +1567,11 @@ ipcMain.handle('n8n-archive', async (event, folder, filenames) => {
     for (const file of (filenames || [])) {
       const src = path.join(dir, file);
       if (!fs.existsSync(src)) continue;
-      try { fs.renameSync(src, path.join(processedDir, `${Date.now()}-${file}`)); } catch (_) {}
+      // Dateinamen säubern (z. B. versehentliche Zeilenumbrüche aus Cloud-Sync).
+      const cleanName = file.replace(/[\r\n]+/g, '').trim();
+      try { fs.renameSync(src, path.join(processedDir, `${Date.now()}-${cleanName}`)); } catch (_) {}
     }
+    pruneN8NArchive(processedDir);
     return { success: true };
   } catch (e) {
     return { success: false, error: e.message };
