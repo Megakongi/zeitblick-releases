@@ -1384,8 +1384,13 @@ ipcMain.handle('export-pdfs-to-folder', async (event, htmlContentArray) => {
 
 /**
  * Parst eine einfache Klartext-Zeitdatei.
- * Format pro Zeile: DD.MM[.YYYY] HH:MM-HH:MM [Pause]
- * Beispiel: "05.06 8:00-18:45" oder "05.06.2026 8:00-18:45 0.5"
+ * Format pro Zeile: DD.MM[.YYYY] HH:MM-HH:MM [Pause] [| <Initiale> HH:MM-HH:MM …]
+ * Beispiele:
+ *   "05.06 8:00-18:45"
+ *   "05.06.2026 8:00-18:45 0.5"
+ *   "16.06 8:30-19:00 | MM 8:00-19:30 | FZ 8:00-19:30"
+ * Das erste Segment ist die Teamzeit, weitere "|"-Segmente sind initialen-
+ * basierte Abweichungen einzelner Personen.
  * Projekt wird aus dem Dateinamen gelesen: "Zeiten <Projekt>.txt" → "<Projekt>"
  */
 function parsePlainTextZeiten(raw, filename) {
@@ -1399,13 +1404,24 @@ function parsePlainTextZeiten(raw, filename) {
   for (const line of raw.split('\n')) {
     const l = line.trim();
     if (!l || l.startsWith('#')) continue;
-    const m = l.match(/^(\d{1,2})\.(\d{1,2})(?:\.(\d{2,4}))?\s+(\d{1,2}:\d{2})-(\d{1,2}:\d{2})(?:\s+([\d.,]+))?/);
+    const segments = l.split('|').map(s => s.trim()).filter(Boolean);
+    const head = segments[0] || '';
+    const m = head.match(/^(\d{1,2})\.(\d{1,2})(?:\.(\d{2,4}))?\s+(\d{1,2}:\d{2})-(\d{1,2}:\d{2})(?:\s+([\d.,]+))?/);
     if (!m) continue;
     const [, d, mo, yr, start, ende, pauseStr] = m;
     const y = yr ? (yr.length === 2 ? '20' + yr : yr) : String(year);
     const datum = `${pad(+d)}.${pad(+mo)}.${y}`;
     const pause = pauseStr ? parseFloat(pauseStr.replace(',', '.')) : 0.75;
-    tage.push({ datum, team: { start: normTime(start), ende: normTime(ende), pause } });
+    // Weitere Segmente = initialen-basierte Abweichungen, z. B. "MM 8:00-19:30".
+    const abweichungen = [];
+    for (const seg of segments.slice(1)) {
+      const a = seg.match(/^(.+?)\s+(\d{1,2}:\d{2})\s*-\s*(\d{1,2}:\d{2})/);
+      if (!a) continue;
+      abweichungen.push({ initiale: a[1].trim(), start: normTime(a[2]), ende: normTime(a[3]) });
+    }
+    const tag = { datum, team: { start: normTime(start), ende: normTime(ende), pause } };
+    if (abweichungen.length) tag.abweichungen = abweichungen;
+    tage.push(tag);
   }
   if (tage.length === 0) return null;
   return { typ: 'zeiten', projekt, tage };
