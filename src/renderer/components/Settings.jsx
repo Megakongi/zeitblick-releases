@@ -376,6 +376,11 @@ export default function Settings({ settings, onSave, timesheets, setTimesheets, 
 
   const [settingsTab, setSettingsTab] = useState('gagen');
 
+  // ArbZG-Prüfung (Defaults: aktiv, Gesetzes-/Tarifschwellen)
+  const arbzg = settings.arbzg || {};
+  const updateArbzg = (patch) => onSave({ ...settings, arbzg: { ...arbzg, ...patch } });
+  const arbzgNum = (key, fallback) => (arbzg[key] === undefined || arbzg[key] === null || arbzg[key] === '' ? fallback : arbzg[key]);
+
   // n8n-Anbindung
   const [n8nFolderInput, setN8nFolderInput] = useState(settings.n8nFolder || '');
   const [n8nDefaultFolder, setN8nDefaultFolder] = useState('');
@@ -393,6 +398,7 @@ export default function Settings({ settings, onSave, timesheets, setTimesheets, 
     { id: 'gagen', label: 'Gagen', icon: '💶' },
     { id: 'namen', label: 'Namen & Aliases', icon: '👤' },
     { id: 'n8n', label: 'n8n', icon: '🔗' },
+    { id: 'arbzg', label: 'ArbZG-Prüfung', icon: '⚖️' },
     { id: 'system', label: 'System & Export', icon: '⚙️' },
   ];
 
@@ -572,6 +578,65 @@ export default function Settings({ settings, onSave, timesheets, setTimesheets, 
       </div>
       )}
 
+      {settingsTab === 'arbzg' && (
+      <div className="v3-settings-panel">
+        <div className="v3-settings-panel-title">ArbZG-Prüfung</div>
+        <div className="v3-settings-panel-sub">Automatische Hinweise auf mögliche Verstöße gegen das Arbeitszeitgesetz. Schwellen lassen sich an tarifliche Abweichungen (§7 ArbZG) anpassen.</div>
+
+        <div className="settings-card">
+          <h3>⚖️ Prüfung</h3>
+          <p className="settings-description">
+            ZeitBlick prüft erfasste Zeiten auf Ruhezeit (§5), Wochenruhetag (§9/§11), Ruhepausen (§4) und überlange Arbeitstage. Treffer erscheinen als Hinweise im Dashboard und im Kalender.
+          </p>
+
+          <label style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '10px 0' }}>
+            <input type="checkbox" checked={arbzg.enabled !== false} onChange={e => updateArbzg({ enabled: e.target.checked })} />
+            <span>ArbZG-Prüfung aktiv</span>
+          </label>
+
+          <label style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '10px 0', opacity: arbzg.enabled === false ? 0.5 : 1 }}>
+            <input type="checkbox" checked={arbzg.pausenCheck !== false} disabled={arbzg.enabled === false} onChange={e => updateArbzg({ pausenCheck: e.target.checked })} />
+            <span>Ruhepausen prüfen (§4: 30 min ab 6h, 45 min ab 9h)</span>
+          </label>
+
+          <div className="project-field" style={{ marginTop: 12, opacity: arbzg.enabled === false ? 0.5 : 1 }}>
+            <label>Mindest-Ruhezeit zwischen Schichten (Std., §5)</label>
+            <input type="number" min="0" step="0.5" disabled={arbzg.enabled === false}
+              value={arbzgNum('minRestHours', 11)}
+              onChange={e => updateArbzg({ minRestHours: e.target.value === '' ? '' : Number(e.target.value) })}
+              style={{ maxWidth: 120 }} />
+            <span className="project-field-hint">Standard: 11 Std.</span>
+          </div>
+
+          <div className="project-field" style={{ marginTop: 12, opacity: arbzg.enabled === false ? 0.5 : 1 }}>
+            <label>Maximale Arbeitszeit pro Tag (Std., §3)</label>
+            <input type="number" min="0" step="0.5" disabled={arbzg.enabled === false}
+              value={arbzgNum('maxDailyHours', 13)}
+              onChange={e => updateArbzg({ maxDailyHours: e.target.value === '' ? '' : Number(e.target.value) })}
+              style={{ maxWidth: 120 }} />
+            <span className="project-field-hint">Standard: 13 Std. (ArbZG §3/§7 i.V.m. TV-FFS)</span>
+          </div>
+
+          <div className="project-field" style={{ marginTop: 12, opacity: arbzg.enabled === false ? 0.5 : 1 }}>
+            <label>Hinweis ab Arbeitszeit pro Tag (Std., §3)</label>
+            <input type="number" min="0" step="0.5" disabled={arbzg.enabled === false}
+              value={arbzgNum('dailyHintHours', 10)}
+              onChange={e => updateArbzg({ dailyHintHours: e.target.value === '' ? '' : Number(e.target.value) })}
+              style={{ maxWidth: 120 }} />
+            <span className="project-field-hint">Standard: 10 Std. – weicher Hinweis unterhalb der Tagesgrenze. Auf die Tagesgrenze setzen, um Hinweise zu deaktivieren.</span>
+          </div>
+
+          <div className="project-field" style={{ marginTop: 12, opacity: arbzg.enabled === false ? 0.5 : 1 }}>
+            <label>Maximale Arbeitstage am Stück (§9/§11)</label>
+            <input type="number" min="1" step="1" disabled={arbzg.enabled === false}
+              value={arbzgNum('maxConsecutiveWorkdays', 6)}
+              onChange={e => updateArbzg({ maxConsecutiveWorkdays: e.target.value === '' ? '' : Number(e.target.value) })}
+              style={{ maxWidth: 120 }} />
+            <span className="project-field-hint">Standard: 6 Tage (1 Ruhetag pro Woche)</span>
+          </div>
+        </div>
+      </div>
+      )}
       {settingsTab === 'system' && (
       <div className="v3-settings-panel">
         <div className="v3-settings-panel-title">System & Export</div>

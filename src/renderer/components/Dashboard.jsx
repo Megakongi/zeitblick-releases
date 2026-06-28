@@ -1625,7 +1625,7 @@ export default function Dashboard({ timesheets, calculations, settings: propSett
       </div>
 
       {/* === WARNUNGEN === */}
-      {((c.ruhezeitVerletzungen && c.ruhezeitVerletzungen.length > 0) || (c.feiertageList && c.feiertageList.length > 0) || (c.heiligabendSilvester && c.heiligabendSilvester.length > 0) || c.totalKranktageUnbezahlt > 0 || missingWeeks.length > 0 || (c.arbzgLangeTage && c.arbzgLangeTage.length > 0) || (c.arbzgOhneRuhetag && c.arbzgOhneRuhetag.length > 0) || sesamDeviations.length > 0) && (
+      {((c.ruhezeitVerletzungen && c.ruhezeitVerletzungen.length > 0) || (c.feiertageList && c.feiertageList.length > 0) || (c.heiligabendSilvester && c.heiligabendSilvester.length > 0) || c.totalKranktageUnbezahlt > 0 || missingWeeks.length > 0 || (c.arbzgLangeTage && c.arbzgLangeTage.length > 0) || (c.arbzgOhneRuhetag && c.arbzgOhneRuhetag.length > 0) || (c.arbzgHinweisTage && c.arbzgHinweisTage.length > 0) || (c.pausenVerstoesse && c.pausenVerstoesse.length > 0) || sesamDeviations.length > 0) && (
         <div className="stats-section warnings-section">
           <h3 className="section-title">⚠ Hinweise</h3>
 
@@ -1724,6 +1724,22 @@ export default function Dashboard({ timesheets, calculations, settings: propSett
             </div>
           )}
 
+          {c.arbzgHinweisTage && c.arbzgHinweisTage.length > 0 && (
+            <div className="warning-card warning-warn">
+              <div className="warning-header">🕙 Lange Arbeitstage ({c.arbzgHinweisTage.length})</div>
+              <div className="warning-body">
+                <p className="warning-note">Hinweis – über 10h Arbeitszeit (ArbZG §3: Regelgrenze 10h, noch unter 13h)</p>
+                {c.arbzgHinweisTage.map((t, i) => (
+                  <div key={i} className="warning-row warning-row-warn">
+                    <span className="warning-date">{t.datum}</span>
+                    <span className="warning-name">{t.person}</span>
+                    <span className="warning-hours">{t.stunden} Std.</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
           {c.arbzgOhneRuhetag && c.arbzgOhneRuhetag.length > 0 && (
             <div className="warning-card warning-danger">
               <div className="warning-header">📆 Kein Wochenruhetag ({c.arbzgOhneRuhetag.length})</div>
@@ -1750,6 +1766,22 @@ export default function Dashboard({ timesheets, calculations, settings: propSett
                     <span>{v.datum1} Ende: {v.ende1}</span>
                     <span>→ {v.datum2} Start: {v.start2}</span>
                     <span className="warning-gap">Ruhezeit: {v.ruhezeit}h (fehlen {v.fehlend}h)</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {c.pausenVerstoesse && c.pausenVerstoesse.length > 0 && (
+            <div className="warning-card warning-danger">
+              <div className="warning-header">☕ Zu kurze Ruhepause ({c.pausenVerstoesse.length})</div>
+              <div className="warning-body">
+                <p className="warning-note">ArbZG §4: mind. 30 min Pause ab 6h, 45 min ab 9h Arbeitszeit</p>
+                {c.pausenVerstoesse.map((p, i) => (
+                  <div key={i} className="warning-row warning-row-bad">
+                    <span className="warning-date">{p.datum}</span>
+                    <span className="warning-name">{p.person}</span>
+                    <span className="warning-gap">Pause: {p.pauseIst}h von {p.pauseSoll}h (bei {p.brutto}h)</span>
                   </div>
                 ))}
               </div>

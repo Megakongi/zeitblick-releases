@@ -472,3 +472,32 @@ describe('calculateTVFFS — Namens-Aliase', () => {
     expect(result.urlaubstage).toBe(1);
   });
 });
+
+describe('ArbZG: lange Tage (Verstoß vs. Hinweis)', () => {
+  test('11h-Tag → weicher Hinweis, kein Verstoß', () => {
+    const day = makeDay({ stundenTotal: 11, ende: '19:00' });
+    const result = calculateTVFFS([makeSheet([day])], BASE_SETTINGS);
+    expect(result.arbzgHinweisTage).toHaveLength(1);
+    expect(result.arbzgHinweisTage[0]).toMatchObject({ datum: '05.01.2026', stunden: 11 });
+    expect(result.arbzgLangeTage).toHaveLength(0);
+  });
+
+  test('14h-Tag → Verstoß, kein Hinweis', () => {
+    const day = makeDay({ stundenTotal: 14, ende: '22:00' });
+    const result = calculateTVFFS([makeSheet([day])], BASE_SETTINGS);
+    expect(result.arbzgLangeTage).toHaveLength(1);
+    expect(result.arbzgHinweisTage).toHaveLength(0);
+  });
+
+  test('10h-Tag → weder Hinweis noch Verstoß', () => {
+    const result = calculateTVFFS([makeSheet([makeDay({ stundenTotal: 10 })])], BASE_SETTINGS);
+    expect(result.arbzgHinweisTage).toHaveLength(0);
+    expect(result.arbzgLangeTage).toHaveLength(0);
+  });
+
+  test('deaktivierte Prüfung → keine Hinweise', () => {
+    const day = makeDay({ stundenTotal: 11, ende: '19:00' });
+    const result = calculateTVFFS([makeSheet([day])], { ...BASE_SETTINGS, arbzg: { enabled: false } });
+    expect(result.arbzgHinweisTage).toHaveLength(0);
+  });
+});

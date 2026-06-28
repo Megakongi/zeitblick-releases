@@ -3071,6 +3071,14 @@ body {
   border-left: 4px solid var(--accent-red);
 }
 
+.warning-card.warning-warn {
+  border-left: 4px solid var(--accent-yellow);
+}
+
+.warning-row-warn {
+  color: var(--accent-yellow);
+}
+
 .warning-header {
   font-weight: 600;
   font-size: 14px;

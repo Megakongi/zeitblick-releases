@@ -96,6 +96,11 @@ export default function CalendarView({ timesheets = [], dispos = [], calculation
       if (iso) get(iso).warn.push(`Ruhezeit ${v.ruhezeit}h`);
     }
 
+    for (const p of calculations.pausenVerstoesse || []) {
+      const iso = toISO(p.datum);
+      if (iso) get(iso).warn.push(`Pause ${p.pauseIst}h (Soll ${p.pauseSoll}h)`);
+    }
+
     return idx;
   }, [timesheets, dispos, calculations, resolve]);
 
