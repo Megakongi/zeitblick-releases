@@ -6,6 +6,7 @@ import {
   checkPausen,
   checkRuhezeit,
   checkWochenruhetag,
+  checkWochenruhe,
 } from '../arbzgCheck';
 
 const T = { MIN_REST_HOURS: 11, MAX_DAILY_HOURS: 13, MAX_CONSECUTIVE_WORKDAYS: 6 };
@@ -155,5 +156,57 @@ describe('checkWochenruhetag (§9/§11)', () => {
   test('freier Tag unterbricht den Lauf', () => {
     const set = new Set(['05.01.2026','06.01.2026','07.01.2026','09.01.2026','10.01.2026','11.01.2026','12.01.2026']);
     expect(checkWochenruhetag(new Map([['Max', set]]), CFG)).toHaveLength(0);
+  });
+});
+
+describe('checkRuhezeit – TZ 5.9.1 verlängerte Ruhe (11,5h nach langem Tag)', () => {
+  test('nach >11h Arbeit gilt 11,5h Soll: 11,25h ist Verstoß', () => {
+    const days = [
+      { datum: '05.01.2026', start: '07:00', ende: '20:45', stundenTotal: 12, person: 'Max' },
+      { datum: '06.01.2026', start: '08:00', ende: '17:00', stundenTotal: 8, person: 'Max' },
+    ];
+    const out = checkRuhezeit(days, CFG);
+    expect(out).toHaveLength(1);
+    expect(out[0].soll).toBe(11.5);
+    expect(out[0].ruhezeit).toBe(11.25);
+  });
+  test('nach ≤11h Arbeit gilt 11h Soll: 11,25h ist kein Verstoß', () => {
+    const days = [
+      { datum: '05.01.2026', start: '09:00', ende: '20:45', stundenTotal: 10, person: 'Max' },
+      { datum: '06.01.2026', start: '08:00', ende: '17:00', stundenTotal: 8, person: 'Max' },
+    ];
+    expect(checkRuhezeit(days, CFG)).toHaveLength(0);
+  });
+});
+
+describe('checkWochenruhe – TZ 5.9.4 (2 WE/Monat ≥ 59h)', () => {
+  const fri = (d, ende) => ({ datum: d, start: '08:00', ende, person: 'Max' });
+  const mon = (d, start) => ({ datum: d, start, ende: '18:00', person: 'Max' });
+
+  test('zwei kurze Wochenenden im Monat → Verstoß', () => {
+    const days = [
+      fri('03.04.2026', '22:00'), mon('06.04.2026', '07:00'), // WE 04./05.: 57h
+      fri('10.04.2026', '22:00'), mon('13.04.2026', '07:00'), // WE 11./12.: 57h
+    ];
+    const { wochenenden, verstoesse } = checkWochenruhe(days, CFG);
+    expect(wochenenden).toHaveLength(2);
+    expect(wochenenden.every(w => !w.erfuellt59)).toBe(true);
+    expect(verstoesse).toHaveLength(1);
+    expect(verstoesse[0]).toMatchObject({ monat: '04/2026', bewertet: 2, erfuellt: 0, benoetigt: 2 });
+  });
+
+  test('zwei lange Wochenenden (≥59h) → kein Verstoß', () => {
+    const days = [
+      fri('03.04.2026', '18:00'), mon('06.04.2026', '09:00'), // 63h
+      fri('10.04.2026', '18:00'), mon('13.04.2026', '09:00'), // 63h
+    ];
+    const { wochenenden, verstoesse } = checkWochenruhe(days, CFG);
+    expect(wochenenden.every(w => w.erfuellt59)).toBe(true);
+    expect(verstoesse).toHaveLength(0);
+  });
+
+  test('nur ein bewertbares Wochenende im Monat → kein Verstoß (Fehlalarm-Schutz)', () => {
+    const days = [fri('03.04.2026', '22:00'), mon('06.04.2026', '07:00')];
+    expect(checkWochenruhe(days, CFG).verstoesse).toHaveLength(0);
   });
 });

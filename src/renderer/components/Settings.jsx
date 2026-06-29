@@ -261,7 +261,7 @@ function StdWebTestCard({ team = [] }) {
   );
 }
 
-export default function Settings({ settings, onSave, timesheets, setTimesheets, onSyncN8N, onRestartTour }) {
+export default function Settings({ settings, onSave, timesheets, setTimesheets, onSyncN8N, onSyncNoco, onRestartTour }) {
   const [newPosition, setNewPosition] = useState('');
   const [newPositionGage, setNewPositionGage] = useState('');
 
@@ -272,6 +272,53 @@ export default function Settings({ settings, onSave, timesheets, setTimesheets, 
   const [importStatus, setImportStatus] = useState('');
   const [restoreConfirm, setRestoreConfirm] = useState(null);
   const [restoring, setRestoring] = useState(false);
+
+  // Geräteübergreifender Speicherort
+  const [dataLoc, setDataLoc] = useState(null); // { dataDir, isCustom, deviceName, suggested, lastWrite }
+  const [dataLocStatus, setDataLocStatus] = useState('');
+  const [dataLocBusy, setDataLocBusy] = useState(false);
+  const refreshDataLoc = async () => {
+    try {
+      const info = await window.electronAPI?.getDataLocation?.();
+      if (info) setDataLoc(info);
+    } catch (_) { /* ignore */ }
+  };
+  useEffect(() => { refreshDataLoc(); }, []);
+
+  const handleMoveToCloud = async (customDir) => {
+    const target = customDir || dataLoc?.suggested;
+    if (!confirm(`Datenspeicher in den synchronisierten Ordner verlegen?\n\n${target}\n\nVorher wird automatisch ein lokales Backup erstellt. Auf jedem Gerät einmal denselben (iCloud-)Ordner wählen.`)) return;
+    try {
+      setDataLocBusy(true);
+      setDataLocStatus('Verlege Daten…');
+      const res = await window.electronAPI.setDataDir(customDir || undefined);
+      if (res.success) {
+        setDataLocStatus(res.adopted
+          ? '✅ Vorhandene Daten aus dem Ordner übernommen. App wird neu geladen…'
+          : '✅ Daten verlegt. App wird neu geladen…');
+        setTimeout(() => window.location.reload(), 1500);
+      } else {
+        setDataLocStatus(`❌ ${res.error}`);
+      }
+    } catch (e) { setDataLocStatus(`❌ ${e.message}`); }
+    finally { setDataLocBusy(false); }
+  };
+
+  const handleResetToLocal = async () => {
+    if (!confirm('Datenspeicher zurück auf diesen Mac (lokal) legen? Der aktuelle Stand wird lokal übernommen.')) return;
+    try {
+      setDataLocBusy(true);
+      setDataLocStatus('Setze zurück…');
+      const res = await window.electronAPI.resetDataDir();
+      if (res.success) {
+        setDataLocStatus('✅ Wieder lokal. App wird neu geladen…');
+        setTimeout(() => window.location.reload(), 1500);
+      } else {
+        setDataLocStatus(`❌ ${res.error}`);
+      }
+    } catch (e) { setDataLocStatus(`❌ ${e.message}`); }
+    finally { setDataLocBusy(false); }
+  };
 
   // Auto-Updater
   const { checking, result: updateResult, checkForUpdates } = useUpdateChecker();
@@ -394,10 +441,69 @@ export default function Settings({ settings, onSave, timesheets, setTimesheets, 
   const handleToggleN8n = () => onSave({ ...settings, n8nEnabled: !settings.n8nEnabled });
   const handleSyncN8n = async () => { setN8nStatus('Synchronisiere…'); try { await (onSyncN8N && onSyncN8N()); setN8nStatus('Synchronisierung gestartet.'); } catch { setN8nStatus('Fehler bei der Synchronisierung.'); } setTimeout(() => setN8nStatus(''), 4000); };
 
+  // NocoDB-Direktanbindung
+  const [nocoForm, setNocoForm] = useState({
+    baseUrl: settings.nocoBaseUrl || 'https://app.nocodb.com',
+    tableId: settings.nocoTableId || '',
+    viewId: settings.nocoViewId || '',
+    token: '',
+    pollMinutes: settings.nocoPollMinutes || 10,
+  });
+  const [nocoStatus, setNocoStatus] = useState('');
+  const hasNocoToken = !!settings.nocoToken;
+  const handleToggleNoco = () => onSave({ ...settings, nocoEnabled: !settings.nocoEnabled });
+  // Baut das aktualisierte Settings-Objekt aus dem Formular (Token verschlüsselt).
+  const buildNocoNext = async () => {
+    const next = {
+      ...settings,
+      nocoBaseUrl: (nocoForm.baseUrl || 'https://app.nocodb.com').trim().replace(/\/+$/, ''),
+      nocoTableId: nocoForm.tableId.trim(),
+      nocoViewId: nocoForm.viewId.trim(),
+      nocoPollMinutes: Math.max(2, Number(nocoForm.pollMinutes) || 10),
+    };
+    const tok = nocoForm.token.trim();
+    if (tok) {
+      try {
+        const enc = await window.electronAPI.safeEncrypt(tok);
+        next.nocoToken = (enc && enc.success) ? enc.data : tok;
+      } catch { next.nocoToken = tok; }
+    }
+    return next;
+  };
+  const handleSaveNoco = async () => {
+    onSave(await buildNocoNext());
+    setNocoForm(f => ({ ...f, token: '' }));
+    setNocoStatus('Gespeichert.');
+    setTimeout(() => setNocoStatus(''), 3000);
+  };
+  // Speichert die Formularwerte und gibt sie dem Abruf direkt mit – so wirkt der
+  // Abruf sofort, ohne auf das (asynchrone) Settings-Update zu warten.
+  const handleSyncNoco = async () => {
+    const next = await buildNocoNext();
+    if (!next.nocoTableId) { setNocoStatus('Bitte zuerst die Table-ID (m…) eintragen.'); setTimeout(() => setNocoStatus(''), 5000); return; }
+    onSave(next);
+    setNocoForm(f => ({ ...f, token: '' }));
+    setNocoStatus('Hole Daten…');
+    try {
+      await (onSyncNoco && onSyncNoco(next));
+      setNocoStatus('Abruf gestartet.');
+    } catch { setNocoStatus('Fehler beim Abruf.'); }
+    setTimeout(() => setNocoStatus(''), 4000);
+  };
+  const nocoImportedCount = (settings.nocoImportedIds || []).length;
+  const handleResetNoco = () => {
+    if (nocoImportedCount === 0) { setNocoStatus('Keine Markierungen vorhanden.'); setTimeout(() => setNocoStatus(''), 3000); return; }
+    if (!window.confirm(`${nocoImportedCount} Import-Markierung(en) zurücksetzen? Beim nächsten „Jetzt holen" werden alle Zeilen erneut verarbeitet.`)) return;
+    onSave({ ...settings, nocoImportedIds: [] });
+    setNocoStatus('Markierungen zurückgesetzt – „Jetzt holen" verarbeitet jetzt alle Zeilen neu.');
+    setTimeout(() => setNocoStatus(''), 5000);
+  };
+
   const settingsNavItems = [
     { id: 'gagen', label: 'Gagen', icon: '💶' },
     { id: 'namen', label: 'Namen & Aliases', icon: '👤' },
     { id: 'n8n', label: 'n8n', icon: '🔗' },
+    { id: 'noco', label: 'NocoDB', icon: '🗄️' },
     { id: 'arbzg', label: 'ArbZG-Prüfung', icon: '⚖️' },
     { id: 'system', label: 'System & Export', icon: '⚙️' },
   ];
@@ -465,6 +571,62 @@ export default function Settings({ settings, onSave, timesheets, setTimesheets, 
         <AppleShortcutsCard />
 
         <StdWebTestCard team={settings.team || []} />
+      </div>
+      )}
+      {settingsTab === 'noco' && (
+      <div className="v3-settings-panel">
+        <div className="v3-settings-panel-title">NocoDB-Anbindung</div>
+        <div className="v3-settings-panel-sub">Stundenzettel direkt aus deiner NocoDB-Tabelle „Zeiten" abrufen – ohne n8n und ohne Cloud-Datei.</div>
+
+        <div className="settings-card">
+          <h3>🗄️ NocoDB-Direktimport</h3>
+          <p className="settings-description">
+            ZeitBlick holt die Zeilen deiner „Zeiten"-Tabelle direkt über die NocoDB-API. Eine Zeile = ein Tag (Datum, Projekt, Von-Bis, Abweichungen, Notizen). Bereits importierte Zeilen werden anhand ihrer Id übersprungen.
+          </p>
+
+          <label style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '10px 0' }}>
+            <input type="checkbox" checked={!!settings.nocoEnabled} onChange={handleToggleNoco} />
+            <span>Automatischer Abruf aktiv (beim Start + alle {Math.max(2, settings.nocoPollMinutes || 10)} Min.)</span>
+          </label>
+
+          <div className="project-field" style={{ marginTop: 8 }}>
+            <label>Base-URL</label>
+            <input type="text" value={nocoForm.baseUrl} onChange={e => setNocoForm(f => ({ ...f, baseUrl: e.target.value }))} placeholder="https://app.nocodb.com" />
+          </div>
+          <div className="project-field" style={{ marginTop: 8 }}>
+            <label>Table-ID (beginnt mit „m…")</label>
+            <input type="text" value={nocoForm.tableId} onChange={e => setNocoForm(f => ({ ...f, tableId: e.target.value }))} placeholder="z.B. m1a2b3c4d5e6f7g" />
+          </div>
+          <div className="project-field" style={{ marginTop: 8 }}>
+            <label>View-ID (optional, „vw…")</label>
+            <input type="text" value={nocoForm.viewId} onChange={e => setNocoForm(f => ({ ...f, viewId: e.target.value }))} placeholder="z.B. vwt4fpunv20v479e" />
+          </div>
+          <div className="project-field" style={{ marginTop: 8 }}>
+            <label>API-Token {hasNocoToken && <span className="project-field-hint">(gespeichert – leer lassen zum Behalten)</span>}</label>
+            <input type="password" value={nocoForm.token} onChange={e => setNocoForm(f => ({ ...f, token: e.target.value }))} placeholder={hasNocoToken ? '••••••••••••' : 'xc-Token aus NocoDB'} autoComplete="off" />
+          </div>
+          <div className="project-field" style={{ marginTop: 8 }}>
+            <label>Abruf-Intervall (Minuten)</label>
+            <input type="number" min="2" value={nocoForm.pollMinutes} onChange={e => setNocoForm(f => ({ ...f, pollMinutes: e.target.value }))} style={{ maxWidth: 120 }} />
+          </div>
+
+          <div className="backup-actions" style={{ marginTop: 12, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            <button className="backup-btn" onClick={handleSaveNoco}>💾 Speichern</button>
+            <button className="backup-btn" onClick={handleSyncNoco}>🔄 Jetzt holen</button>
+            <button className="backup-btn" onClick={handleResetNoco} title="Alle Import-Markierungen löschen, um Zeilen erneut zu verarbeiten">
+              ↩︎ Erneut importieren{nocoImportedCount ? ` (${nocoImportedCount})` : ''}
+            </button>
+          </div>
+          {nocoStatus && <p className="settings-description" style={{ marginTop: 8 }}>{nocoStatus}</p>}
+        </div>
+
+        <div className="settings-card">
+          <h3>ℹ️ Wo finde ich Table-ID & Token?</h3>
+          <p className="settings-description">
+            <strong>Table-ID:</strong> Tabelle in NocoDB öffnen → oben rechts „Details" bzw. das API-Snippet. Die ID im Pfad <code>/tables/<strong>m…</strong>/records</code> ist die Table-ID. Die <strong>View-ID</strong> („vw…") ist optional und filtert auf eine bestimmte Ansicht.<br />
+            <strong>API-Token:</strong> NocoDB → Profil/Account → „Tokens" → neues Token erstellen. Das Token wird verschlüsselt im macOS-Schlüsselbund abgelegt, nicht im Klartext.
+          </p>
+        </div>
       </div>
       )}
       {settingsTab === 'gagen' && (
@@ -586,12 +748,12 @@ export default function Settings({ settings, onSave, timesheets, setTimesheets, 
         <div className="settings-card">
           <h3>⚖️ Prüfung</h3>
           <p className="settings-description">
-            ZeitBlick prüft erfasste Zeiten auf Ruhezeit (§5), Wochenruhetag (§9/§11), Ruhepausen (§4) und überlange Arbeitstage. Treffer erscheinen als Hinweise im Dashboard und im Kalender.
+            ZeitBlick prüft erfasste Zeiten auf tägliche Ruhezeit (TZ 5.9.1), Wochenend-Ruhezeit 48+11 h (TZ 5.9.4), Wochenruhetag (§9/§11), Ruhepausen (§4) und überlange Arbeitstage (TZ 5.2.5). Treffer erscheinen als Hinweise im Dashboard und im Kalender.
           </p>
 
           <label style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '10px 0' }}>
             <input type="checkbox" checked={arbzg.enabled !== false} onChange={e => updateArbzg({ enabled: e.target.checked })} />
-            <span>ArbZG-Prüfung aktiv</span>
+            <span>ArbZG-/TV-FFS-Prüfung aktiv</span>
           </label>
 
           <label style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '10px 0', opacity: arbzg.enabled === false ? 0.5 : 1 }}>
@@ -599,22 +761,27 @@ export default function Settings({ settings, onSave, timesheets, setTimesheets, 
             <span>Ruhepausen prüfen (§4: 30 min ab 6h, 45 min ab 9h)</span>
           </label>
 
+          <label style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '10px 0', opacity: arbzg.enabled === false ? 0.5 : 1 }}>
+            <input type="checkbox" checked={arbzg.weekendCheck !== false} disabled={arbzg.enabled === false} onChange={e => updateArbzg({ weekendCheck: e.target.checked })} />
+            <span>Wochenend-Ruhe prüfen (TZ 5.9.4: mind. 2 WE/Monat ≥ 48+11 h)</span>
+          </label>
+
           <div className="project-field" style={{ marginTop: 12, opacity: arbzg.enabled === false ? 0.5 : 1 }}>
-            <label>Mindest-Ruhezeit zwischen Schichten (Std., §5)</label>
+            <label>Mindest-Ruhezeit zwischen Drehtagen (Std., TZ 5.9.1)</label>
             <input type="number" min="0" step="0.5" disabled={arbzg.enabled === false}
               value={arbzgNum('minRestHours', 11)}
               onChange={e => updateArbzg({ minRestHours: e.target.value === '' ? '' : Number(e.target.value) })}
               style={{ maxWidth: 120 }} />
-            <span className="project-field-hint">Standard: 11 Std.</span>
+            <span className="project-field-hint">Standard: 11 Std. – nach Tagen über 11 h automatisch 11,5 Std. (TZ 5.9.1)</span>
           </div>
 
           <div className="project-field" style={{ marginTop: 12, opacity: arbzg.enabled === false ? 0.5 : 1 }}>
-            <label>Maximale Arbeitszeit pro Tag (Std., §3)</label>
+            <label>Maximale Arbeitszeit pro Tag (Std., TZ 5.2.5)</label>
             <input type="number" min="0" step="0.5" disabled={arbzg.enabled === false}
-              value={arbzgNum('maxDailyHours', 13)}
+              value={arbzgNum('maxDailyHours', 12)}
               onChange={e => updateArbzg({ maxDailyHours: e.target.value === '' ? '' : Number(e.target.value) })}
               style={{ maxWidth: 120 }} />
-            <span className="project-field-hint">Standard: 13 Std. (ArbZG §3/§7 i.V.m. TV-FFS)</span>
+            <span className="project-field-hint">Standard: 12 Std. (TV-FFS 12.10.2024, keine 13. Std). Für ältere Drehzeiträume ggf. 13.</span>
           </div>
 
           <div className="project-field" style={{ marginTop: 12, opacity: arbzg.enabled === false ? 0.5 : 1 }}>
@@ -641,6 +808,49 @@ export default function Settings({ settings, onSave, timesheets, setTimesheets, 
       <div className="v3-settings-panel">
         <div className="v3-settings-panel-title">System & Export</div>
         <div className="v3-settings-panel-sub">Backup, Daten-Import/Export, Updates und Tarifinfos.</div>
+
+        <div className="settings-card">
+          <h3>☁️ Geräteübergreifend</h3>
+          <p className="settings-description">
+            Lege den Datenspeicher in einen synchronisierten Ordner (z. B. iCloud), um ZeitBlick auf mehreren Macs mit demselben Stand zu nutzen.
+            Wähle auf jedem Gerät einmal <strong>denselben</strong> Ordner. Bearbeite möglichst nur an einem Gerät gleichzeitig – Änderungen anderer Geräte werden erkannt und gemeldet.
+          </p>
+          {dataLoc && (
+            <div style={{ marginBottom: 12, fontSize: 13, lineHeight: 1.6 }}>
+              <div>📍 <strong>Speicherort:</strong> {dataLoc.isCustom ? 'Synchronisiert' : 'Lokal (nur dieser Mac)'}</div>
+              <div style={{ wordBreak: 'break-all', opacity: 0.8 }}>{dataLoc.storagePath}</div>
+              <div style={{ opacity: 0.8 }}>💻 Dieses Gerät: {dataLoc.deviceName}</div>
+              {dataLoc.lastWrite && (
+                <div style={{ opacity: 0.8 }}>
+                  🕒 Zuletzt geändert: {new Date(dataLoc.lastWrite.ts).toLocaleString('de-DE')}
+                  {dataLoc.lastWrite.device ? ` (${dataLoc.lastWrite.device})` : ''}
+                </div>
+              )}
+            </div>
+          )}
+          <div className="backup-actions" style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            {!dataLoc?.isCustom && (
+              <button className="backup-btn backup-btn-create" disabled={dataLocBusy} onClick={() => handleMoveToCloud()}>
+                ☁️ In iCloud verlegen
+              </button>
+            )}
+            <button className="backup-btn" disabled={dataLocBusy} onClick={async () => {
+              const dir = await window.electronAPI?.pickFolder?.('Synchronisierten Ordner wählen');
+              if (dir) handleMoveToCloud(dir);
+            }}>
+              📂 Anderen Ordner wählen…
+            </button>
+            {dataLoc?.isCustom && (
+              <button className="backup-btn" disabled={dataLocBusy} onClick={handleResetToLocal}>
+                💻 Zurück zu lokal
+              </button>
+            )}
+          </div>
+          {dataLocStatus && <div style={{ marginTop: 10, fontSize: 13 }}>{dataLocStatus}</div>}
+          <p className="settings-description" style={{ marginTop: 10, opacity: 0.75 }}>
+            Hinweis: Gespeicherte Passwörter (SESAM/Abrechnung) bleiben aus Sicherheitsgründen pro Gerät und werden <strong>nicht</strong> synchronisiert – auf einem neuen Mac einmal neu eingeben.
+          </p>
+        </div>
 
         <div className="settings-card">
           <h3>💾 Backup & Daten</h3>

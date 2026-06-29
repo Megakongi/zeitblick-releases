@@ -49,12 +49,24 @@ const s = {
   warnDot:   { display: 'inline-block', width: 8, height: 8, borderRadius: 99, background: 'var(--r-500, #e5484d)', marginLeft: 4 },
 };
 
-export default function CalendarView({ timesheets = [], dispos = [], calculations = {}, onViewDetail, resolveName }) {
+export default function CalendarView({ timesheets = [], dispos = [], calculations = {}, onViewDetail, resolveName, team = [] }) {
   const today = new Date();
   const [year, setYear] = useState(today.getFullYear());
   const [month, setMonth] = useState(today.getMonth()); // 0-basiert
 
   const resolve = resolveName || ((n) => n);
+
+  // Nur die eigenen Einträge zeigen (Person mit isMe-Flag). Ist keine eigene
+  // Person markiert, werden – wie bisher – alle Stundenzettel angezeigt.
+  const mePersonName = useMemo(() => {
+    const me = (team || []).find(m => m.isMe);
+    return me ? resolve(me.name) : null;
+  }, [team, resolve]);
+
+  const myTimesheets = useMemo(() => {
+    if (!mePersonName) return timesheets;
+    return timesheets.filter(ts => resolve(ts.name || 'Unbekannt') === mePersonName);
+  }, [timesheets, mePersonName, resolve]);
 
   // Tages-Index: iso → { entries, flags, dispoTitles, warn }
   const dayIndex = useMemo(() => {
@@ -64,7 +76,7 @@ export default function CalendarView({ timesheets = [], dispos = [], calculation
       return idx.get(iso);
     };
 
-    for (const ts of timesheets) {
+    for (const ts of myTimesheets) {
       for (const day of ts.days || []) {
         const iso = toISO(day.datum);
         if (!iso) continue;
@@ -102,7 +114,7 @@ export default function CalendarView({ timesheets = [], dispos = [], calculation
     }
 
     return idx;
-  }, [timesheets, dispos, calculations, resolve]);
+  }, [myTimesheets, dispos, calculations, resolve]);
 
   const holidays = useMemo(() => getHolidays(year), [year]);
 

@@ -22,7 +22,7 @@
  */
 
 import { isHoliday, isTVFFSHalfDayHoliday, parseTime } from './holidays';
-import { resolveArbzgConfig, checkPausen, checkRuhezeit, checkWochenruhetag } from './arbzgCheck';
+import { resolveArbzgConfig, checkPausen, checkRuhezeit, checkWochenruhetag, checkWochenruhe } from './arbzgCheck';
 import { getTariffParams } from './tariff';
 
 
@@ -155,6 +155,8 @@ export function calculateTVFFS(timesheets, settings) {
   const arbzgHinweisTage      = []; // Tage über 10h, aber ≤ 13h (weicher §3-Hinweis)
   const arbzgOhneRuhetag      = []; // 7+ Arbeitstage am Stück ohne Ruhetag (ArbZG §9/§11)
   const pausenVerstoesse      = []; // Tage mit zu kurzer Ruhepause (ArbZG §4)
+  let   wochenruheList        = []; // gemessene Wochenend-Ruhe je WE (TZ 5.9.4, Info)
+  let   wochenruheVerstoesse  = []; // Monate mit < 2 Wochenenden ≥ 59h (TZ 5.9.4)
   let weeklyOT25 = 0;
   let weeklyOT50 = 0;
   // Nur Werktagsstunden >50h brauchen Grundvergütung (Sa/So-Basisstunden stecken schon in Grundgage)
@@ -280,6 +282,8 @@ export function calculateTVFFS(timesheets, settings) {
         totalSonntagstage++;
         totalSonntagsstunden += hours;
       }
+      // TV-FFS TZ 5.6.4: Samstagszuschlag (25%) ist IMMER zu zahlen und wird durch
+      // Sonn-/Feiertags-Günstigkeitsprinzip NICHT verdrängt (FAQ TV FFS 12.10.2024).
       if (isSa) {
         totalSamstagstage++;
         // Prüfen ob Schicht über Mitternacht in den Sonntag reicht
@@ -325,7 +329,7 @@ export function calculateTVFFS(timesheets, settings) {
 
       // Ruhezeit-/Pausen-Daten sammeln
       if (day.start && day.ende && day.datum) {
-        allDays.push({ datum: day.datum, start: day.start, ende: day.ende, pause: day.pause, tag: day.tag, sheetId: sheet.id, person: sheet.name || sheet.id });
+        allDays.push({ datum: day.datum, start: day.start, ende: day.ende, pause: day.pause, stundenTotal: hours, tag: day.tag, sheetId: sheet.id, person: sheet.name || sheet.id });
       }
     }
 
@@ -354,6 +358,11 @@ export function calculateTVFFS(timesheets, settings) {
     arbzgOhneRuhetag.push(...checkWochenruhetag(workDatesByPerson, arbzgCfg));
     if (arbzgCfg.pausenCheck) {
       pausenVerstoesse.push(...checkPausen(allDays));
+    }
+    if (arbzgCfg.weekendCheck) {
+      const wr = checkWochenruhe(allDays, arbzgCfg);
+      wochenruheList = wr.wochenenden;
+      wochenruheVerstoesse = wr.verstoesse;
     }
   }
 
@@ -440,6 +449,7 @@ export function calculateTVFFS(timesheets, settings) {
       totalFeiertagstage, totalFeiertagsstunden: round2(totalFeiertagsstunden),
       feiertageList, heiligabendSilvester, ruhezeitVerletzungen,
       arbzgLangeTage, arbzgHinweisTage, arbzgOhneRuhetag, pausenVerstoesse,
+      wochenruheList, wochenruheVerstoesse,
       weeklyOT25: round2(weeklyOT25), weeklyOT50: round2(weeklyOT50),
       urlaubstage, urlaubstageGenommen, totalWochen, anstellungstage,
       totalKranktageUnbezahlt, bezahlteKranktage,
@@ -515,6 +525,7 @@ export function calculateTVFFS(timesheets, settings) {
     totalFeiertagstage, totalFeiertagsstunden: round2(totalFeiertagsstunden),
     feiertageList, heiligabendSilvester, ruhezeitVerletzungen,
     arbzgLangeTage, arbzgHinweisTage, arbzgOhneRuhetag, pausenVerstoesse,
+    wochenruheList, wochenruheVerstoesse,
     weeklyOT25: round2(weeklyOT25),
     weeklyOT50: round2(weeklyOT50),
     weeklyOTZuschlag25: round2(weeklyOTZuschlag25),
@@ -564,6 +575,7 @@ function getEmptyCalculations() {
     totalFeiertagstage: 0, totalFeiertagsstunden: 0,
     feiertageList: [], heiligabendSilvester: [], ruhezeitVerletzungen: [],
     arbzgLangeTage: [], arbzgHinweisTage: [], arbzgOhneRuhetag: [], pausenVerstoesse: [],
+    wochenruheList: [], wochenruheVerstoesse: [],
     weeklyOT25: 0, weeklyOT50: 0, weeklyOTZuschlag25: 0, weeklyOTZuschlag50: 0,
     weeklyOTGrundverguetung: 0, totalKranktageUnbezahlt: 0, bezahlteKranktage: 0,
     tagesgageEffective: 0, stundensatz: 0, grundgage: 0,

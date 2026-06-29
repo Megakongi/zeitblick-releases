@@ -233,11 +233,17 @@ export default function Dispos({ dispos = [], onChange, projects = {}, completed
       const folder = n8nFolder || (window.electronAPI.getDefaultN8NFolder ? await window.electronAPI.getDefaultN8NFolder() : '');
       const res = await window.electronAPI.scanDispos(folder);
       if (!res || !res.success) { setSyncMsg(res?.error || 'Ordner nicht gefunden'); setSyncing(false); return; }
-      const knownOriginals = new Set((dispos || []).map(d => d.originalName));
+      // Abgleich per Basename, nicht per vollem Pfad: organizeDispo sortiert
+      // Dateien in Unterordner (Jahr/Projekt) um, wodurch sich der Scan-Pfad
+      // ändert – ein Pfad-Vergleich würde dieselbe Datei sonst bei jedem Sync
+      // erneut importieren (Endlos-Duplikate im Store).
+      const baseOf = (p) => (p || '').split('/').pop().toLowerCase();
+      const knownBases = new Set((dispos || []).map(d => baseOf(d.originalName)));
       const fallbackYear = new Date().getFullYear();
       const added = [];
       for (const { file } of res.files) {
-        if (knownOriginals.has(file)) continue;
+        if (knownBases.has(baseOf(file))) continue;
+        knownBases.add(baseOf(file)); // Mehrfachtreffer im selben Scan vermeiden
         const imp = await window.electronAPI.importDispo(folder, file);
         if (!imp || !imp.success) continue;
         // file kann ein relativer Pfad sein (z.B. "Call sheet/dispo.pdf") –
@@ -298,7 +304,10 @@ export default function Dispos({ dispos = [], onChange, projects = {}, completed
     setSyncMsg('');
     try {
       const folder = n8nFolder || (api.getDefaultN8NFolder ? await api.getDefaultN8NFolder() : '');
-      const knownOriginals = new Set((dispos || []).map(d => d.originalName));
+      // Abgleich per Basename (siehe handleSync) – verhindert Duplikate, auch
+      // wenn bereits importierte Dispos in Unterordner umsortiert wurden.
+      const baseOf = (p) => (p || '').split('/').pop().toLowerCase();
+      const knownBases = new Set((dispos || []).map(d => baseOf(d.originalName)));
       const fallbackYear = new Date().getFullYear();
       const added = [];
       let skipped = 0;
@@ -309,8 +318,8 @@ export default function Dispos({ dispos = [], onChange, projects = {}, completed
         const imp = await api.importDispoFile(folder, absPath);
         if (!imp || !imp.success) { skipped++; continue; }
         const original = imp.originalName || file.name;
-        if (knownOriginals.has(original)) { skipped++; continue; }
-        knownOriginals.add(original);
+        if (knownBases.has(baseOf(original))) { skipped++; continue; }
+        knownBases.add(baseOf(original));
         const parsed = parseDispoFilename(original, projects, fallbackYear);
         const motive = (imp.addresses && imp.addresses.motive) || [];
         added.push({
@@ -659,6 +668,14 @@ export default function Dispos({ dispos = [], onChange, projects = {}, completed
   const unassignedCount = (dispos || []).filter(d => !d.projekt).length;
   // Dispos ohne gewählte Motiv-Adresse – fehlen in der KM-/Fahrtkosten-Übersicht.
   const emptyAddressCount = (dispos || []).filter(d => !d.motivAdresse).length;
+  // Für den Warnhinweis: ignorierte Dispos werden nicht mitgezählt.
+  const warnAddressCount = (dispos || []).filter(d => !d.motivAdresse && !d.addrWarnIgnored).length;
+
+  // Aktuell fehlende Adressen als "ignoriert" markieren → Warnhinweis verschwindet.
+  // Taucht später eine neue Dispo ohne Adresse auf, erscheint der Hinweis erneut.
+  const ignoreAddressWarning = useCallback(() => {
+    onChange((dispos || []).map(d => (!d.motivAdresse && !d.addrWarnIgnored) ? { ...d, addrWarnIgnored: true } : d));
+  }, [dispos, onChange]);
 
   return (
     <div
@@ -731,11 +748,11 @@ export default function Dispos({ dispos = [], onChange, projects = {}, completed
         </div>
       </div>
 
-      {emptyAddressCount > 0 && quickFilter !== 'noaddress' && (
+      {warnAddressCount > 0 && quickFilter !== 'noaddress' && (
         <div className="dispos-addr-warn" role="status">
           <span className="dispos-addr-warn-ic">⚠️</span>
           <span className="dispos-addr-warn-text">
-            <strong>{emptyAddressCount}</strong> Dispo{emptyAddressCount === 1 ? '' : 's'} ohne Motiv-Adresse –
+            <strong>{warnAddressCount}</strong> Dispo{warnAddressCount === 1 ? '' : 's'} ohne Motiv-Adresse –
             {' '}diese fehlen in der Fahrtkosten-/KM-Übersicht.
           </span>
           {missingAddressCount > 0 && (
@@ -745,6 +762,9 @@ export default function Dispos({ dispos = [], onChange, projects = {}, completed
           )}
           <button className="dispos-addr-warn-btn ghost" onClick={() => setQuickFilter('noaddress')}>
             Anzeigen
+          </button>
+          <button className="dispos-addr-warn-btn ghost" onClick={ignoreAddressWarning} title="Diesen Hinweis ausblenden – erscheint erneut bei neuen Dispos ohne Adresse">
+            Ignorieren
           </button>
         </div>
       )}

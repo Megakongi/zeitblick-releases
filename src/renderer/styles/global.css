@@ -2474,6 +2474,58 @@ body {
   background: rgba(74, 125, 255, 0.04);
 }
 
+/* Kompakte Projektübersicht-Tabelle (Einzelpersonen-Ansicht ohne Projektfilter) */
+.proj-overview-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-variant-numeric: tabular-nums;
+}
+
+.proj-overview-table thead th {
+  text-align: right;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-muted);
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--border-color);
+  white-space: nowrap;
+}
+
+.proj-overview-row {
+  cursor: pointer;
+  transition: background-color 0.15s;
+}
+
+.proj-overview-row:hover {
+  background: rgba(74, 125, 255, 0.06);
+}
+
+.proj-overview-row td {
+  text-align: right;
+  font-size: 13px;
+  color: var(--text-primary);
+  padding: 9px 12px;
+  border-bottom: 1px solid var(--border-color);
+  white-space: nowrap;
+}
+
+.proj-overview-row:last-child td {
+  border-bottom: none;
+}
+
+.proj-overview-name {
+  display: block;
+  font-weight: 500;
+  font-size: 14px;
+  color: var(--text-primary);
+}
+
+.proj-overview-meta {
+  display: block;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
 .project-breakdown-header {
   display: flex;
   flex-direction: column;
@@ -5188,6 +5240,51 @@ a:focus-visible {
   transform: translateX(-50%) scale(1.02);
 }
 
+/* Wrapper für „Rückgängig" + Ausblenden-Button (✕), unten mittig. */
+.undo-fab-wrap {
+  position: fixed;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  z-index: 1000;
+  animation: slideUp 0.3s ease;
+}
+/* Innerhalb des Wraps übernimmt dieser die Positionierung. */
+.undo-fab-wrap .undo-fab {
+  position: static;
+  left: auto;
+  bottom: auto;
+  transform: none;
+  animation: none;
+}
+.undo-fab-wrap .undo-fab:hover {
+  transform: scale(1.02);
+}
+.undo-fab-dismiss {
+  width: 36px;
+  height: 36px;
+  flex: 0 0 auto;
+  border: none;
+  border-radius: 999px;
+  cursor: pointer;
+  background: var(--ink);
+  color: var(--surface);
+  font-size: 13px;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.25);
+  transition: var(--transition);
+}
+.undo-fab-dismiss:hover {
+  filter: brightness(1.15);
+  transform: scale(1.05);
+}
+
 @keyframes slideUp {
   from {
     opacity: 0;
@@ -6814,6 +6911,21 @@ a:focus-visible {
 
 .btn-icon-danger:hover {
   background: rgba(239, 68, 68, 0.15);
+}
+
+.btn-icon-active {
+  opacity: 1;
+  background: rgba(34, 197, 94, 0.15);
+}
+
+/* Project card marked as completed (Projekte-Übersicht) */
+.team-card-completed {
+  border: 2px solid rgba(34, 197, 94, 0.4) !important;
+  opacity: 0.85;
+}
+.team-card-completed .team-card-avatar {
+  background: rgba(34, 197, 94, 0.15);
+  color: #22c55e;
 }
 
 .team-empty {

@@ -3,7 +3,7 @@ const path = require('path');
 const fs = require('fs');
 const { parsePDF } = require('./src/main/pdfParser');
 const { parseBillingPDF, isEncryptedPDF, parseSesamTimesheetPDF, parseSesamTimesheetData } = require('./src/main/billingParser');
-const { loadData, saveData, createBackup, restoreBackup, listBackups, exportData, importData } = require('./src/main/storage');
+const { loadData, saveData, createBackup, restoreBackup, listBackups, exportData, importData, getDataDir, setDataDir, resetToLocal, getDataLocationInfo, hasExternalChange } = require('./src/main/storage');
 const { extractDispoAddresses } = require('./src/main/dispoText');
 const { computeDistance } = require('./src/main/geo');
 const { buildStdWebFillScript, buildStdWebDiagnoseScript, buildStdWebNavigateScript, buildStdWebLoginScript, buildStdWebLogoutScript } = require('./src/main/stdwebFill');
@@ -219,11 +219,23 @@ function createWindow() {
     // Dispo-PDFs werden als blob:-URL in einem iframe angezeigt; ohne frame-src
     // fällt die Policy auf default-src 'self' zurück und blockiert das blob:-iframe.
     `frame-src 'self' blob:`,
-    `object-src 'none'`,
+    // Chromiums eingebauter PDF-Viewer rendert das iframe-PDF intern über ein
+    // Plugin (<embed>/<object>) – mit `object-src 'none'` bleibt das iframe leer.
+    // blob: (+ data:) zulassen, damit das Dispo-PDF angezeigt wird.
+    `object-src 'self' blob: data:`,
     `base-uri 'self'`,
   ].join('; ');
 
+  // CSP NUR auf App-eigene Dokumente legen (file:// in Prod, localhost in Dev).
+  // Chromiums eingebauter PDF-Viewer lädt seine Oberfläche aus
+  // chrome://resources und chrome-extension:// – würde unsere CSP auch darauf
+  // angewendet, blockiert sie diese Ressourcen und das Dispo-PDF bleibt leer.
+  const isAppUrl = (url) => /^(file:|http:\/\/localhost:5173|https:\/\/fonts\.)/.test(url || '');
   mainWindow.webContents.session.webRequest.onHeadersReceived((details, callback) => {
+    if (!isAppUrl(details.url)) {
+      callback({ responseHeaders: details.responseHeaders });
+      return;
+    }
     callback({
       responseHeaders: {
         ...details.responseHeaders,
@@ -1161,6 +1173,16 @@ ipcMain.handle('open-file-dialog', async () => {
 });
 
 // Open folder dialog — recursively find all PDFs in folder and subfolders
+// Generischer Ordner-Picker: liefert den ausgewählten Ordnerpfad (für Speicherort-Wahl).
+ipcMain.handle('pick-folder', async (event, title) => {
+  const result = await dialog.showOpenDialog(mainWindow, {
+    properties: ['openDirectory', 'createDirectory'],
+    title: title || 'Ordner auswählen',
+  });
+  if (result.canceled || result.filePaths.length === 0) return null;
+  return result.filePaths[0];
+});
+
 ipcMain.handle('open-folder-dialog', async () => {
   const result = await dialog.showOpenDialog(mainWindow, {
     properties: ['openDirectory'],
@@ -1202,8 +1224,8 @@ ipcMain.handle('load-data', async () => {
 });
 
 // Save data
-ipcMain.handle('save-data', async (event, data) => {
-  return saveData(data);
+ipcMain.handle('save-data', async (event, data, opts) => {
+  return saveData(data, opts || {});
 });
 
 // Synchronous save — used by the renderer in beforeunload to flush
@@ -1211,6 +1233,57 @@ ipcMain.handle('save-data', async (event, data) => {
 ipcMain.on('save-data-sync', (event, data) => {
   event.returnValue = saveData(data);
 });
+
+// ===== Geräteübergreifender Speicherort =====
+
+// Vorschlag für einen synchronisierten Datenordner (iCloud-Unterordner).
+function getSuggestedDataDir() {
+  return path.join(getDefaultN8NFolder(), 'AppData');
+}
+
+ipcMain.handle('get-data-location', () => {
+  return { ...getDataLocationInfo(), suggested: getSuggestedDataDir() };
+});
+
+ipcMain.handle('set-data-dir', (event, dir) => {
+  const target = dir || getSuggestedDataDir();
+  const res = setDataDir(target);
+  if (res.success) startDataWatch();
+  return res;
+});
+
+ipcMain.handle('reset-data-dir', () => {
+  const res = resetToLocal();
+  if (res.success) startDataWatch();
+  return res;
+});
+
+ipcMain.handle('has-external-change', () => hasExternalChange());
+
+// Beobachtet die Datendatei, um Änderungen von anderen Geräten proaktiv zu melden.
+let dataWatcher = null;
+let dataWatchDebounce = null;
+
+function startDataWatch() {
+  try {
+    if (dataWatcher) { try { dataWatcher.close(); } catch (_) {} dataWatcher = null; }
+    const dir = getDataDir();
+    if (!dir || !fs.existsSync(dir)) return { success: false, error: 'Ordner nicht gefunden' };
+    dataWatcher = fs.watch(dir, { persistent: false }, (eventType, filename) => {
+      if (filename && filename !== 'zeitblick-data.json') return;
+      if (dataWatchDebounce) clearTimeout(dataWatchDebounce);
+      dataWatchDebounce = setTimeout(() => {
+        if (hasExternalChange()) sendUpdateStatus('data-file-changed', {});
+      }, 800);
+    });
+    return { success: true };
+  } catch (e) {
+    console.error('[data] watch failed:', e.message);
+    return { success: false, error: e.message };
+  }
+}
+
+ipcMain.handle('data-watch', () => startDataWatch());
 
 // Get PDF file content for re-reading
 ipcMain.handle('read-pdf-file', async (event, filePath) => {
@@ -1594,12 +1667,72 @@ ipcMain.handle('n8n-archive', async (event, folder, filenames) => {
   }
 });
 
+// ===== NocoDB-Direktanbindung =====
+// Holt Records einer Tabelle über die NocoDB-REST-API (v2). Läuft im Main-Prozess,
+// damit kein CORS greift und das Token nicht im Renderer/Datenfile im Klartext liegt.
+const NOCO_PAGE_SIZE = 1000;
+const NOCO_MAX_PAGES = 50; // Sicherheitsdeckel (max. 50k Zeilen pro Abruf)
+
+function nocoFetchPage(baseUrl, tableId, token, viewId, offset) {
+  return new Promise((resolve, reject) => {
+    const base = String(baseUrl || '').replace(/\/+$/, '');
+    let url = `${base}/api/v2/tables/${encodeURIComponent(tableId)}/records?limit=${NOCO_PAGE_SIZE}&offset=${offset}`;
+    if (viewId) url += `&viewId=${encodeURIComponent(viewId)}`;
+    let u;
+    try { u = new URL(url); } catch (e) { reject(new Error('Ungültige Base-URL')); return; }
+    const proto = u.protocol === 'https:' ? require('https') : require('http');
+    const req = proto.request({
+      hostname: u.hostname,
+      port: u.port || (u.protocol === 'https:' ? 443 : 80),
+      path: u.pathname + u.search,
+      method: 'GET',
+      headers: { 'xc-token': token, 'Accept': 'application/json' },
+    }, (res) => {
+      let data = '';
+      res.on('data', chunk => { data += chunk; });
+      res.on('end', () => {
+        if (res.statusCode < 200 || res.statusCode >= 300) {
+          reject(new Error(`HTTP ${res.statusCode}: ${String(data).slice(0, 200)}`));
+          return;
+        }
+        try { resolve(JSON.parse(data)); } catch (e) { reject(new Error('Antwort ist kein gültiges JSON')); }
+      });
+    });
+    req.on('error', reject);
+    req.end();
+  });
+}
+
+ipcMain.handle('noco-fetch', async (event, cfg) => {
+  try {
+    const { baseUrl, tableId, viewId } = cfg || {};
+    if (!baseUrl || !tableId) return { success: false, error: 'Base-URL und Table-ID erforderlich', records: [] };
+    const token = safeDecrypt(cfg.token) || cfg.token || '';
+    if (!token) return { success: false, error: 'API-Token fehlt', records: [] };
+
+    const all = [];
+    let offset = 0;
+    for (let page = 0; page < NOCO_MAX_PAGES; page++) {
+      const res = await nocoFetchPage(baseUrl, tableId, token, viewId, offset);
+      const list = (res && res.list) || [];
+      all.push(...list);
+      const info = res && res.pageInfo;
+      if (!info || info.isLastPage || list.length === 0) break;
+      offset += list.length;
+    }
+    return { success: true, records: all };
+  } catch (e) {
+    return { success: false, error: e.message, records: [] };
+  }
+});
+
 // ===== Dispos (PDF-Dispositionen) =====
 
 // Dispo-PDFs werden in einen App-eigenen Ordner kopiert, damit sie auch
 // nach dem Archivieren der Quelle erhalten bleiben.
 function getDispoDir() {
-  const dir = path.join(app.getPath('userData'), 'dispos');
+  // Folgt dem konfigurierten Datenspeicher, damit Dispos geräteübergreifend mitsynchronisieren.
+  const dir = path.join(getDataDir(), 'dispos');
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
   return dir;
 }

@@ -104,11 +104,11 @@ function sumTotals(days) {
   }), { stundenTotal: 0, ueberstunden25: 0, ueberstunden50: 0, ueberstunden100: 0, nacht25: 0, fahrzeit: 0 });
 }
 
-function makeSheet({ projekt, name, position }, days) {
+function makeSheet({ projekt, name, position, produktionsfirma, projektnummer }, days) {
   const computedDays = days.map(d => computeDayTotals(d));
   return {
     id: genId(), importDate: new Date().toISOString(), createdManually: true, source: 'n8n', filePath: '',
-    projekt, projektnummer: '', produktionsfirma: '', name, position: position || '', abteilung: '', pause: 0.75,
+    projekt, projektnummer: projektnummer || '', produktionsfirma: produktionsfirma || '', name, position: position || '', abteilung: '', pause: 0.75,
     days: computedDays, totals: sumTotals(computedDays),
   };
 }
@@ -231,10 +231,16 @@ export function processN8N(entries, { resolveName, projectCrews = {}, team = [],
         present.set(me.name, { kind: 'crew', position: mePos });
       }
 
+      // Optionale Tages-Notiz (z. B. aus NocoDB "Notizen"-Spalte).
+      const tagNotiz = (tag.notiz || '').trim();
+
       for (const [name, info] of present) {
         ensure(name, info.position);
         const extra = { start: teamTime.start || '', ende: teamTime.ende || '', pause };
-        if (info.kind === 'zusatz') extra.anmerkungen = 'Zusatz';
+        const notes = [];
+        if (info.kind === 'zusatz') notes.push('Zusatz');
+        if (tagNotiz) notes.push(tagNotiz);
+        if (notes.length) extra.anmerkungen = notes.join(' · ');
         personDays[name].days[datum] = emptyDay(datum, extra);
         noteUnknown(name);
         // Vertretung an diesem Tag → zur Klärung vormerken
@@ -259,10 +265,14 @@ export function processN8N(entries, { resolveName, projectCrews = {}, team = [],
       }
     }
 
+    const pInfo = (projects && projects[projekt]) || {};
     for (const [name, info] of Object.entries(personDays)) {
       const days = expandToFullWeeks(info.days);
       if (days.length === 0) continue;
-      sheets.push(makeSheet({ projekt, name, position: info.position }, days));
+      sheets.push(makeSheet({
+        projekt, name, position: info.position,
+        produktionsfirma: pInfo.produktionsfirma || '', projektnummer: pInfo.projektnummer || '',
+      }, days));
     }
   }
 
@@ -274,6 +284,66 @@ export function processN8N(entries, { resolveName, projectCrews = {}, team = [],
 
 function recalcTotals(sheet) {
   sheet.totals = sumTotals(sheet.days);
+}
+
+/**
+ * Führt importierte Stundenzettel in den bestehenden Bestand ein.
+ * Statt Duplikate zu verwerfen, werden Tage mit Zeiten in den passenden
+ * vorhandenen Zettel (gleiches Projekt + Name, überlappende Tage) eingetragen –
+ * leere Tage werden gefüllt, belegte überschrieben ("Quelle gewinnt"). Existiert
+ * kein passender Zettel, wird der importierte neu hinzugefügt.
+ * @returns {{ sheets: Array, addedCount: number, mergedCount: number }}
+ */
+export function mergeSheetsInto(existing, incoming) {
+  const result = (existing || []).slice();
+  let addedCount = 0;
+  let mergedCount = 0;
+
+  for (const ns of (incoming || [])) {
+    const incomingDays = (ns.days || []);
+    if (incomingDays.length === 0) continue;
+
+    const idx = result.findIndex(ex =>
+      (ex.projekt || '') === (ns.projekt || '') &&
+      (ex.name || '') === (ns.name || '') &&
+      (ex.days || []).some(d => incomingDays.some(nd => nd.datum === d.datum))
+    );
+
+    if (idx === -1) {
+      result.push(ns);
+      addedCount++;
+      continue;
+    }
+
+    const ex = result[idx];
+    const exDatums = new Set((ex.days || []).map(d => d.datum));
+
+    // Bestehende Tage: mit Importzeiten überschreiben, sonst unverändert lassen.
+    const mergedDays = (ex.days || []).map(d => {
+      const src = incomingDays.find(nd => nd.datum === d.datum && (nd.start || nd.ende));
+      if (!src) return d;
+      const merged = { ...d, start: src.start, ende: src.ende, pause: src.pause };
+      if (src.anmerkungen) merged.anmerkungen = src.anmerkungen;
+      return { ...merged, ...computeDayTotals(merged) };
+    });
+
+    // Importtage außerhalb des bestehenden Datumsbereichs anhängen.
+    for (const nd of incomingDays) {
+      if (!exDatums.has(nd.datum) && (nd.start || nd.ende)) mergedDays.push(nd);
+    }
+
+    result[idx] = {
+      ...ex,
+      // Projekt-Stammdaten nachtragen, wenn im bestehenden Zettel leer.
+      produktionsfirma: ex.produktionsfirma || ns.produktionsfirma || '',
+      projektnummer: ex.projektnummer || ns.projektnummer || '',
+      days: mergedDays,
+      totals: sumTotals(mergedDays),
+    };
+    mergedCount++;
+  }
+
+  return { sheets: result, addedCount, mergedCount };
 }
 
 /** Wendet eine geklärte Zeit-Abweichung (Initiale) auf den Stundenzettel an. */
@@ -290,8 +360,8 @@ export function applyDeviation(sheets, deviation, chosenName) {
   if (start != null) day.start = fromMin(start);
   if (ende != null) day.ende = fromMin(ende);
   day.pause = deviation.pause;
-  const note = `Abweichung: ${deviation.initiale} ${deviation.start}–${deviation.ende}`;
-  day.anmerkungen = day.anmerkungen ? `${day.anmerkungen} · ${note}` : note;
+  // Bewusst kein Anmerkungs-Vermerk: die Abweichung ändert nur die Zeit der
+  // betroffenen Person; die Anmerkungs-Spalte erscheint auf dem offiziellen Zettel.
   Object.assign(day, computeDayTotals(day));
   recalcTotals(sheet);
 }

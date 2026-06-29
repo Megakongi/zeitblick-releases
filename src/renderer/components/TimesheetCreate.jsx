@@ -59,7 +59,7 @@ const emptyDay = (tag, datum) => ({
   anmerkungen: '',
 });
 
-export default function TimesheetCreate({ onSave, onSaveBatch, onCancel, editSheet, existingTimesheets, projectStaffing, projects, onCreateNext, team }) {
+export default function TimesheetCreate({ onSave, onSaveBatch, onCancel, editSheet, existingTimesheets, projectStaffing, projects, onCreateNext, team, onSyncNoco }) {
   const isEditing = !!editSheet;
 
   // Project selection
@@ -457,6 +457,11 @@ export default function TimesheetCreate({ onSave, onSaveBatch, onCancel, editShe
           )}
         </div>
         <div className="create-header-actions">
+          {onSyncNoco && (
+            <button className="export-pdf-btn" onClick={onSyncNoco} title="Neue Zeiten aus NocoDB holen">
+              <span>🗄️</span> NocoDB holen
+            </button>
+          )}
           <button className="export-pdf-btn" onClick={handleExportPDF} title="Als PDF exportieren">
             <span>📄</span> PDF Export
           </button>

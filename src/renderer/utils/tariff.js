@@ -20,8 +20,13 @@ export const TARIFF_PERIODS = [
       ZEITKONTO_HOURS_PER_DAY: 8,       // Anlage A.1.3: 8h Zeitguthaben = 1 Beschäftigungstag
       MAX_PAID_SICK_DAYS: 42,           // TZ 13.3: max 6 Wochen bezahlte Krankheit
       VACATION_DAYS_PER_WEEK: 0.5,      // TZ 14.1: 0,5 Urlaubstag pro 7-Tage-Vertragszeit
-      MIN_REST_HOURS: 11,               // ArbZG §5: mind. 11h Ruhezeit
-      MAX_DAILY_HOURS: 13,              // ArbZG §3/§7 i.V.m. TV-FFS TZ 5.4: max. 13h/Tag
+      MIN_REST_HOURS: 11,               // TV-FFS TZ 5.9.1: mind. 11h tägliche Ruhezeit
+      EXTENDED_REST_HOURS: 11.5,        // TZ 5.9.1: 11,5h Ruhe nach begonnener 12. Std (reine Arbeitszeit)
+      EXTENDED_REST_WORK_THRESHOLD: 11, // TZ 5.9.1: >11h Netto-Arbeit am Vortag → 11,5h Ruhe
+      WEEKEND_REST_HOURS: 59,           // TZ 5.9.4: 48+11h zusammenhängende Wochenend-Ruhezeit
+      WEEKEND_REST_MIN_COUNT: 2,        // TZ 5.9.4: an mind. 2 Wochenenden je Beschäftigungsmonat
+      FREE_DAY_REST_HOURS: 35,          // 24+11h: Mindest-Ruhe rund um einen einzelnen freien Tag (Info-Marker)
+      MAX_DAILY_HOURS: 12,              // TV-FFS TZ 5.2.5 (Fassung 12.10.2024): max. 12h/Tag, keine 13. Std
       MAX_CONSECUTIVE_WORKDAYS: 6,      // ArbZG §9/§11: 1 Ruhetag pro Woche
       NIGHT_SURCHARGE: 0.25,            // TZ 5.5.2: 25% Nachtzuschlag
       SATURDAY_SURCHARGE: 0.25,         // TZ 5.6.4: 25% Sa-Zuschlag

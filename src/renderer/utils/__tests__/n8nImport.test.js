@@ -47,6 +47,9 @@ describe('applyDeviation – Initialen-Abweichung ersetzt die Zeit', () => {
     const day = sheet.days.find((d) => d.datum === '02.06.2026');
     expect(day.start).toBe('09:00');
     expect(day.ende).toBe('16:00');
+    // Abweichungen sind nur ein Hilfsmittel zur Zeiterfassung – kein Vermerk
+    // in der Anmerkungs-Spalte (erscheint auf dem offiziellen Zettel).
+    expect(day.anmerkungen || '').not.toContain('Abweichung');
   });
 
   it('nutzt die Teamzeit nur als Fallback für eine fehlende Seite', () => {

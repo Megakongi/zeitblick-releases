@@ -775,13 +775,20 @@ export default function Dashboard({ timesheets, calculations, settings: propSett
   const projectStats = useMemo(() => {
     // Use personFilteredTimesheets (person-filtered but NOT project-filtered) to always show all projects
     const baseTS = isAllPersons ? (allTimesheets || timesheets) : (personFilteredTimesheets || timesheets);
-    if (baseTS.length === 0) return [];
     const byProject = {};
     for (const ts of baseTS) {
       const proj = baseProject(ts.projekt);
       if (!byProject[proj]) byProject[proj] = [];
       byProject[proj].push(ts);
     }
+    // Auch angelegte Projekte ohne Stundenzettel anzeigen (nur in der Gesamtansicht).
+    if (isAllPersons) {
+      for (const name of Object.keys(settings.projects || {})) {
+        const proj = baseProject(name);
+        if (!byProject[proj]) byProject[proj] = [];
+      }
+    }
+    if (Object.keys(byProject).length === 0) return [];
     return Object.entries(byProject).map(([projektName, sheets]) => {
       const uniquePersons = [...new Set(sheets.map(s => resolve(s.name || 'Unbekannt')))].sort();
       let totalHours = 0, totalOvertime = 0;
@@ -906,7 +913,7 @@ export default function Dashboard({ timesheets, calculations, settings: propSett
               <button className="v3-section-link" onClick={() => setShowNewProject(v => !v)}>+ Projekt anlegen</button>
             </div>
             <div className="v3-proj-grid">
-              {projectStats.slice(0, 6).map(ps => {
+              {projectStats.map(ps => {
                 const isCompleted = !!(completedProjects && completedProjects[ps.projekt]);
                 const accentColor = projColor(ps.projekt);
                 const projMeta = (settings.projects || {})[ps.projekt] || {};
@@ -1625,7 +1632,7 @@ export default function Dashboard({ timesheets, calculations, settings: propSett
       </div>
 
       {/* === WARNUNGEN === */}
-      {((c.ruhezeitVerletzungen && c.ruhezeitVerletzungen.length > 0) || (c.feiertageList && c.feiertageList.length > 0) || (c.heiligabendSilvester && c.heiligabendSilvester.length > 0) || c.totalKranktageUnbezahlt > 0 || missingWeeks.length > 0 || (c.arbzgLangeTage && c.arbzgLangeTage.length > 0) || (c.arbzgOhneRuhetag && c.arbzgOhneRuhetag.length > 0) || (c.arbzgHinweisTage && c.arbzgHinweisTage.length > 0) || (c.pausenVerstoesse && c.pausenVerstoesse.length > 0) || sesamDeviations.length > 0) && (
+      {((c.ruhezeitVerletzungen && c.ruhezeitVerletzungen.length > 0) || (c.feiertageList && c.feiertageList.length > 0) || (c.heiligabendSilvester && c.heiligabendSilvester.length > 0) || c.totalKranktageUnbezahlt > 0 || missingWeeks.length > 0 || (c.arbzgLangeTage && c.arbzgLangeTage.length > 0) || (c.arbzgOhneRuhetag && c.arbzgOhneRuhetag.length > 0) || (c.arbzgHinweisTage && c.arbzgHinweisTage.length > 0) || (c.pausenVerstoesse && c.pausenVerstoesse.length > 0) || (c.wochenruheVerstoesse && c.wochenruheVerstoesse.length > 0) || (c.wochenruheList && c.wochenruheList.some(w => !w.erfuellt59)) || sesamDeviations.length > 0) && (
         <div className="stats-section warnings-section">
           <h3 className="section-title">⚠ Hinweise</h3>
 
@@ -1760,12 +1767,12 @@ export default function Dashboard({ timesheets, calculations, settings: propSett
             <div className="warning-card warning-danger">
               <div className="warning-header">⏰ Ruhezeit-Verletzungen ({c.ruhezeitVerletzungen.length})</div>
               <div className="warning-body">
-                <p className="warning-note">Mindestens 11 Stunden Ruhezeit zwischen Schichten (ArbZG §5)</p>
+                <p className="warning-note">TV-FFS TZ 5.9.1: 11 h Ruhezeit zwischen Drehtagen, 11,5 h nach langen Tagen (&gt;11 h)</p>
                 {c.ruhezeitVerletzungen.map((v, i) => (
                   <div key={i} className="warning-row warning-row-bad">
                     <span>{v.datum1} Ende: {v.ende1}</span>
                     <span>→ {v.datum2} Start: {v.start2}</span>
-                    <span className="warning-gap">Ruhezeit: {v.ruhezeit}h (fehlen {v.fehlend}h)</span>
+                    <span className="warning-gap">Ruhezeit: {v.ruhezeit}h{v.soll ? ` (Soll ${v.soll}h, fehlen ${v.fehlend}h)` : ` (fehlen ${v.fehlend}h)`}</span>
                   </div>
                 ))}
               </div>
@@ -1787,56 +1794,92 @@ export default function Dashboard({ timesheets, calculations, settings: propSett
               </div>
             </div>
           )}
+
+          {c.wochenruheVerstoesse && c.wochenruheVerstoesse.length > 0 && (
+            <div className="warning-card warning-danger">
+              <div className="warning-header">🛌 Wochenend-Ruhe 48+11 h unterschritten ({c.wochenruheVerstoesse.length})</div>
+              <div className="warning-body">
+                <p className="warning-note">TV-FFS TZ 5.9.4: an mind. 2 Wochenenden je Beschäftigungsmonat ≥ 59 h zusammenhängende Ruhe (Monat = Kalendermonat)</p>
+                {c.wochenruheVerstoesse.map((w, i) => (
+                  <div key={i}>
+                    <div className="warning-row warning-row-bad">
+                      <span className="warning-name">{w.person}</span>
+                      <span className="warning-date">{w.monat}</span>
+                      <span className="warning-gap">nur {w.erfuellt} von {w.benoetigt} WE ≥ 59 h ({w.bewertet} bewertet)</span>
+                    </div>
+                    {(w.kurzeWE || []).map((k, j) => (
+                      <div key={j} className="warning-row" style={{ paddingLeft: 16, fontSize: 12 }}>
+                        <span className="warning-date">WE {k.samstag}</span>
+                        <span className="warning-gap">{k.ruhezeit} h (Soll 59 h)</span>
+                      </div>
+                    ))}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {c.wochenruheList && c.wochenruheList.some(w => !w.erfuellt59) && (
+            <div className="warning-card warning-warn">
+              <div className="warning-header">🛌 Wochenenden unter 48+11 h ({c.wochenruheList.filter(w => !w.erfuellt59).length})</div>
+              <div className="warning-body">
+                <p className="warning-note">Info – gemessene zusammenhängende Wochenend-Ruhe unter 59 h (TZ 5.9.4 verlangt dies an mind. 2 WE/Monat)</p>
+                {c.wochenruheList.filter(w => !w.erfuellt59).map((w, i) => (
+                  <div key={i} className="warning-row warning-row-warn">
+                    <span className="warning-name">{w.person}</span>
+                    <span className="warning-date">WE {w.samstag}</span>
+                    <span className="warning-gap">{w.ruhezeit} h ({w.prevDatum} {w.prevEnde} → {w.currDatum} {w.currStart})</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       )}
 
-      {/* === Projektübersicht === */}
-      {personProjectStats.length > 1 && (
+      {/* === Projektübersicht (kompakte Tabelle, nur wenn ausschließlich nach Person gefiltert) === */}
+      {personProjectStats.length > 1 && projectFilter === 'all' && (
         <div className="card" style={{marginBottom: 24}}>
           <div className="card-head">
             <h2 className="card-title">Projektübersicht</h2>
-            {projectFilter !== 'all' && (
-              <button className="btn-ghost" style={{fontSize: 12}} onClick={() => onProjectFilter && onProjectFilter('all')}>✕ Filter zurücksetzen</button>
-            )}
+            <span style={{fontSize: 12, color: 'var(--text-muted)'}}>Zeile wählen, um in ein Projekt zu wechseln</span>
           </div>
           <div className="card-body" style={{paddingTop: 12}}>
-          <div className="project-breakdown-grid">
-            {personProjectStats.map(ps => (
-              <button
-                key={ps.projekt}
-                className={`project-breakdown-card ${projectFilter === ps.projekt ? 'project-breakdown-card-active' : ''}`}
-                onClick={() => onProjectFilter && onProjectFilter(projectFilter === ps.projekt ? 'all' : ps.projekt)}
-              >
-                <div className="project-breakdown-header">
-                  <span className="project-breakdown-name">{ps.projekt}</span>
-                  <span className="project-breakdown-meta">{ps.sheets} Zettel · {ps.arbeitstage} Tage</span>
-                </div>
-                <div className="project-breakdown-stats">
-                  <div className="project-breakdown-stat">
-                    <span className="project-breakdown-stat-value">{ps.stunden.toLocaleString('de-DE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
-                    <span className="project-breakdown-stat-label">Stunden</span>
-                  </div>
-                  <div className="project-breakdown-stat">
-                    <span className="project-breakdown-stat-value">{ps.ueberstunden.toLocaleString('de-DE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
-                    <span className="project-breakdown-stat-label">Überstd.</span>
-                  </div>
-                  <div className="project-breakdown-stat">
-                    <span className="project-breakdown-stat-value">{ps.nacht.toLocaleString('de-DE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
-                    <span className="project-breakdown-stat-label">Nacht</span>
-                  </div>
-                  <div className="project-breakdown-stat">
-                    <span className="project-breakdown-stat-value">{ps.fahrzeit.toLocaleString('de-DE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
-                    <span className="project-breakdown-stat-label">Fahrzeit</span>
-                  </div>
-                </div>
-                <div className="project-breakdown-badges">
-                  {ps.samstage > 0 && <span className="crew-badge crew-badge-sa">Sa {ps.samstage.toLocaleString('de-DE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} Std.</span>}
-                  {ps.sonntage > 0 && <span className="crew-badge crew-badge-so">So {ps.sonntage.toLocaleString('de-DE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} Std.</span>}
-                  {hasGage && ps.verdienst > 0 && <span className="crew-badge project-badge-earnings">{formatCurrency(ps.verdienst)}</span>}
-                </div>
-              </button>
-            ))}
-          </div>
+            <table className="proj-overview-table">
+              <thead>
+                <tr>
+                  <th style={{textAlign: 'left'}}>Projekt</th>
+                  <th>Stunden</th>
+                  <th>Überstd.</th>
+                  <th>Nacht</th>
+                  <th>Fahrzeit</th>
+                  {hasGage && <th>Verdienst</th>}
+                </tr>
+              </thead>
+              <tbody>
+                {personProjectStats.map(ps => {
+                  const num = (v) => v.toLocaleString('de-DE', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+                  return (
+                    <tr
+                      key={ps.projekt}
+                      className="proj-overview-row"
+                      onClick={() => onProjectFilter && onProjectFilter(ps.projekt)}
+                      title={`${ps.projekt} öffnen`}
+                    >
+                      <td style={{textAlign: 'left'}}>
+                        <span className="proj-overview-name">{ps.projekt}</span>
+                        <span className="proj-overview-meta">{ps.sheets} Zettel · {ps.arbeitstage} Tage</span>
+                      </td>
+                      <td>{num(ps.stunden)}</td>
+                      <td>{num(ps.ueberstunden)}</td>
+                      <td>{num(ps.nacht)}</td>
+                      <td>{num(ps.fahrzeit)}</td>
+                      {hasGage && <td>{ps.verdienst > 0 ? formatCurrency(ps.verdienst) : '—'}</td>}
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
           </div>
         </div>
       )}

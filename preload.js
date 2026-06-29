@@ -6,7 +6,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   openFileDialog: () => ipcRenderer.invoke('open-file-dialog'),
   openFolderDialog: () => ipcRenderer.invoke('open-folder-dialog'),
   loadData: () => ipcRenderer.invoke('load-data'),
-  saveData: (data) => ipcRenderer.invoke('save-data', data),
+  saveData: (data, opts) => ipcRenderer.invoke('save-data', data, opts),
   saveDataSync: (data) => ipcRenderer.sendSync('save-data-sync', data),
   readPDFFile: (filePath) => ipcRenderer.invoke('read-pdf-file', filePath),
   exportCSV: (csvContent, defaultName) => ipcRenderer.invoke('export-csv', csvContent, defaultName),
@@ -18,6 +18,18 @@ contextBridge.exposeInMainWorld('electronAPI', {
   restoreBackup: (path) => ipcRenderer.invoke('restore-backup', path),
   exportData: () => ipcRenderer.invoke('export-data'),
   importDataFile: () => ipcRenderer.invoke('import-data'),
+  // Geräteübergreifender Speicherort
+  pickFolder: (title) => ipcRenderer.invoke('pick-folder', title),
+  getDataLocation: () => ipcRenderer.invoke('get-data-location'),
+  setDataDir: (dir) => ipcRenderer.invoke('set-data-dir', dir),
+  resetDataDir: () => ipcRenderer.invoke('reset-data-dir'),
+  hasExternalChange: () => ipcRenderer.invoke('has-external-change'),
+  watchData: () => ipcRenderer.invoke('data-watch'),
+  onDataFileChanged: (callback) => {
+    const handler = (_event, data) => callback(data);
+    ipcRenderer.on('data-file-changed', handler);
+    return () => ipcRenderer.removeListener('data-file-changed', handler);
+  },
   // Batch PDF export
   exportPDFsToFolder: (htmlContentArray) => ipcRenderer.invoke('export-pdfs-to-folder', htmlContentArray),
   // n8n integration
@@ -25,6 +37,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   scanN8N: (folder) => ipcRenderer.invoke('n8n-scan', folder),
   archiveN8N: (folder, files) => ipcRenderer.invoke('n8n-archive', folder, files),
   watchN8N: (folder) => ipcRenderer.invoke('n8n-watch', folder),
+  fetchNoco: (cfg) => ipcRenderer.invoke('noco-fetch', cfg),
   // Dispos (PDF-Dispositionen)
   scanDispos: (folder) => ipcRenderer.invoke('dispo-scan', folder),
   importDispo: (folder, filename) => ipcRenderer.invoke('dispo-import', folder, filename),

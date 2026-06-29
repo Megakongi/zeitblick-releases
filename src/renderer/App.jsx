@@ -17,7 +17,8 @@ import ImportOverlay from './components/ImportOverlay';
 import OnboardingTour from './components/OnboardingTour';
 import UpdateOverlay from './components/UpdateOverlay';
 import N8NImportOverlay from './components/N8NImportOverlay';
-import { processN8N, applyDeviation, applySubstitution, expandToFullWeeks } from './utils/n8nImport';
+import { processN8N, applyDeviation, applySubstitution, expandToFullWeeks, mergeSheetsInto } from './utils/n8nImport';
+import { nocoRecordsToEntries, filterNewRecords, recordId } from './utils/nocoImport';
 import { calculateTVFFS } from './utils/tvffsCalculator';
 import { getTimesheetKW } from './utils/calendarWeek';
 import { FilterContext, SettingsContext } from './contexts';
@@ -107,7 +108,20 @@ export default function App() {
   const searchInputRef = useRef(null);
   const [showTour, setShowTour] = useState(() => { try { return !localStorage.getItem('zeitblick-tour-completed'); } catch { return true; } });
   const [trash, setTrash] = useState([]); // Trash bin for undo
+  // Sichtbarkeit des „Rückgängig"-Buttons: erscheint nur kurz NACH einem
+  // Löschvorgang und blendet sich selbst aus. Entkoppelt von trash.length,
+  // damit ein (persistierter) Papierkorb nicht zu einem dauerhaft klebenden
+  // Button beim Start führt. ⌘Z funktioniert unabhängig davon weiter.
+  const [undoVisible, setUndoVisible] = useState(false);
+  const undoHideTimer = useRef(null);
+  const showUndoFab = useCallback(() => {
+    setUndoVisible(true);
+    if (undoHideTimer.current) clearTimeout(undoHideTimer.current);
+    undoHideTimer.current = setTimeout(() => setUndoVisible(false), 8000);
+  }, []);
+  useEffect(() => () => { if (undoHideTimer.current) clearTimeout(undoHideTimer.current); }, []);
   const [saveError, setSaveError] = useState(null);
+  const [dataConflict, setDataConflict] = useState(false); // Fremdänderung auf anderem Gerät
   const dragCounter = useRef(0);
   const saveTimeout = useRef(null);
   const dataLoaded = useRef(false);
@@ -273,13 +287,33 @@ export default function App() {
     saveTimeout.current = setTimeout(async () => {
       pendingSave.current = null;
       const result = await window.electronAPI.saveData({ timesheets, settings, abrechnungen, sesamSheets, trash });
-      if (result && !result.success && result.error) {
+      if (result && result.conflict) {
+        // Anderes Gerät hat zwischenzeitlich geschrieben — nicht überschreiben, Nutzer entscheidet.
+        setDataConflict(true);
+      } else if (result && !result.success && result.error) {
         setSaveError(result.error);
         setTimeout(() => setSaveError(null), 6000);
       }
     }, 500);
     return () => { if (saveTimeout.current) clearTimeout(saveTimeout.current); };
   }, [timesheets, settings, abrechnungen, sesamSheets, trash]);
+
+  // Fremdänderungen anderer Geräte erkennen (Datei-Watcher im Main-Prozess)
+  useEffect(() => {
+    if (!window.electronAPI?.watchData) return;
+    window.electronAPI.watchData();
+    const off = window.electronAPI.onDataFileChanged?.(() => setDataConflict(true));
+    return () => { if (off) off(); };
+  }, []);
+
+  // Konflikt auflösen: eigenen Stand bewusst durchsetzen
+  const handleOverwriteConflict = async () => {
+    const res = await window.electronAPI.saveData(
+      { timesheets, settings, abrechnungen, sesamSheets, trash },
+      { force: true }
+    );
+    if (res && res.success) setDataConflict(false);
+  };
 
   // Flush pending changes synchronously when the window closes (app quit),
   // otherwise edits made within the 500ms debounce window would be lost
@@ -539,27 +573,27 @@ export default function App() {
   const handleDelete = useCallback((id) => {
     setTimesheets(prev => {
       const sheet = prev.find(ts => ts.id === id);
-      if (sheet) setTrash(t => [...t, sheet].slice(-50)); // keep last 50
+      if (sheet) { setTrash(t => [...t, sheet].slice(-50)); showUndoFab(); } // keep last 50
       return prev.filter(ts => ts.id !== id);
     });
     if (selectedSheet && selectedSheet.id === id) {
       setSelectedSheet(null);
       setView('timesheets');
     }
-  }, [selectedSheet]);
+  }, [selectedSheet, showUndoFab]);
 
   // Bulk delete timesheets (moves to trash)
   const handleBulkDelete = useCallback((ids) => {
     setTimesheets(prev => {
       const deleted = prev.filter(ts => ids.includes(ts.id));
-      setTrash(t => [...t, ...deleted].slice(-50));
+      if (deleted.length) { setTrash(t => [...t, ...deleted].slice(-50)); showUndoFab(); }
       return prev.filter(ts => !ids.includes(ts.id));
     });
     if (selectedSheet && ids.includes(selectedSheet.id)) {
       setSelectedSheet(null);
       setView('timesheets');
     }
-  }, [selectedSheet]);
+  }, [selectedSheet, showUndoFab]);
 
   // Undo last delete
   const handleUndo = useCallback(() => {
@@ -569,7 +603,9 @@ export default function App() {
     setTimesheets(prev => [...prev, lastDeleted]);
     setImportMessage('↩ Wiederhergestellt: ' + (lastDeleted.name || 'Eintrag'));
     setTimeout(() => setImportMessage(null), 3000);
-  }, [trash]);
+    // Noch Einträge übrig? Button kurz weiter zeigen, sonst ausblenden.
+    if (trash.length > 1) showUndoFab(); else setUndoVisible(false);
+  }, [trash, showUndoFab]);
 
   // View timesheet detail
   const prevView = React.useRef('timesheets');
@@ -686,10 +722,84 @@ export default function App() {
     });
   }, []);
 
+  // ===== NocoDB-Direktimport =====
+  // Merkt importierte NocoDB-Zeilen-Ids, damit sie nicht erneut verarbeitet werden.
+  const recordNocoIds = useCallback((ids) => {
+    if (!ids || !ids.length) return;
+    setSettings(prev => {
+      const set = new Set((prev.nocoImportedIds || []).map(String));
+      for (const id of ids) set.add(String(id));
+      // Wachstum begrenzen: nur die jüngsten Ids behalten.
+      return { ...prev, nocoImportedIds: [...set].slice(-2000) };
+    });
+  }, []);
+
+  const runNocoImport = useCallback(async (override) => {
+    if (n8nRunning.current) return;
+    if (!window.electronAPI || !window.electronAPI.fetchNoco) return;
+    // Konfiguration: optionaler Override (z. B. aus dem noch nicht persistierten
+    // Settings-Formular) hat Vorrang vor den gespeicherten Settings. nocoEnabled
+    // steuert nur das automatische Polling; manueller Abruf geht, sobald eine
+    // Tabelle konfiguriert ist.
+    const cfg = (override && typeof override === 'object' && !override.nativeEvent) ? override : {};
+    const baseUrl = cfg.nocoBaseUrl || settings.nocoBaseUrl || 'https://app.nocodb.com';
+    const tableId = cfg.nocoTableId || settings.nocoTableId;
+    const viewId = cfg.nocoViewId ?? settings.nocoViewId ?? '';
+    const token = cfg.nocoToken ?? settings.nocoToken ?? '';
+    if (!tableId) {
+      setImportMessage('⚠ NocoDB: keine Table-ID konfiguriert (Einstellungen → NocoDB).');
+      setTimeout(() => setImportMessage(null), 6000);
+      return;
+    }
+    n8nRunning.current = true;
+    try {
+      const res = await window.electronAPI.fetchNoco({ baseUrl, tableId, viewId, token });
+      if (!res || !res.success) {
+        if (res && res.error) {
+          setImportMessage(`⚠ NocoDB: ${res.error}`);
+          setTimeout(() => setImportMessage(null), 8000);
+        }
+        n8nRunning.current = false;
+        return;
+      }
+      const total = (res.records || []).length;
+      const fresh = filterNewRecords(res.records, settings.nocoImportedIds || []);
+      if (fresh.length === 0) {
+        setImportMessage(total === 0
+          ? 'NocoDB: Verbindung ok, aber 0 Zeilen geliefert – Table-ID/View-ID prüfen.'
+          : `NocoDB: keine neuen Zeilen (${total} bereits importiert).`);
+        setTimeout(() => setImportMessage(null), 6000);
+        n8nRunning.current = false;
+        return;
+      }
+      const entries = nocoRecordsToEntries(fresh);
+      const { sheets, deviations, substitutions, unknownNames, newProjects, calendarAdds } = processN8N(entries, {
+        resolveName,
+        projectCrews: settings.projectCrews || {},
+        team: settings.team || [],
+        projects: settings.projects || {},
+        calendarEntries: settings.calendarEntries || {},
+        projectStaffing: settings.projectStaffing || {},
+      });
+      const nocoIds = fresh.map(recordId).filter(v => v != null);
+      const needsOverlay = sheets.length > 0 || deviations.length > 0 || substitutions.length > 0 || unknownNames.length > 0 || newProjects.length > 0;
+      if (!needsOverlay) {
+        if (calendarAdds && calendarAdds.length) writeCalendarAdds(calendarAdds);
+        recordNocoIds(nocoIds);
+        n8nRunning.current = false;
+        return;
+      }
+      setN8nOverlay({ sheets, deviations, substitutions, unknownNames, newProjects, calendarAdds, nocoIds, source: 'noco' });
+    } catch (e) {
+      console.error('[noco] import failed:', e);
+      n8nRunning.current = false;
+    }
+  }, [settings.nocoEnabled, settings.nocoTableId, settings.nocoViewId, settings.nocoBaseUrl, settings.nocoToken, settings.nocoImportedIds, settings.projectCrews, settings.team, settings.projects, settings.calendarEntries, settings.projectStaffing, resolveName, writeCalendarAdds, recordNocoIds]);
+
   const finalizeN8N = useCallback(({ devChoices, subChoices, newPeople, projectData }) => {
     setN8nOverlay(current => {
       if (!current) return null;
-      const { sheets, deviations, substitutions, files, folder, calendarAdds } = current;
+      const { sheets, deviations, substitutions, files, folder, calendarAdds, source, nocoIds } = current;
       const cloned = sheets.map(s => ({ ...s, days: s.days.map(d => ({ ...d })), totals: { ...s.totals } }));
       for (const dev of deviations) {
         const chosen = devChoices[dev.id];
@@ -735,25 +845,26 @@ export default function App() {
         });
       }
       setTimesheets(prev => {
-        const toAdd = cloned.filter(ns => {
-          const nsDates = ns.days.filter(d => d.datum).map(d => d.datum).join(',');
-          const nsKey = `${ns.projekt || ''}|${ns.name || ''}|${nsDates}`;
-          return !prev.some(ex => {
-            const exDates = ex.days.filter(d => d.datum).map(d => d.datum).join(',');
-            return `${ex.projekt || ''}|${ex.name || ''}|${exDates}` === nsKey;
-          });
-        });
-        if (toAdd.length > 0) {
-          setImportMessage(`n8n: ${toAdd.length} Stundenzettel importiert`);
+        const { sheets: next, addedCount, mergedCount } = mergeSheetsInto(prev, cloned);
+        if (addedCount > 0 || mergedCount > 0) {
+          const label = source === 'noco' ? 'NocoDB' : 'n8n';
+          const parts = [];
+          if (addedCount) parts.push(`${addedCount} neu`);
+          if (mergedCount) parts.push(`${mergedCount} ergänzt`);
+          setImportMessage(`${label}: ${parts.join(' · ')}`);
           setTimeout(() => setImportMessage(null), 5000);
         }
-        return [...prev, ...toAdd];
+        return next;
       });
-      if (window.electronAPI.archiveN8N) window.electronAPI.archiveN8N(folder, files);
+      if (source === 'noco') {
+        recordNocoIds(nocoIds);
+      } else if (window.electronAPI.archiveN8N) {
+        window.electronAPI.archiveN8N(folder, files);
+      }
       n8nRunning.current = false;
       return null;
     });
-  }, []);
+  }, [recordNocoIds]);
 
   // Start n8n watch + initial scan when enabled
   useEffect(() => {
@@ -767,6 +878,15 @@ export default function App() {
     if (window.electronAPI.onN8NChanged) cleanup = window.electronAPI.onN8NChanged(() => runN8NImport());
     return () => { if (cleanup) cleanup(); };
   }, [settings.n8nEnabled, settings.n8nFolder, runN8NImport]);
+
+  // NocoDB: initialer Abruf beim Start + periodisches Polling, wenn aktiviert.
+  useEffect(() => {
+    if (!settings.nocoEnabled || !settings.nocoTableId) return;
+    runNocoImport();
+    const minutes = Math.max(2, settings.nocoPollMinutes || 10);
+    const interval = setInterval(() => runNocoImport(), minutes * 60 * 1000);
+    return () => clearInterval(interval);
+  }, [settings.nocoEnabled, settings.nocoTableId, settings.nocoPollMinutes, runNocoImport]);
 
   // Search results — match timesheets by name, project, KW, position, abteilung, firma
   const searchResults = useMemo(() => {
@@ -975,6 +1095,7 @@ export default function App() {
           calculations={calculations}
           onViewDetail={handleViewDetail}
           resolveName={resolveName}
+          team={settings.team || []}
         /></SectionErrorBoundary>;
       case 'sesam':
         return <SectionErrorBoundary label="Sesam Abgleich"><SesamAbgleich
@@ -1013,6 +1134,7 @@ export default function App() {
           projects={settings.projects || {}}
           team={settings.team || []}
           onCreateNext={(weekStart) => { setSelectedSheet(null); setView('create'); }}
+          onSyncNoco={settings.nocoTableId ? runNocoImport : null}
         /></SectionErrorBoundary>;
       case 'team':
         return <SectionErrorBoundary label="Team"><TeamManager
@@ -1033,9 +1155,11 @@ export default function App() {
           settings={settings}
           onSettings={setSettings}
           onSyncN8N={runN8NImport}
+          completedProjects={settings.completedProjects || {}}
+          onToggleProjectComplete={handleToggleProjectComplete}
         /></SectionErrorBoundary>;
       case 'settings':
-        return <SectionErrorBoundary label="Einstellungen"><Settings settings={settings} onSave={setSettings} timesheets={timesheets} setTimesheets={setTimesheets} onSyncN8N={runN8NImport} onRestartTour={() => { try { localStorage.removeItem('zeitblick-tour-completed'); } catch (e) {} setShowTour(true); }} /></SectionErrorBoundary>;
+        return <SectionErrorBoundary label="Einstellungen"><Settings settings={settings} onSave={setSettings} timesheets={timesheets} setTimesheets={setTimesheets} onSyncN8N={runN8NImport} onSyncNoco={runNocoImport} onRestartTour={() => { try { localStorage.removeItem('zeitblick-tour-completed'); } catch (e) {} setShowTour(true); }} /></SectionErrorBoundary>;
       default:
         return <SectionErrorBoundary label="Übersicht"><Dashboard timesheets={filteredTimesheets} calculations={calculations} settings={settings} effectiveSettings={effectiveSettings} onSettings={setSettings} onViewDetail={handleViewDetail} onUpdateTimesheets={setTimesheets} projects={filteredProjects} projectFilter={projectFilter} onProjectFilter={handleProjectFilter} personFilter={personFilter} onPersonFilter={handlePersonFilter} allTimesheets={timesheets} personFilteredTimesheets={personFiltered} getPersonSettings={getPersonSettings} resolveName={resolveName} getBaseProject={getBaseProject} completedProjects={settings.completedProjects || {}} sesamSheets={sesamSheets} /></SectionErrorBoundary>;
     }
@@ -1185,10 +1309,22 @@ export default function App() {
           Konnte nicht speichern. Letzte Änderung wird beim nächsten Versuch erneut gesichert. ({saveError})
         </div>
       )}
-      {trash.length > 0 && (
-        <button className="undo-fab" onClick={handleUndo} title="Letzten Löschvorgang rückgängig machen (⌘Z)" aria-label="Rückgängig">
-          ↩ Rückgängig ({trash.length})
-        </button>
+      {dataConflict && (
+        <div className="import-toast import-toast-error" style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+          <span>⚠ Daten wurden auf einem anderen Gerät geändert.</span>
+          <button className="backup-btn" onClick={() => window.location.reload()}>Neu laden</button>
+          <button className="backup-btn" onClick={handleOverwriteConflict}>Mit meinem Stand überschreiben</button>
+        </div>
+      )}
+      {undoVisible && trash.length > 0 && (
+        <div className="undo-fab-wrap">
+          <button className="undo-fab" onClick={handleUndo} title="Letzten Löschvorgang rückgängig machen (⌘Z)" aria-label="Rückgängig">
+            ↩ Rückgängig ({trash.length})
+          </button>
+          <button className="undo-fab-dismiss" onClick={() => setUndoVisible(false)} title="Ausblenden" aria-label="Ausblenden">
+            ✕
+          </button>
+        </div>
       )}
       {showTour && <OnboardingTour onComplete={() => setShowTour(false)} onEnableN8N={(yes) => setSettings(s => ({ ...s, n8nEnabled: !!yes }))} />}
       {n8nOverlay && (

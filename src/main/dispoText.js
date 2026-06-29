@@ -58,6 +58,22 @@ const BASIS_LABEL_RE = /^Basis\s*:?\s*$/i;
 const COMBINED_LABEL_RE = /^(?=[A-Za-zÄÖÜäöü /]*\bMotiv\b)(?=[A-Za-zÄÖÜäöü /]*\bBasis\b)[A-Za-zÄÖÜäöü /]+:\s*$/i;
 
 /**
+ * Vollständige Adresse in EINER Zeile, z. B. (englische Call Sheets):
+ *   "Freimersdorfer Weg 6, 50829 Köln"
+ *   "Venloer Str. 1152, D-50829 Köln"
+ * Aufbau: „Straße + Hausnummer , [Länderpräfix-]PLZ Ort". Die Zeile muss
+ * komplett passen (Anker ^…$), damit Fließtext wie die Notfall-/Krankenhaus-
+ * Zeile ("… | Schönsteinstr. 63, 50825 Köln | HOTLINE: …") NICHT erfasst wird.
+ */
+const INLINE_ADDRESS_RE = /^\s*([A-Za-zÄÖÜäöüß][A-Za-zÄÖÜäöüß0-9.\- ]*\s+\d+[a-zA-Z]?)\s*,\s*(?:[A-Za-z]{1,3}-)?(\d{5})\s+([A-Za-zÄÖÜäöüß][A-Za-zÄÖÜäöüß0-9.\-/ ]+?)\s*$/;
+
+/**
+ * Zeilen, die zwar eine Adresse enthalten, aber kein Drehort sind
+ * (Krankenhaus, Notfall, Hotel, Produktionsbüro …) – werden ignoriert.
+ */
+const NON_LOCATION_RE = /(hospital|krankenhaus|emergency|notfall|hotline|hotel|büro|office|produktion)/i;
+
+/**
  * Liest alle Text-Fragmente einer PDF in Lesereihenfolge.
  * @param {string} filePath
  * @returns {Promise<string[]>}
@@ -181,6 +197,34 @@ function extractCombinedAddresses(lines) {
   return dedupe(out);
 }
 
+/**
+ * Fallback für Call Sheets ohne „Motiv:"/„Basis:"-Label: sucht vollständige
+ * Adressen, die als einzelne Zeile vorliegen (häufig in englischen Call Sheets,
+ * z. B. unter „Location"/„Set"). Wegen der durcheinandergewürfelten Lesereihen-
+ * folge von Tabellen-PDFs wird NICHT auf ein Label verankert, sondern die
+ * Adresse direkt erkannt. Mehrfach vorkommende Adressen (= Hauptdrehort) werden
+ * bevorzugt zurückgegeben.
+ * @param {string[]} lines
+ * @returns {Array<{ label:string, address:string }>}
+ */
+function extractInlineAddresses(lines) {
+  const counts = new Map(); // address → { count, order }
+  let order = 0;
+  for (const ln of lines) {
+    if (NON_LOCATION_RE.test(ln)) continue;
+    const m = ln.match(INLINE_ADDRESS_RE);
+    if (!m) continue;
+    const address = `${m[1].trim()}, ${m[2]} ${m[3].trim()}`;
+    const cur = counts.get(address);
+    if (cur) cur.count++;
+    else counts.set(address, { count: 1, order: order++ });
+  }
+  return [...counts.entries()]
+    // Häufigste zuerst (Hauptdrehort), bei Gleichstand in Lesereihenfolge.
+    .sort((a, b) => b[1].count - a[1].count || a[1].order - b[1].order)
+    .map(([address], i) => ({ label: i === 0 ? 'Drehort' : `Drehort ${i + 1}`, address }));
+}
+
 /** Fallback: Basis-Adresse (nur wenn kein Motiv gefunden wurde). */
 function extractBasisAddress(lines) {
   // Auch kombinierte „Motiv / Basis …:“-Labels akzeptieren.
@@ -225,7 +269,12 @@ async function extractDispoAddresses(filePath) {
       if (basis) motive = [basis];
     }
   }
+  // Letzter Fallback: einzeilige Adressen (englische Call Sheets ohne Label).
+  if (motive.length === 0) {
+    const inline = extractInlineAddresses(lines);
+    if (inline.length) motive = inline;
+  }
   return { motive, suggested: motive[0]?.address || '' };
 }
 
-module.exports = { extractDispoAddresses, extractMotivAddresses, extractCombinedAddresses, extractBasisAddress, extractLines };
+module.exports = { extractDispoAddresses, extractMotivAddresses, extractCombinedAddresses, extractBasisAddress, extractInlineAddresses, extractLines };

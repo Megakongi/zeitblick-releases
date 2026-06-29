@@ -394,7 +394,7 @@ describe('calculateTVFFS — Ruhezeit (ArbZG §5)', () => {
 });
 
 describe('calculateTVFFS — ArbZG-Warnungen', () => {
-  test('Tag mit mehr als 13h Arbeitszeit wird erkannt', () => {
+  test('Tag mit mehr als 12h Arbeitszeit wird erkannt (TZ 5.2.5)', () => {
     const days = [
       makeDay({ stundenTotal: 14, ueberstunden25: 1, ueberstunden50: 3, ende: '23:00' }),
       makeDay({ datum: '06.01.2026', tag: 'Dienstag' }), // normaler 10h-Tag
@@ -405,10 +405,11 @@ describe('calculateTVFFS — ArbZG-Warnungen', () => {
     expect(result.arbzgLangeTage[0].stunden).toBe(14);
   });
 
-  test('genau 13h ist keine Verletzung', () => {
-    const day = makeDay({ stundenTotal: 13, ende: '22:00' });
+  test('genau 12h ist kein Verstoß, sondern Hinweis (TZ 5.2.5)', () => {
+    const day = makeDay({ stundenTotal: 12, ende: '21:00' });
     const result = calculateTVFFS([makeSheet([day])], BASE_SETTINGS);
     expect(result.arbzgLangeTage).toHaveLength(0);
+    expect(result.arbzgHinweisTage).toHaveLength(1);
   });
 
   test('7+ Arbeitstage am Stück ohne Ruhetag werden erkannt', () => {
@@ -499,5 +500,23 @@ describe('ArbZG: lange Tage (Verstoß vs. Hinweis)', () => {
     const day = makeDay({ stundenTotal: 11, ende: '19:00' });
     const result = calculateTVFFS([makeSheet([day])], { ...BASE_SETTINGS, arbzg: { enabled: false } });
     expect(result.arbzgHinweisTage).toHaveLength(0);
+  });
+});
+
+describe('Wochenend-Zuschlag: Samstag ohne Günstigkeitsprinzip (TZ 5.6.4)', () => {
+  // 01.01.2022 = Samstag UND Neujahr (Feiertag). FAQ TV FFS 12.10.2024:
+  // Samstagszuschlag ist IMMER zu zahlen und wird durch Feiertag NICHT verdrängt.
+  const satHoliday = () => makeDay({ tag: 'Samstag', datum: '01.01.2022', stundenTotal: 10, start: '08:00', ende: '18:00' });
+  test('Feiertag auf Samstag: Samstag 25% UND Feiertag 100% (Stapelung)', () => {
+    const r = calculateTVFFS([makeSheet([satHoliday()])], BASE_SETTINGS);
+    expect(r.totalFeiertagsstunden).toBe(10);
+    expect(r.totalSamstagsstunden).toBe(10);
+    expect(r.samstagZuschlag).toBeGreaterThan(0);
+    expect(r.feiertagZuschlag).toBeGreaterThan(0);
+  });
+  test('normaler Samstag (kein Feiertag) bleibt 25%', () => {
+    const r = calculateTVFFS([makeSheet([makeDay({ tag: 'Samstag', datum: '10.01.2026', stundenTotal: 10 })])], BASE_SETTINGS);
+    expect(r.totalSamstagsstunden).toBe(10);
+    expect(r.samstagZuschlag).toBeGreaterThan(0);
   });
 });

@@ -129,8 +129,10 @@ export function generateYearReportHTML(report, { personLabel = '', hasGage = fal
   html += `<tr><td>Urlaubskonto</td><td class="num">Anspruch ${t.urlaubstage} · genommen ${t.urlaubstageGenommen} · offen ${t.urlaubstageOffen}</td></tr>`;
   html += `<tr><td>AZV-Konto (TZ 6)</td><td class="num">Anspruch ${fmtNum(azvAnspruchStd)} Std. · genommen ${(t.totalAZVTage || 0)} Tag(e) · Saldo ${fmtNum(azvSaldo)} Std.</td></tr>`;
   if (t.zeitkonto) html += `<tr><td>Zeitkonto</td><td class="num">${fmtNum(t.zeitkontoStunden)} Std. (${fmtCur(t.zeitkontoWert)})</td></tr>`;
-  if (t.ruhezeitVerletzungen?.length > 0) html += `<tr><td>Ruhezeit-Verletzungen (ArbZG §5)</td><td class="num">${t.ruhezeitVerletzungen.length}</td></tr>`;
-  if (t.arbzgLangeTage?.length > 0) html += `<tr><td>Tage über 13h (ArbZG)</td><td class="num">${t.arbzgLangeTage.length}</td></tr>`;
+  if (t.ruhezeitVerletzungen?.length > 0) html += `<tr><td>Ruhezeit-Verletzungen (TV-FFS TZ 5.9.1)</td><td class="num">${t.ruhezeitVerletzungen.length}</td></tr>`;
+  if (t.wochenruheVerstoesse?.length > 0) html += `<tr><td>Wochenend-Ruhe 48+11h unterschritten (TZ 5.9.4)</td><td class="num">${t.wochenruheVerstoesse.length} Monat(e)</td></tr>`;
+  if (t.pausenVerstoesse?.length > 0) html += `<tr><td>Zu kurze Ruhepausen (ArbZG §4)</td><td class="num">${t.pausenVerstoesse.length}</td></tr>`;
+  if (t.arbzgLangeTage?.length > 0) html += `<tr><td>Tage über 12h (TV-FFS TZ 5.2.5)</td><td class="num">${t.arbzgLangeTage.length}</td></tr>`;
   html += `</tbody></table>`;
 
   if (hasGage) {

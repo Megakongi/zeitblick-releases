@@ -14,4 +14,10 @@ export default defineConfig({
     port: 5173,
     strictPort: true,
   },
+  // Tests laufen vom Projekt-Root, damit auch Main-Prozess-Module
+  // (src/main/**) abgedeckt werden – nicht nur src/renderer.
+  test: {
+    root: __dirname,
+    include: ['src/**/*.{test,spec}.{js,jsx}'],
+  },
 });

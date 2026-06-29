@@ -1379,7 +1379,7 @@ function getKWNumber(date) {
 // ──────────────────────────────────────────────────
 // Tab: Projekte (Projektverwaltung)
 // ──────────────────────────────────────────────────
-function ProjekteTab({ projects, onProjectsChange, onMergeProjects, timesheets }) {
+function ProjekteTab({ projects, onProjectsChange, onMergeProjects, timesheets, completedProjects = {}, onToggleProjectComplete }) {
   const [showForm, setShowForm] = useState(false);
   const [form, setForm] = useState({ name: '', kuerzel: '', projektnummer: '', produktionsfirma: '', drehStartDatum: '' });
   const [editingName, setEditingName] = useState(null);
@@ -1395,8 +1395,13 @@ function ProjekteTab({ projects, onProjectsChange, onMergeProjects, timesheets }
       const p = ts.projekt;
       if (p && !map[p]) map[p] = {};
     }
-    return Object.entries(map).sort((a, b) => a[0].localeCompare(b[0], 'de'));
-  }, [projects, timesheets]);
+    return Object.entries(map).sort((a, b) => {
+      const aDone = !!completedProjects[a[0]];
+      const bDone = !!completedProjects[b[0]];
+      if (aDone !== bDone) return aDone ? 1 : -1;
+      return a[0].localeCompare(b[0], 'de');
+    });
+  }, [projects, timesheets, completedProjects]);
 
   const resetForm = () => {
     setForm({ name: '', kuerzel: '', projektnummer: '', produktionsfirma: '', drehStartDatum: '' });
@@ -1522,11 +1527,16 @@ function ProjekteTab({ projects, onProjectsChange, onMergeProjects, timesheets }
         <div className="team-empty">Noch keine Projekte angelegt.</div>
       ) : (
         <div className="team-grid">
-          {projectEntries.map(([name, data]) => (
-            <div key={name} className="team-card">
+          {projectEntries.map(([name, data]) => {
+            const isCompleted = !!completedProjects[name];
+            return (
+            <div key={name} className={`team-card${isCompleted ? ' team-card-completed' : ''}`}>
               <div className="team-card-avatar">{name.slice(0, 2).toUpperCase()}</div>
               <div className="team-card-info">
-                <div className="team-card-name">{name}</div>
+                <div className="team-card-name">
+                  {name}
+                  {isCompleted && <span className="project-completed-icon" title="Abgeschlossen">✅</span>}
+                </div>
                 <div className="team-card-meta">
                   {data.kuerzel && <span className="team-card-contact">🏷 {data.kuerzel}</span>}
                   {data.projektnummer && <span className="team-card-contact"># {data.projektnummer}</span>}
@@ -1535,11 +1545,21 @@ function ProjekteTab({ projects, onProjectsChange, onMergeProjects, timesheets }
                 </div>
               </div>
               <div className="team-card-actions">
+                {onToggleProjectComplete && (
+                  <button
+                    className={`btn-icon${isCompleted ? ' btn-icon-active' : ''}`}
+                    onClick={() => onToggleProjectComplete(name)}
+                    title={isCompleted ? 'Projekt wieder öffnen' : 'Projekt abschließen'}
+                  >
+                    {isCompleted ? '🔓' : '✅'}
+                  </button>
+                )}
                 <button className="btn-icon" onClick={() => handleEdit(name, data)} title="Bearbeiten">✏️</button>
                 <button className="btn-icon btn-icon-danger" onClick={() => handleDelete(name)} title="Entfernen">🗑</button>
               </div>
             </div>
-          ))}
+            );
+          })}
         </div>
       )}
     </>
@@ -1648,7 +1668,7 @@ function CrewTab({ team, projects, timesheets, resolveName, projectCrews, onProj
 // ──────────────────────────────────────────────────
 // Main TeamManager with Tabs
 // ──────────────────────────────────────────────────
-export default function TeamManager({ team, onTeamChange, timesheets, resolveName, projects, onProjectsChange, onMergeProjects, projectCrews, onProjectCrewsChange, staffing, onStaffingChange, onCreateTimesheets, calendarEntries, onCalendarChange, settings, onSettings, onSyncN8N }) {
+export default function TeamManager({ team, onTeamChange, timesheets, resolveName, projects, onProjectsChange, onMergeProjects, projectCrews, onProjectCrewsChange, staffing, onStaffingChange, onCreateTimesheets, calendarEntries, onCalendarChange, settings, onSettings, onSyncN8N, completedProjects = {}, onToggleProjectComplete }) {
   const [activeTab, setActiveTab] = useState('projekte');
 
   return (
@@ -1672,7 +1692,7 @@ export default function TeamManager({ team, onTeamChange, timesheets, resolveNam
       </div>
 
       {activeTab === 'projekte' && (
-        <ProjekteTab projects={projects} onProjectsChange={onProjectsChange} onMergeProjects={onMergeProjects} timesheets={timesheets} />
+        <ProjekteTab projects={projects} onProjectsChange={onProjectsChange} onMergeProjects={onMergeProjects} timesheets={timesheets} completedProjects={completedProjects} onToggleProjectComplete={onToggleProjectComplete} />
       )}
       {activeTab === 'crew' && (
         <CrewTab team={team} projects={projects} timesheets={timesheets} resolveName={resolveName}
