@@ -273,6 +273,67 @@ export default function Settings({ settings, onSave, timesheets, setTimesheets, 
   const [restoreConfirm, setRestoreConfirm] = useState(null);
   const [restoring, setRestoring] = useState(false);
 
+  // Verschlüsselung
+  const [encStatus, setEncStatus] = useState(null); // { available, enabled, unlocked, mode }
+  const [encBusy, setEncBusy] = useState(false);
+  const [encMsg, setEncMsg] = useState('');
+  const [encPass1, setEncPass1] = useState('');
+  const [encPass2, setEncPass2] = useState('');
+  const refreshEnc = async () => {
+    try { setEncStatus(await window.electronAPI?.encStatus?.()); } catch (_) { /* ignore */ }
+  };
+  useEffect(() => { refreshEnc(); }, []);
+
+  const encReloadSoon = (msg) => { setEncMsg(msg); setTimeout(() => window.location.reload(), 1400); };
+
+  const handleEncEnableLocal = async () => {
+    if (!confirm('Datenverschlüsselung aktivieren (gerätegebunden, ohne Passwort)?\n\nEs wird vorher automatisch ein Backup erstellt. Danach werden deine Daten verschlüsselt gespeichert.')) return;
+    try {
+      setEncBusy(true); setEncMsg('Erstelle Backup …');
+      await window.electronAPI.createBackup();
+      setEncMsg('Aktiviere Verschlüsselung …');
+      const res = await window.electronAPI.encEnable('local');
+      if (res.success) encReloadSoon('✅ Verschlüsselt (Keychain). App wird neu geladen …');
+      else { setEncMsg(`❌ ${res.error}`); setEncBusy(false); }
+    } catch (e) { setEncMsg(`❌ ${e.message}`); setEncBusy(false); }
+  };
+
+  const handleEncEnableSync = async () => {
+    if (encPass1.length < 8) { setEncMsg('❌ Passphrase min. 8 Zeichen.'); return; }
+    if (encPass1 !== encPass2) { setEncMsg('❌ Passphrasen stimmen nicht überein.'); return; }
+    if (!confirm('Verschlüsselung mit Passphrase aktivieren (sync-fähig)?\n\n⚠️ Ohne diese Passphrase sind die Daten NICHT wiederherstellbar. Vorher wird ein Backup erstellt.')) return;
+    try {
+      setEncBusy(true); setEncMsg('Erstelle Backup …');
+      await window.electronAPI.createBackup();
+      setEncMsg('Aktiviere Verschlüsselung …');
+      const res = await window.electronAPI.encEnable('sync', encPass1);
+      if (res.success) { setEncPass1(''); setEncPass2(''); encReloadSoon('✅ Verschlüsselt (Passphrase). App wird neu geladen …'); }
+      else { setEncMsg(`❌ ${res.error}`); setEncBusy(false); }
+    } catch (e) { setEncMsg(`❌ ${e.message}`); setEncBusy(false); }
+  };
+
+  const handleEncDisable = async () => {
+    if (!confirm('Verschlüsselung abschalten? Deine Daten werden danach wieder im Klartext gespeichert.')) return;
+    try {
+      setEncBusy(true); setEncMsg('Schalte ab …');
+      const res = await window.electronAPI.encDisable();
+      if (res.success) encReloadSoon('✅ Verschlüsselung aus. App wird neu geladen …');
+      else { setEncMsg(`❌ ${res.error}`); setEncBusy(false); }
+    } catch (e) { setEncMsg(`❌ ${e.message}`); setEncBusy(false); }
+  };
+
+  const handleEncChangePass = async () => {
+    if (encPass1.length < 8) { setEncMsg('❌ Neue Passphrase min. 8 Zeichen.'); return; }
+    if (encPass1 !== encPass2) { setEncMsg('❌ Passphrasen stimmen nicht überein.'); return; }
+    try {
+      setEncBusy(true);
+      const res = await window.electronAPI.encChangePassphrase(encPass1);
+      setEncBusy(false);
+      if (res.success) { setEncPass1(''); setEncPass2(''); setEncMsg('✅ Passphrase geändert.'); }
+      else setEncMsg(`❌ ${res.error}`);
+    } catch (e) { setEncBusy(false); setEncMsg(`❌ ${e.message}`); }
+  };
+
   // Geräteübergreifender Speicherort
   const [dataLoc, setDataLoc] = useState(null); // { dataDir, isCustom, deviceName, suggested, lastWrite }
   const [dataLocStatus, setDataLocStatus] = useState('');
@@ -986,6 +1047,53 @@ export default function Settings({ settings, onSave, timesheets, setTimesheets, 
               </div>
             </div>
           )}
+        </div>
+
+        <div className="settings-card">
+          <h3>🔐 Datenverschlüsselung</h3>
+          <p className="settings-description">
+            Verschlüsselt deine lokale Datendatei (inkl. Abrechnungen) mit AES-256. Backups werden ebenfalls verschlüsselt.
+          </p>
+
+          {encStatus?.enabled ? (
+            <>
+              <p className="backup-status">
+                🔒 Aktiv — Modus: <strong>{encStatus.mode === 'sync' ? 'Passphrase (sync-fähig)' : 'Keychain (lokal)'}</strong>{encStatus.unlocked ? '' : ' · gesperrt'}
+              </p>
+              <div className="backup-actions" style={{ marginTop: 8, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                <button className="backup-btn" onClick={handleEncDisable} disabled={encBusy}>🔓 Verschlüsselung abschalten</button>
+              </div>
+              {encStatus.mode === 'sync' && (
+                <div style={{ marginTop: 12 }}>
+                  <h4 className="backup-group-title">Passphrase ändern</h4>
+                  <input type="password" value={encPass1} onChange={e => setEncPass1(e.target.value)} placeholder="Neue Passphrase (min. 8)" autoComplete="new-password" style={{ maxWidth: 260, marginRight: 8 }} />
+                  <input type="password" value={encPass2} onChange={e => setEncPass2(e.target.value)} placeholder="Wiederholen" autoComplete="new-password" style={{ maxWidth: 260, marginRight: 8 }} />
+                  <button className="backup-btn" onClick={handleEncChangePass} disabled={encBusy}>Ändern</button>
+                </div>
+              )}
+            </>
+          ) : (
+            <>
+              <div className="backup-actions-grid">
+                <div className="backup-action-group">
+                  <h4 className="backup-group-title">Gerätegebunden (ohne Passwort)</h4>
+                  <p className="settings-description" style={{ fontSize: 12 }}>Schlüssel im OS-Keychain. Empfohlen, wenn die Daten NUR auf diesem Gerät liegen.</p>
+                  <button className="backup-btn backup-btn-create" onClick={handleEncEnableLocal} disabled={encBusy || !encStatus?.available}>
+                    🔐 Aktivieren (Keychain)
+                  </button>
+                  {!encStatus?.available && <span className="project-field-hint">Keychain nicht verfügbar – nutze Passphrase.</span>}
+                </div>
+                <div className="backup-action-group">
+                  <h4 className="backup-group-title">Mit Passphrase (sync-fähig)</h4>
+                  <p className="settings-description" style={{ fontSize: 12 }}>Für iCloud-Sync über mehrere Geräte. ⚠️ Passphrase verloren = Daten verloren.</p>
+                  <input type="password" value={encPass1} onChange={e => setEncPass1(e.target.value)} placeholder="Passphrase (min. 8)" autoComplete="new-password" style={{ maxWidth: 260, marginBottom: 6 }} />
+                  <input type="password" value={encPass2} onChange={e => setEncPass2(e.target.value)} placeholder="Wiederholen" autoComplete="new-password" style={{ maxWidth: 260, marginBottom: 6 }} />
+                  <button className="backup-btn" onClick={handleEncEnableSync} disabled={encBusy}>🔐 Mit Passphrase aktivieren</button>
+                </div>
+              </div>
+            </>
+          )}
+          {encMsg && <p className="backup-status" style={{ marginTop: 8 }}>{encMsg}</p>}
         </div>
 
         <div className="settings-card">

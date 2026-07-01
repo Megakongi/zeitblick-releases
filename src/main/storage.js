@@ -4,8 +4,21 @@ const path = require('path');
 const crypto = require('crypto');
 const { app } = require('electron');
 
+const cryptoUtil = require('./crypto');
+
 const DATA_VERSION = 5;
 const DATA_FILENAME = 'zeitblick-data.json';
+
+// Schlüssel-Provider für die optionale Verschlüsselung (injizierbar).
+// Standard: Verschlüsselung AUS – Klartext-Verhalten unverändert. Der
+// Main-Prozess setzt in Produktion einen echten Provider via setKeyProvider().
+let keyProvider = {
+  encryptionActive: () => false,
+  currentDEK: () => { throw new Error('Kein Schlüssel verfügbar.'); },
+  passWrapForEnvelope: () => null,
+  dekForLoad: () => { throw Object.assign(new Error('Verschlüsselt, aber kein Schlüssel.'), { code: 'NEEDS_PASSPHRASE' }); },
+};
+function setKeyProvider(p) { keyProvider = p || keyProvider; }
 
 // Basisordner (Electron-userData). Über ZEITBLICK_DATA_HOME überschreibbar –
 // genutzt für Tests; im Normalbetrieb greift Electrons userData-Pfad.
@@ -193,6 +206,25 @@ function loadData() {
     if (fs.existsSync(filePath)) {
       const raw = fs.readFileSync(filePath, 'utf-8');
       let data = JSON.parse(raw);
+
+      // Verschlüsselter Envelope? Header (_lastWrite) liegt im Klartext.
+      if (cryptoUtil.isEncrypted(data)) {
+        lastSeenWrite = data._lastWrite || null;
+        let dek;
+        try {
+          dek = keyProvider.dekForLoad(data);
+        } catch (e) {
+          // Schlüssel/Passphrase fehlt – nicht als Datenverlust behandeln,
+          // sondern dem UI signalisieren, dass entsperrt werden muss.
+          if (e && e.code === 'NEEDS_PASSPHRASE') {
+            return { timesheets: [], settings: { tagesgage: 0, pauschale: 0.75 }, _version: DATA_VERSION, _encrypted: true, _needsPassphrase: true, _passWrap: (data.wrap && data.wrap.pass) || null };
+          }
+          throw e;
+        }
+        const plain = migrateData(JSON.parse(cryptoUtil.decryptEnvelope(data, dek)));
+        return plain;
+      }
+
       // Stand merken, gegen den künftige Schreibvorgänge geprüft werden.
       lastSeenWrite = data._lastWrite || null;
       data = migrateData(data);
@@ -240,9 +272,23 @@ function saveData(data, opts = {}) {
     const toSave = { ...data, _version: DATA_VERSION, _lastWrite: newWrite };
     const dir = path.dirname(filePath);
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+
+    // Verschlüsseln, wenn aktiv – Header (_version, _lastWrite) bleibt Klartext.
+    let serialized;
+    if (keyProvider.encryptionActive()) {
+      const env = cryptoUtil.encryptEnvelope(
+        JSON.stringify(toSave),
+        keyProvider.currentDEK(),
+        { version: DATA_VERSION, lastWrite: newWrite, passWrap: keyProvider.passWrapForEnvelope() }
+      );
+      serialized = JSON.stringify(env);
+    } else {
+      serialized = JSON.stringify(toSave, null, 2);
+    }
+
     // Atomic write: temp file then rename
     const tempPath = filePath + '.tmp';
-    fs.writeFileSync(tempPath, JSON.stringify(toSave, null, 2), 'utf-8');
+    fs.writeFileSync(tempPath, serialized, 'utf-8');
     fs.renameSync(tempPath, filePath);
 
     lastSeenWrite = newWrite;
@@ -277,7 +323,16 @@ function restoreBackup(backupPath) {
   try {
     if (!fs.existsSync(backupPath)) return { success: false, error: 'Backup-Datei nicht gefunden.' };
     const raw = fs.readFileSync(backupPath, 'utf-8');
-    const data = JSON.parse(raw);
+    let data = JSON.parse(raw);
+    // Verschlüsseltes Backup: erst entschlüsseln (Passphrase steckt im Envelope,
+    // sonst gerätelokaler Keychain-Schlüssel).
+    if (cryptoUtil.isEncrypted(data)) {
+      try {
+        data = JSON.parse(cryptoUtil.decryptEnvelope(data, keyProvider.dekForLoad(data)));
+      } catch (e) {
+        return { success: false, error: e && e.code === 'NEEDS_PASSPHRASE' ? 'Backup ist verschlüsselt – bitte zuerst entsperren.' : 'Backup konnte nicht entschlüsselt werden.' };
+      }
+    }
     if (!data.timesheets || !Array.isArray(data.timesheets)) return { success: false, error: 'Ungültiges Backup.' };
     const migratedData = migrateData(data);
     saveData(migratedData, { force: true }); // bewusstes Ersetzen durch den Nutzer
@@ -424,4 +479,5 @@ module.exports = {
   resetToLocal,
   getDataLocationInfo,
   hasExternalChange,
+  setKeyProvider,
 };

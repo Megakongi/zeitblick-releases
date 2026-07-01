@@ -16,6 +16,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
   createBackup: () => ipcRenderer.invoke('create-backup'),
   listBackups: () => ipcRenderer.invoke('list-backups'),
   restoreBackup: (path) => ipcRenderer.invoke('restore-backup', path),
+  // Datenverschlüsselung
+  encStatus: () => ipcRenderer.invoke('enc-status'),
+  encEnable: (mode, passphrase) => ipcRenderer.invoke('enc-enable', mode, passphrase),
+  encDisable: () => ipcRenderer.invoke('enc-disable'),
+  encUnlock: (passphrase, passWrap) => ipcRenderer.invoke('enc-unlock', passphrase, passWrap),
+  encChangePassphrase: (newPassphrase) => ipcRenderer.invoke('enc-change-passphrase', newPassphrase),
   exportData: () => ipcRenderer.invoke('export-data'),
   importDataFile: () => ipcRenderer.invoke('import-data'),
   // Geräteübergreifender Speicherort

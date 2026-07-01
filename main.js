@@ -3,7 +3,8 @@ const path = require('path');
 const fs = require('fs');
 const { parsePDF } = require('./src/main/pdfParser');
 const { parseBillingPDF, isEncryptedPDF, parseSesamTimesheetPDF, parseSesamTimesheetData } = require('./src/main/billingParser');
-const { loadData, saveData, createBackup, restoreBackup, listBackups, exportData, importData, getDataDir, setDataDir, resetToLocal, getDataLocationInfo, hasExternalChange } = require('./src/main/storage');
+const { loadData, saveData, createBackup, restoreBackup, listBackups, exportData, importData, getDataDir, setDataDir, resetToLocal, getDataLocationInfo, hasExternalChange, setKeyProvider } = require('./src/main/storage');
+const keystore = require('./src/main/keystore');
 const { extractDispoAddresses } = require('./src/main/dispoText');
 const { computeDistance } = require('./src/main/geo');
 const { buildStdWebFillScript, buildStdWebDiagnoseScript, buildStdWebNavigateScript, buildStdWebLoginScript, buildStdWebLogoutScript } = require('./src/main/stdwebFill');
@@ -253,6 +254,14 @@ function createWindow() {
 }
 
 app.whenReady().then(() => {
+  // Verschlüsselung: Schlüsselverwaltung initialisieren und als Provider einhängen,
+  // BEVOR das Fenster Daten lädt. Standard bleibt deaktiviert (Klartext).
+  try {
+    keystore.init(app.getPath('userData'));
+    setKeyProvider(keystore);
+  } catch (e) {
+    console.error('[keystore] init failed:', e.message);
+  }
   createWindow();
   setupAutoUpdater();
 });
@@ -1391,6 +1400,35 @@ ipcMain.handle('list-backups', async () => {
 ipcMain.handle('restore-backup', async (event, backupPath) => {
   return restoreBackup(backupPath);
 });
+
+// ===== Datenverschlüsselung (keystore) =====
+ipcMain.handle('enc-status', async () => keystore.status());
+
+ipcMain.handle('enc-enable', async (event, mode, passphrase) => {
+  // Daten VOR dem Umschalten (noch im alten Format) lesen …
+  let cur = null;
+  try { cur = loadData(); } catch (e) { console.error('[enc] load before enable:', e.message); }
+  const res = keystore.enable({ mode, passphrase });
+  // … dann verschlüsselt zurückschreiben.
+  if (res.success && cur && !cur._needsPassphrase) {
+    try { saveData(cur, { force: true }); } catch (e) { console.error('[enc] rewrite on enable:', e.message); }
+  }
+  return res;
+});
+
+ipcMain.handle('enc-disable', async () => {
+  // Erst entschlüsselt laden (Schlüssel noch aktiv), dann abschalten, dann Klartext schreiben.
+  let cur = null;
+  try { cur = loadData(); } catch (e) { console.error('[enc] load before disable:', e.message); }
+  const res = keystore.disable();
+  if (res.success && cur && !cur._needsPassphrase) {
+    try { saveData(cur, { force: true }); } catch (e) { console.error('[enc] rewrite on disable:', e.message); }
+  }
+  return res;
+});
+
+ipcMain.handle('enc-unlock', async (event, passphrase, passWrap) => keystore.unlockWithPassphrase(passWrap ? { wrap: { pass: passWrap } } : null, passphrase));
+ipcMain.handle('enc-change-passphrase', async (event, newPassphrase) => keystore.changePassphrase(newPassphrase));
 
 ipcMain.handle('export-data', async () => {
   const result = await dialog.showSaveDialog(mainWindow, {
